@@ -391,7 +391,7 @@ pub(crate) async fn resolve<H: QueryHandler + ?Sized>(
     let outcome = crate::tcp::with_scratch(|out| match handler.handle(msg, meta, out) {
         Response::Ready(len) => Pending::Now(Some(out[..len].to_vec())),
         Response::Deferred(f) => Pending::Later(f),
-        Response::Drop => Pending::Now(None),
+        Response::Drop | Response::Close => Pending::Now(None),
     });
     let answer = match outcome {
         Pending::Now(a) => a,

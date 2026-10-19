@@ -73,6 +73,14 @@ pub enum Code {
     /// REQ: FLT-017 — Kubernetes workloads aren't on (`[kubernetes] enabled`, the chart's
     /// `kubernetes.enabled`).
     KubernetesDisabled,
+    /// REQ: CLU-014 — a drill a precondition refuses (the detail says which: no other node,
+    /// maintenance, a recent drill, a pinned or baking rollout, severe health).
+    DrillRefused,
+    /// REQ: CLU-014 — a drill is already running on the node.
+    DrillActive,
+    /// REQ: CLU-014 — a drill's targets, length, or reason are unusable (an unknown group, no
+    /// device seen, more than 300 seconds).
+    DrillTargets,
 }
 
 impl Code {
@@ -108,6 +116,9 @@ impl Code {
             Self::HeatmapWindow => "https://telltaledns.dev/problems/heatmap_window",
             Self::PrivacyLevel => "https://telltaledns.dev/problems/privacy_level",
             Self::KubernetesDisabled => "https://telltaledns.dev/problems/kubernetes_disabled",
+            Self::DrillRefused => "https://telltaledns.dev/problems/drill_refused",
+            Self::DrillActive => "https://telltaledns.dev/problems/drill_active",
+            Self::DrillTargets => "https://telltaledns.dev/problems/drill_targets",
         }
     }
 
@@ -143,6 +154,9 @@ impl Code {
             Self::HeatmapWindow => "Heatmap window too long",
             Self::PrivacyLevel => "Hidden by the privacy level",
             Self::KubernetesDisabled => "Kubernetes workloads are off",
+            Self::DrillRefused => "Drill refused",
+            Self::DrillActive => "A drill is already running",
+            Self::DrillTargets => "Invalid drill request",
         }
     }
 
@@ -160,7 +174,9 @@ impl Code {
             | Self::ClusterPinned
             | Self::NoRollout
             | Self::VersionBlobsMissing
-            | Self::KubernetesDisabled => StatusCode::CONFLICT,
+            | Self::KubernetesDisabled
+            | Self::DrillRefused
+            | Self::DrillActive => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig
@@ -170,7 +186,8 @@ impl Code {
             | Self::AnnotationText
             | Self::AnnotationTime
             | Self::HeatmapWindow
-            | Self::PrivacyLevel => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::PrivacyLevel
+            | Self::DrillTargets => StatusCode::UNPROCESSABLE_ENTITY,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }
     }

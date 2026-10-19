@@ -1134,7 +1134,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // OBS-034's /clients/{id}/timeline.
     // 105 with OBS-035's /auth/display, /displays and /displays/{id}.
     // 108 with FLT-017's /kubernetes/workloads, /kubernetes/status and /kubernetes/map/{key}.
-    assert_eq!(paths.len(), 108);
+    // 112 with CLU-014's /nodes/{id}/drill, /drills, /drills/{id} and /clients/affinity.
+    assert_eq!(paths.len(), 112);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -2540,4 +2541,80 @@ async fn flt_017_kubernetes_routes() {
             .any(|x| x == r#"managed KubernetesMap media/deploy/jellyfin {"group":"iot"}"#),
         "{seen:?}"
     );
+}
+
+// REQ: CLU-014, AGT-004 (AC 2) — drill requests over HTTP: 15 to 300 seconds (301 is 422
+// `drill_targets`), a reason required, agents need `ops:drill` (403 without it, even with
+// `ops:maintenance`); reads are routed; a window outside 1d to 7d is 400.
+#[tokio::test]
+async fn clu_014_drill_requests_over_http() {
+    let (app, _) = app();
+    let post = |token: &str, body: &str| {
+        Request::post("/api/v1/nodes/local/drill")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "second server?")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    };
+    let code = |v: &serde_json::Value| v["code"].as_str().map(str::to_owned);
+    let (s, _, v) = send(
+        &app,
+        post(
+            &app.bearer,
+            r#"{"forSecs":301,"targets":"all","reason":"x"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, code(&v).as_deref()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("drill_targets")),
+        "{v}"
+    );
+    assert!(v["hint"].as_str().unwrap().contains("5 minutes"), "{v}");
+    let (s, _, v) = send(&app, post(&app.bearer, r#"{"targets":"all"}"#)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, _, v) = send(
+        &app,
+        post(&app.bearer, r#"{"targets":{"clients":[]},"reason":"x"}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let token = |scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"drill-{}","kind":"agent","scopes":[{scopes}]}}"#,
+                scopes.len()
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token(r#""ops:maintenance""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let maint = v["token"].as_str().unwrap().to_owned();
+    let body = r#"{"forSecs":30,"targets":{"group":"iot"},"reason":"second server?"}"#;
+    let (s, _, v) = send(&app, post(&maint, body)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, _, v) = send(&app, token(r#""ops:drill""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let drill = v["token"].as_str().unwrap().to_owned();
+    // With the scope the request reaches the backend (this test backend has no drills).
+    let (s, _, v) = send(&app, post(&drill, body)).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    let get = |path: &str| {
+        Request::get(path)
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, get("/api/v1/drills")).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    let (s, _, v) = send(&app, get("/api/v1/drills?limit=51")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, _, v) = send(&app, get("/api/v1/clients/affinity?window=9d")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, _, v) = send(&app, get("/api/v1/nodes/local/drill")).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
 }

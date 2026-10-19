@@ -84,6 +84,7 @@ pub struct KeyShare {
 
 /// Sent every few seconds both ways; its absence marks a peer down.
 #[derive(Clone, PartialEq, Message)]
+#[allow(clippy::struct_excessive_bools)] // independent wire flags, each with its own tag
 pub struct Heartbeat {
     /// Sender's clock (Unix ms), for lag display only.
     #[prost(uint64, tag = "1")]
@@ -169,6 +170,18 @@ pub struct Heartbeat {
     /// node under 1 q/s showed 0. Absent from older nodes (read as `qps` × 60).
     #[prost(uint64, optional, tag = "28")]
     pub queries_last_minute: Option<u64>,
+    /// REQ: CLU-014 (ADR-151) — it understands failover drills (false from older nodes, which
+    /// a drill report lists as missing).
+    #[prost(bool, tag = "29")]
+    pub drills: bool,
+    /// REQ: CLU-014 — the drill it runs, if any: its ID, start, and end (Unix ms, its clock);
+    /// every node records a window for it while it lasts.
+    #[prost(string, tag = "30")]
+    pub drill_id: String,
+    #[prost(uint64, tag = "31")]
+    pub drill_since_ms: u64,
+    #[prost(uint64, tag = "32")]
+    pub drill_until_ms: u64,
 }
 
 /// REQ: CLU-008 (T6.11) — the resources of the machine a node runs on, for monitoring and

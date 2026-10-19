@@ -286,6 +286,32 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Failover drills and their reports. Without an id: the newest drills from every node (when, which node, targets, status, coverage = followed / (followed + stuck), and counts). With an id: the full report: per device the verdict (followed: another node answered it after its first unanswered query; stuck: 3 or more unanswered and nothing elsewhere, so it has no working second DNS server; quiet: too little traffic to tell; elsewhere: not targeted), the unanswered queries, the time to failover, and whether it came back afterwards (returned) or stayed (sticky); plus queries per node and the median and p90 time to failover. Start a drill with plan_failover_drill. Needs analytics:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "A drill's ID (default: list the newest).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Drills listed without an id (default 5).",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "drill_report"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against TelltaleDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
     "inputSchema": {
       "additionalProperties": false,
@@ -513,7 +539,9 @@
               "blocking.resumed",
               "cache.flushed",
               "upstream.breaker",
-              "note"
+              "note",
+              "drill.started",
+              "drill.ended"
             ],
             "type": "string"
           },
@@ -1098,6 +1126,54 @@
       "type": "object"
     },
     "name": "plan_assign_client"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). A failover drill: for 15 to 300 seconds (default 60) one node stops answering the targets (everyone, a group, or some devices) while the other nodes keep serving, so devices with a working second DNS server switch to it. About a minute after it ends, drill_report says who followed, how fast, and who was stuck. The preview lists every precondition (another node ready and answering, no drill in the last 10 minutes, no rollout baking or pin, health not severe), the baseline (devices that used the node in the last hour), and the devices it would stop answering. Devices without a working second server lose DNS for the drill's length: start with one device for 30 seconds. Needs the ops:drill scope, which no token has by default.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "clients": {
+          "description": "Drill these devices (addresses, names, or Kubernetes workloads). With neither group nor clients: everyone.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "forSecs": {
+          "description": "How long (default 60).",
+          "maximum": 300,
+          "minimum": 15,
+          "type": "integer"
+        },
+        "group": {
+          "description": "Drill one group's devices.",
+          "type": "string"
+        },
+        "node": {
+          "description": "The node to drill: local (default), or a node's ID, site, or pod name (cluster_status lists them).",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_failover_drill"
   },
   {
     "annotations": {

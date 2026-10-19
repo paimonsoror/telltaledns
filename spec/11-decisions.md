@@ -1291,6 +1291,31 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-151 — Failover drills: a maintenance window with a drop, a federated coverage report (Proposed)
+**Context:** CLU-014 (owner request 2026-10-18). Routers hand devices two DNS servers (the Pi and the homelab's .112), but a stub resolver uses its first server until it stops answering, so on a healthy network nothing shows whether the second one works for every device; a passive "single-homed" finding would be guesswork. Design: `docs/design/failover-drills.md`.
+**Decision:**
+- **A drill is a maintenance window with a drop** (reuses OPS-010/ADR-118: readiness off, alerts muted, out of elections and the health level, the window file, forwarding, handover on the primary). For its targets (addresses or names, a group, or everyone) the node discards UDP queries after client identification and before rate limiting, and closes TCP, DoT, DoH and DoQ connections without an answer: the nearest thing to a dead node. Each counts as a new query status `drilled`.
+- **Query path:** one relaxed load of the drill's end time (0: none); only during a drill, one `ArcSwap` load of the target set and a lookup. Never dropped: `[clients] infrastructure`, loopback, the node's own and other cluster nodes' addresses, and excluded devices (OBS-022).
+- **Bounds:** 15 to 300 s, default 60; the cap is not configurable (a long drill is an outage). Ends on expiry or `DELETE`. A restart **cancels** a drill (unlike maintenance, which resumes).
+- **Preconditions** (409 `drill_refused` with the reason): another node ready and answering in the last 5 minutes; no maintenance on the node and no drill anywhere in the cluster in the last 10 minutes; no pinned or baking rollout (CLU-013); health not `severe`; targets that resolve to a device seen on the node in the last hour (unless everyone). Not a configuration change: allowed under GitOps authority, audited, `operator` role; agents need the scope `ops:drill` (not in the defaults) and a reason.
+- **Coverage:** a per-client seen table on the telemetry thread (baseline, affinity; 4,096 cap, persisted); a per-client window map on every node while any node drills (learned from the heartbeat's new `drill_id`), frozen 60 s after the end; the drilled node merges the parts (federated read, retried 5 minutes) into a saved report (last 50 kept) with verdicts `followed` / `stuck` (≥ 3 dropped, nothing elsewhere) / `quiet` / `elsewhere`, time to failover, and `returned` vs sticky after 15 minutes.
+- **Interfaces:** `POST/DELETE/GET /api/v1/nodes/{id}/drill` (`dryRun`), `GET /api/v1/drills[/{id}]`, `GET /api/v1/clients/affinity`; MCP `plan_failover_drill`, `drill_report`; the Cluster page's **Drill…** and Drills list; metrics; annotations `drill.started`/`drill.ended`. Never a health reason.
+**Consequences:**
+- The first real drill should be on the owner's own laptop for 30 s, then a group, then everyone; never run against the live Pi without the owner's go.
+- Scheduled drills and a REFUSED mode are open questions; neither is built.
+- Devices that never queried during the window are `quiet`: a drill can't tell an idle device from one without DNS.
+
+**Amendments at implementation (T15.2, 2026-10-19):**
+- **Closing connections:** a new `Response::Close` in `telltale-net`. TCP and DoT close the connection; UDP drops; DoH and DoQ answer nothing but keep the connection, because HTTP/2 and QUIC multiplex other queries on it.
+- **"Loopback" is the node itself:** `127.0.0.1` and `::1` are never dropped, nor held by FLT-017's analytics hold. Other 127.0.0.0/8 addresses are ordinary clients: the cluster e2e's stub resolvers bind them. Masking's infrastructure list (which has all of 127/8) is used without its loopback entries.
+- **Who's in the report:** the targets seen on the node in the hour before (the baseline's targets), any device the node dropped, and any device another node answered during the window. A non-target the drilled node answered as usual is left out. A target with 1 or 2 unanswered queries and nothing elsewhere is `quiet`: too little to tell.
+- **The window starts at once:** the drilled node calls every peer (`drill` peer call, 1 s deadline) before it drops anything, and the heartbeat's `drill_id` is the fallback. A new heartbeat flag `drills` tells an older peer (missing) from one that recorded nothing.
+- **Returned:** checked from the drilled node's seen table (to the second) 15 minutes after the end.
+- **Seen table size:** each entry keeps 7 daily counts for the affinity view, about 70 bytes rather than the design's 40 (under 300 KB at the 4,096 cap).
+- **Markers:** `drill.started` and `drill.ended` are new marker kinds; a drill's maintenance window leaves no `maintenance.*` markers of its own.
+- **Test hooks:** `TELLTALE_DRILL_GAP_SECS`, `TELLTALE_DRILL_RETURN_SECS`, and `TELLTALE_DRILL_RETRY_SECS` shorten the 10-minute gap, the 15-minute check, and the 5-minute retry for the cluster e2e. `TELLTALE_DRILL_IGNORE_HEALTH` passes the health check (shown as ignored in the checks): the e2e's nodes have no working upstream, so their health is severe.
+- **CLI:** `telltale ctl drill start|stop|report` over the API (the design's local `telltale drill` subcommands are the same calls; only `ctl` is built).
+
 ## ADR-150 — Kubernetes workloads as devices: a read-only pod watcher on the controller, a synthetic analytics key, groups from labels (Proposed)
 **Context:** FLT-017 (owner request 2026-10-18). On the homelab k3s node, pods are clients like any other, but a pod address names nothing and changes on every rollout, so a Deployment's three replicas look like three short-lived devices and per-device analytics (baselines, rhythm, timeline, new-device status) restart each time. Nothing in the code talks to the Kubernetes API today, and the chart mounts no service-account token (ADR-120 keeps secrets off resolver pods). Design: `docs/design/kubernetes-workloads.md`.
 **Decision:**

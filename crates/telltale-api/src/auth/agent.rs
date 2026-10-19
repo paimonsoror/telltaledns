@@ -81,6 +81,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "leave notes on the time charts (change markers)",
     ),
     (
+        "ops:drill",
+        "start and end failover drills (a node stops answering chosen devices for up to five minutes)",
+    ),
+    (
         "cluster:admin",
         "promote a node to primary; change the staged-rollout settings; promote or abort a rollout; pin and unpin the cluster",
     ),
@@ -283,6 +287,19 @@ fn analytics_extra(p: &str) -> bool {
         || p.strip_prefix("/api/v1/clients/")
             .and_then(|r| r.strip_suffix("/rhythm"))
             .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        // REQ: CLU-014 — drill reports, the running drill, and the affinity view.
+        || p == "/api/v1/drills"
+        || p.strip_prefix("/api/v1/drills/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        || drill_path(p)
+        || p == "/api/v1/clients/affinity"
+}
+
+/// REQ: CLU-014 — `/api/v1/nodes/{id}/drill`.
+fn drill_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/nodes/")
+        .and_then(|r| r.strip_suffix("/drill"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
 /// What a `DELETE` outside the configuration areas needs.
@@ -290,6 +307,10 @@ fn delete_need(p: &str) -> Option<Need> {
     // REQ: CLU-013 — unpinning changes what every node serves.
     if p == "/api/v1/cluster/pin" {
         return Some(Need::Scope("cluster:admin"));
+    }
+    // REQ: CLU-014 — ending a drill early.
+    if drill_path(p) {
+        return Some(Need::Scope("ops:drill"));
     }
     // REQ: OPS-010 — ending maintenance (starting it is a POST).
     maintenance_path(p).then_some(Need::Scope("ops:maintenance"))
@@ -307,6 +328,8 @@ fn post_need(p: &str) -> Option<Need> {
     Some(match p {
         // REQ: OPS-010 — maintenance is an immediate op (agents at most two hours).
         _ if maintenance_path(p) => Need::Scope("ops:maintenance"),
+        // REQ: CLU-014 — a drill (at most five minutes; never in the default scopes).
+        _ if drill_path(p) => Need::Scope("ops:drill"),
         _ if p.starts_with("/api/v1/alerts/destinations/") && p.ends_with("/test") => {
             Need::Scope("config:write:alerts")
         }

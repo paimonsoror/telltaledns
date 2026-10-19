@@ -266,3 +266,28 @@ async fn dns_001_tcp_per_address_cap_zero_is_unlimited() {
     );
     server.shutdown().await;
 }
+
+/// REQ: CLU-014 (AC 1) — `Response::Close` (a failover drill's target): no answer, and the
+/// connection is closed, like a dead server; another connection is answered as usual.
+#[tokio::test]
+async fn clu_014_close_ends_the_connection_without_an_answer() {
+    let handler = |req: &[u8], meta: &RequestMeta, out: &mut [u8]| -> Response {
+        if req[1] == 9 {
+            return Response::Close;
+        }
+        echo(req, meta, out)
+    };
+    let server = TcpServer::bind(cfg(), Arc::new(handler)).unwrap();
+    let mut s = TcpStream::connect(server.local_addr()).await.unwrap();
+    s.write_all(&frame(9)).await.unwrap();
+    let mut buf = [0u8; 2];
+    let n = tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf))
+        .await
+        .expect("closed promptly, not left hanging")
+        .unwrap_or(0);
+    assert_eq!(n, 0, "closed without a response");
+    let mut other = TcpStream::connect(server.local_addr()).await.unwrap();
+    other.write_all(&frame(1)).await.unwrap();
+    assert_eq!(read_frame(&mut other).await.unwrap()[1], 1);
+    server.shutdown().await;
+}

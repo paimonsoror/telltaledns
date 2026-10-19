@@ -2726,3 +2726,177 @@ test('flt_017 workloads', async () => {
   expect(e.client.identifiedBy).toBe('kubernetes');
   expect(e.client.workload).toMatchObject({ name: 'media/deploy/jellyfin', groupFrom: 'map' });
 });
+// REQ: CLU-014 (T15.2, AC 8) — failover drills from the Cluster page (a stubbed two-node
+// cluster): Drill… on the replica, the preview with every check and what it does to devices,
+// Start, the live counters on the Drills tab, the report (verdicts, time to failover, came back),
+// and the drill marker on the dashboard; the real single node refuses a drill (no other node);
+// the affinity column in the Advanced view with its help.
+test('clu_014 drill', async () => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  // The real node runs alone: a dry run says so, a start is refused.
+  const dry = await r.post('/api/v1/nodes/local/drill?dryRun=true', {
+    headers: { 'x-csrf-token': csrf },
+    data: { forSecs: 30, targets: 'all', reason: 'e2e' },
+  });
+  expect(dry.status()).toBe(200);
+  expect((await dry.json()).checks.find((c: { name: string }) => c.name === 'other_node').ok).toBe(false);
+  const refused = await r.post('/api/v1/nodes/local/drill', { headers: { 'x-csrf-token': csrf }, data: { forSecs: 30, targets: 'all', reason: 'e2e' } });
+  expect(refused.status()).toBe(409);
+  expect((await refused.json()).code).toBe('drill_refused');
+
+  const member = (nodeId: string, site: string, o: Record<string, unknown> = {}) => ({
+    nodeId, site, ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.6.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, ...o,
+  });
+  let drilling = false;
+  const view = () => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-a', newestConfigSeq: 9, healthy: true, checks: [],
+    events: [], conflicts: [], authority: 'primary',
+    nodes: [
+      member('id-a', 'k8s', { role: 'primary', thisNode: true, link: 'self', rttMs: null }),
+      member(
+        'id-b',
+        'pi',
+        drilling
+          ? { ready: false, maintenance: { until: new Date(Date.now() + 15_000).toISOString(), since: new Date().toISOString(), reason: 'failover drill: e2e', by: 'admin', secondsLeft: 15 } }
+          : {},
+      ),
+    ],
+  });
+  const since = new Date(Date.now() - 60_000).toISOString();
+  const done = (status: string) => status === 'complete';
+  const summary = (status: string) => ({
+    id: 'd1-e2e', node: 'pi', since, until: new Date(Date.now() - 45_000).toISOString(), targets: 'group home', reason: 'e2e',
+    by: 'admin', status, followed: done(status) ? 1 : 0, stuck: done(status) ? 1 : 0, quiet: 0, elsewhere: 0,
+    coveragePercent: done(status) ? 50 : undefined, medianFailoverMs: done(status) ? 1100 : undefined,
+    p90FailoverMs: done(status) ? 1100 : undefined, viaBalancer: false, missingNodes: [],
+  });
+  let state = 'none';
+  const checks = [
+    { name: 'other_node', ok: true, detail: 'k8s can answer meanwhile.' },
+    { name: 'maintenance', ok: true, detail: 'Not in maintenance.' },
+    { name: 'recent_drill', ok: true, detail: 'No drill in the last 10 minutes.' },
+    { name: 'rollout', ok: true, detail: 'No rollout is baking and the cluster is not pinned.' },
+    { name: 'health', ok: true, detail: 'Health is healthy.' },
+  ];
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view() }));
+  await page.route('**/api/v1/cluster/rollout', (route) =>
+    route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '0.6.0', stage: 'none', nodes: [] } }),
+  );
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  await page.route('**/api/v1/nodes/id-b/drill**', (route) => {
+    const dryRun = route.request().url().includes('dryRun=true');
+    if (!dryRun) {
+      drilling = true;
+      state = 'running';
+    }
+    return route.fulfill({
+      status: dryRun ? 200 : 201,
+      json: {
+        id: dryRun ? '' : 'd1-e2e', node: 'pi', dryRun, since, until: new Date(Date.now() + 15_000).toISOString(), targets: 'group home',
+        targetsResolved: 2, baseline: 5, handover: 'not_needed', checks,
+        preview: 'For 15 seconds this node will not answer 2 devices. Devices with a second DNS server switch to it within a few seconds; devices without one lose DNS until the drill ends.',
+        devices: dryRun ? [{ client: '192.168.1.20', name: 'laptop' }, { client: '192.168.1.30', name: 'tv' }] : [],
+      },
+    });
+  });
+  await page.route('**/api/v1/nodes/pi/drill', (route) =>
+    route.fulfill({
+      json: { id: 'd1-e2e', node: 'pi', since, until: new Date(Date.now() + 9000).toISOString(), secondsLeft: 9, targets: 'group home', reason: 'e2e', by: 'admin', dropped: 7, devicesDropped: 2 },
+    }),
+  );
+  await page.route('**/api/v1/drills?**', (route) => route.fulfill({ json: { items: state === 'none' ? [] : [summary(state)], missingNodes: [] } }));
+  await page.route('**/api/v1/drills/d1-e2e', (route) =>
+    route.fulfill({
+      json: {
+        ...summary('complete'), baseline: 5, overflow: 0, returnedChecked: true,
+        nodes: [{ node: 'pi', queries: 40, devices: 4 }, { node: 'k8s', queries: 25, devices: 3 }],
+        devices: [
+          { client: '192.168.1.30', name: 'tv', group: 'home', verdict: 'stuck', dropped: 12, queriesElsewhere: 0, nodes: [] },
+          { client: '192.168.1.20', name: 'laptop', group: 'home', verdict: 'followed', dropped: 3, queriesElsewhere: 9, timeToFailoverMs: 1100, returned: true, nodes: ['k8s'] },
+        ],
+      },
+    }),
+  );
+  await page.goto('/#/cluster');
+  const row = page.getByTestId('cluster-node').filter({ hasText: 'pi' });
+  await row.getByTestId('drill-open-form').click();
+  const form = page.getByTestId('drill-form');
+  await form.getByRole('radio', { name: '15 s' }).check();
+  await form.getByRole('radio', { name: 'a group' }).check();
+  await form.getByTestId('drill-group').selectOption({ index: 1 });
+  await form.getByTestId('drill-reason').fill('e2e');
+  await expect(form.getByTestId('drill-start')).toHaveCount(0);
+  await form.getByTestId('drill-preview-button').click();
+  const preview = form.getByTestId('drill-preview');
+  await expect(preview).toContainText('will not answer 2 devices');
+  await expect(preview).toContainText('k8s can answer meanwhile');
+  await expect(preview).toContainText('laptop, tv');
+  await form.getByTestId('drill-start').click();
+  await expect(page.getByTestId('drill-note')).toContainText('The report follows');
+  // The Drills tab: the running drill, live.
+  await page.getByTestId('tab-drills').click();
+  await expect(page.getByTestId('drill-counters')).toContainText('7 queries unanswered from 2 devices');
+  // Done: the report.
+  state = 'complete';
+  drilling = false;
+  await expect(page.getByTestId('drill-row').first()).toContainText('50', { timeout: 20_000 });
+  await page.getByTestId('drill-open').first().click();
+  const report = page.getByTestId('drill-report');
+  await expect(report.getByTestId('drill-device')).toHaveCount(2);
+  await expect(report.getByTestId('drill-device').first()).toContainText('stuck');
+  await expect(report.getByTestId('drill-device').nth(1)).toContainText('1.1 s');
+  await expect(report.getByTestId('drill-device').nth(1)).toContainText('came back');
+  await page.keyboard.press('Escape');
+  for (const p of [
+    '**/api/v1/cluster',
+    '**/api/v1/cluster/rollout',
+    '**/api/v1/cluster/versions',
+    '**/api/v1/nodes/id-b/drill**',
+    '**/api/v1/nodes/pi/drill',
+    '**/api/v1/drills?**',
+    '**/api/v1/drills/d1-e2e',
+  ]) {
+    await page.unroute(p);
+  }
+  // The marker a drill leaves on the dashboard (a stubbed one: this node can't drill).
+  const t = new Date(Date.now() - 120_000);
+  await page.route('**/api/v1/annotations?**', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ t: t.toISOString(), tUnixMs: t.getTime(), kind: 'drill.ended', summary: 'failover drill on pi: 1 followed, 1 stuck, 0 quiet (50 % coverage)' }],
+        truncated: false,
+        missingNodes: [],
+      },
+    }),
+  );
+  // A reload: the markers are fetched at most once a minute, and the app kept the real ones.
+  await page.goto('/#/');
+  await page.reload();
+  const chart = page.locator('.card.chart').filter({ hasText: 'Queries by status' });
+  await expect(chart.getByTestId('chart-markers').getByRole('button', { name: /failover drill on pi/ })).toBeVisible({ timeout: 20_000 });
+  await page.unroute('**/api/v1/annotations?**');
+  // The affinity column: Advanced view, with its caveat in the help (stubbed: two nodes).
+  await page.route('**/api/v1/clients/affinity**', (route) =>
+    route.fulfill({
+      json: {
+        windowDays: 7, missingNodes: [], caveat: 'Run a drill to find out.',
+        items: [{ client: '127.0.0.1', queries: 10, nodes: [{ node: 'pi', queries: 10 }, { node: 'k8s', queries: 0 }], topNode: 'pi', topSharePercent: 100, label: 'mostly pi' }],
+      },
+    }),
+  );
+  await page.goto('/#/clients?tab=seen');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  await expect(page.getByTestId('affinity-head')).toBeVisible();
+  await expect(page.getByTestId('affinity').first()).toContainText('mostly pi');
+  await page.getByTestId('affinity-head').getByRole('button').click();
+  await expect(page.getByTestId('help-panel')).toContainText('may still have a second one configured');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await page.unroute('**/api/v1/clients/affinity**');
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+});

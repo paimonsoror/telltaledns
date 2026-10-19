@@ -35,6 +35,12 @@ const RESERVED: &[&str] = &[
     "POD",
     // REQ: FLT-017 — the workload watcher's test hook (a pods file instead of an API server).
     "KUBERNETES_FIXTURE",
+    // REQ: CLU-014 — the drill test hooks (the gap between drills, the "came back" check, how
+    // long missing parts are retried).
+    "DRILL_GAP_SECS",
+    "DRILL_RETURN_SECS",
+    "DRILL_RETRY_SECS",
+    "DRILL_IGNORE_HEALTH",
 ];
 
 /// Applies matching variables onto `root`, using `defaults` for path resolution and types.

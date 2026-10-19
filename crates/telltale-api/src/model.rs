@@ -2296,6 +2296,262 @@ pub struct MaintenanceResult {
     pub note: Option<String>,
 }
 
+/// REQ: CLU-014 — `"all"`: every device (the node's infrastructure, cluster nodes, and
+/// excluded devices are never dropped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DrillAll {
+    All,
+}
+
+/// REQ: CLU-014 — who a drill stops answering: `"all"`, `{ "clients": [...] }` (addresses,
+/// device names, or Kubernetes workloads), or `{ "group": "iot" }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum DrillTargets {
+    All(DrillAll),
+    Clients {
+        #[schema(example = json!(["192.168.2.14", "kids-tablet"]))]
+        clients: Vec<String>,
+    },
+    Group {
+        #[schema(example = "iot")]
+        group: String,
+    },
+}
+
+/// `POST /api/v1/nodes/{id}/drill`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DrillRequest {
+    /// How long, in seconds: 15 to 300 (default 60).
+    #[serde(default)]
+    #[schema(example = 60)]
+    pub for_secs: Option<u32>,
+    pub targets: DrillTargets,
+    /// Why, in a few words (1 to 200 characters, one line).
+    #[serde(default)]
+    #[schema(example = "does the Pi's second server work?")]
+    pub reason: Option<String>,
+    /// On the primary under automatic failover: hand the role over first (default true).
+    #[serde(default)]
+    pub handover: Option<bool>,
+}
+
+/// REQ: CLU-014 — one precondition and whether it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillCheck {
+    /// `other_node`, `maintenance`, `recent_drill`, `rollout`, `health`, `targets`.
+    pub name: String,
+    pub ok: bool,
+    /// In one sentence.
+    pub detail: String,
+}
+
+/// REQ: CLU-014 — a device a drill would stop answering (a dry run lists them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillTargetDevice {
+    /// Its address (or a workload's name).
+    pub client: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// REQ: CLU-014 — a drill started (or, with `dryRun`, what would happen).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillStart {
+    /// The drill's ID (empty on a dry run).
+    pub id: String,
+    /// The node (its pod, site, or ID).
+    pub node: String,
+    pub dry_run: bool,
+    /// When it started and ends (RFC 3339; on a dry run, as if now).
+    pub since: String,
+    pub until: String,
+    /// The targets in words.
+    #[schema(example = "group iot")]
+    pub targets: String,
+    /// Devices seen on the node in the last hour that the drill stops answering.
+    pub targets_resolved: u32,
+    /// Devices seen on the node in the last hour (the report's baseline).
+    pub baseline: u32,
+    /// Every precondition (on a start, all hold).
+    pub checks: Vec<DrillCheck>,
+    /// On a dry run: the devices it would stop answering (at most 200).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<DrillTargetDevice>,
+    /// As for maintenance: `started`, `unavailable` (the drill runs anyway: DNS is what's
+    /// tested), `declined`, `not_needed`, or `none`.
+    pub handover: String,
+    /// In plain words, what it will do to devices.
+    pub preview: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// REQ: CLU-014 — the drill running on a node.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveDrill {
+    pub id: String,
+    pub node: String,
+    pub since: String,
+    pub until: String,
+    pub seconds_left: u64,
+    pub targets: String,
+    pub reason: String,
+    pub by: String,
+    /// Queries not answered so far, and from how many devices.
+    pub dropped: u64,
+    pub devices_dropped: u32,
+}
+
+/// REQ: CLU-014 — one device in a drill report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillDevice {
+    /// Its address, or a Kubernetes workload's key.
+    pub client: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// `followed` (asked another node after its first unanswered query), `stuck` (3 or more
+    /// unanswered, nothing elsewhere: no working second server), `quiet` (no queries during
+    /// the drill: unknown), or `elsewhere` (not a target or in the baseline; asked another
+    /// node: informational).
+    pub verdict: String,
+    /// Queries the drilled node didn't answer.
+    pub dropped: u32,
+    /// Queries other nodes answered during the drill.
+    pub queries_elsewhere: u32,
+    /// First query elsewhere − first unanswered query (`followed` with something dropped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_failover_ms: Option<u64>,
+    /// Whether it asked the drilled node again within 15 minutes after the drill (false:
+    /// it stayed on the other node, "sticky"); absent until checked, and for other verdicts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returned: Option<bool>,
+    /// The nodes that answered it during the drill.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<String>,
+}
+
+/// REQ: CLU-014 — queries one node answered (or dropped) during a drill.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillNodeCount {
+    pub node: String,
+    pub queries: u64,
+    pub devices: u32,
+}
+
+/// REQ: CLU-014 — a drill in a list.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillSummary {
+    pub id: String,
+    /// The drilled node.
+    pub node: String,
+    pub since: String,
+    pub until: String,
+    /// When it really ended (early with DELETE, or a restart).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
+    pub targets: String,
+    pub reason: String,
+    pub by: String,
+    /// `running`, `collecting` (the 60-second grace and the other nodes' parts),
+    /// `complete`, or `cancelled` (a restart ended it; no report).
+    pub status: String,
+    /// followed / (followed + stuck), in percent; absent when neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_percent: Option<f64>,
+    pub followed: u32,
+    pub stuck: u32,
+    pub quiet: u32,
+    pub elsewhere: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_failover_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p90_failover_ms: Option<u64>,
+    /// A resolver pod behind one balancer address: the verdicts measure the balancer.
+    pub via_balancer: bool,
+    /// Nodes whose part is missing (unreachable, or too old to record drills).
+    pub missing_nodes: Vec<String>,
+}
+
+/// REQ: CLU-014 — a full drill report.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillReport {
+    #[serde(flatten)]
+    pub summary: DrillSummary,
+    /// Devices seen on the node in the hour before the drill.
+    pub baseline: u32,
+    /// Every device in the baseline, the targets, or seen anywhere during the drill (privacy
+    /// level 2 and above: empty, counts only).
+    pub devices: Vec<DrillDevice>,
+    /// Queries per node during the drill.
+    pub nodes: Vec<DrillNodeCount>,
+    /// `viaBalancer`: last unanswered query − start (how long the balancer kept sending to the
+    /// not-ready pod).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balancer_switch_ms: Option<u64>,
+    /// Devices not tracked because a table was full.
+    pub overflow: u64,
+    /// Whether `returned` has been checked (15 minutes after the drill).
+    pub returned_checked: bool,
+}
+
+/// `GET /api/v1/drills`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillPage {
+    pub items: Vec<DrillSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub missing_nodes: Vec<String>,
+}
+
+/// REQ: CLU-014 — one node's share of a device's queries.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AffinityNode {
+    pub node: String,
+    pub queries: u64,
+}
+
+/// REQ: CLU-014 — how a device's queries spread over the nodes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AffinityRow {
+    pub client: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub queries: u64,
+    pub nodes: Vec<AffinityNode>,
+    /// The node it used most, and its share of the queries.
+    pub top_node: String,
+    pub top_share_percent: f64,
+    /// `mostly <node>` (90 % or more on one node) or `both` / `several`.
+    pub label: String,
+}
+
+/// `GET /api/v1/clients/affinity`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AffinityPage {
+    pub window_days: u32,
+    pub items: Vec<AffinityRow>,
+    pub missing_nodes: Vec<String>,
+    /// What the view can't tell.
+    pub caveat: String,
+}
+
 /// REQ: OBS-015 — one condition behind [`Health`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -2848,7 +3104,8 @@ pub struct Annotation {
     pub t_unix_ms: u64,
     /// `config.applied`, `build.started`, `node.restarted`, `lists.refreshed`, `rollout.stage`,
     /// `maintenance.entered`, `maintenance.left`, `blocking.paused`, `blocking.resumed`,
-    /// `cache.flushed`, `upstream.breaker`, or `note`.
+    /// `cache.flushed`, `upstream.breaker`, `drill.started`, `drill.ended` (CLU-014), or
+    /// `note`.
     #[schema(example = "config.applied")]
     pub kind: String,
     /// What happened, in one sentence.

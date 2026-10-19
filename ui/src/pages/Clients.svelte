@@ -15,6 +15,7 @@
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
   import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
   import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
+  import { mode } from '../lib/mode.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -53,6 +54,21 @@
   }
 
   $effect(load);
+
+  // REQ: CLU-014 — which servers each device used this week (Advanced view, a cluster): a lens,
+  // never a finding; the help says what it can't tell.
+  let affinity = $state<Record<string, S['AffinityRow']>>({});
+  $effect(() => {
+    if (mode.value !== 'advanced') return;
+    api
+      .affinity('7d')
+      .then((p) => (affinity = Object.fromEntries(p.items.map((r) => [r.client, r]))))
+      .catch(() => (affinity = {}));
+  });
+  // Only meaningful with more than one node answering.
+  const showAffinity = $derived(
+    mode.value === 'advanced' && new Set(Object.values(affinity).flatMap((r) => r.nodes.map((n) => n.node))).size > 1,
+  );
 
   // REQ: FLT-017 — Kubernetes workloads (a tab only when there are any), by namespace.
   let namespace = $state('');
@@ -127,7 +143,7 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Client</th><th>Device</th><th>Groups</th><th class="num">Queries</th><th></th></tr></thead>
+            <thead><tr><th>Client</th><th>Device</th><th>Groups</th>{#if showAffinity}<th data-testid="affinity-head">Servers<HelpButton id="affinity" /></th>{/if}<th class="num">Queries</th><th></th></tr></thead>
             <tbody>
               {#each seen as c (c.key)}
                 <tr>
@@ -136,6 +152,10 @@
                   <td class="small">
                     {#each c.groups ?? [] as g (g)}<span class="group-chip" style:--gc={groupColor(g)}>{g}</span>{/each}
                   </td>
+                  {#if showAffinity}
+                    {@const a = affinity[c.key]}
+                    <td class="small" data-testid="affinity" title={a ? a.nodes.map((n) => `${n.node}: ${num(n.queries)}`).join('\n') : ''}>{a?.label ?? ''}</td>
+                  {/if}
                   <td class="num">{num(c.count)}</td>
                   <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">Rhythm</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">Day</button></td>
                 </tr>

@@ -295,6 +295,11 @@ pub(crate) fn rpc_handler(
                 .await
                 .map_err(|e| format!("maintenance worker failed: {e}"))?;
             }
+            if kind == crate::drill::KIND {
+                // REQ: CLU-014 — a drill started or ended here (a user acted elsewhere; never
+                // through an ephemeral member), a drill's window to record, or a read.
+                return crate::drill::handle(src, cluster, peer, body, ephemeral).await;
+            }
             if kind == crate::rollout::surface::KIND {
                 // REQ: CLU-013 — a replica's rollout request (a user acted there). An ephemeral
                 // member serves no UI: nothing comes through it.
@@ -869,6 +874,33 @@ impl Federated {
             })
             .map(|m| Some(m.node_id))
             .ok_or_else(|| Problem::invalid(format!("`node`: no cluster node `{node}`")))
+    }
+
+    /// REQ: CLU-014 — where a drill request for `node` goes: here (`None`), a peer, or a
+    /// problem (`node_unknown`, or `node_unreachable` for a registered node not heard from).
+    fn drill_node(&self, node: &str) -> Result<Option<String>, Problem> {
+        use telltale_api::problem::Code;
+        if node == "local" {
+            return Ok(None);
+        }
+        self.resolve_node(node).map_err(|_| {
+            if self
+                .cluster
+                .identity
+                .registry()
+                .iter()
+                .any(|n| n.node_id == node)
+            {
+                Problem::new(
+                    Code::NodeUnreachable,
+                    format!("{node} isn't reachable over the cluster channel"),
+                )
+                .hint("A drill is the node's own state, so the node must be up to take it.")
+            } else {
+                Problem::new(Code::NodeUnknown, format!("no cluster node `{node}`"))
+                    .hint("Use `local`, or a node's ID, site, or pod name from the Cluster page.")
+            }
+        })
     }
 
     /// T7.1 — runs `local` here and `read` on every reachable peer (or only on `node`), each
@@ -1678,6 +1710,129 @@ impl Backend for Federated {
                 })
             }
         }
+    }
+    // REQ: CLU-014 (ADR-151) — a drill is the node's own state, like maintenance: a request for
+    // another node goes to that node.
+    fn drill(
+        &self,
+        node: &str,
+        w: telltale_api::DrillWrite,
+    ) -> BoxFuture<Result<telltale_api::model::DrillStart, Problem>> {
+        match self.drill_node(node) {
+            Ok(None) => self.local.drill("local", w),
+            Ok(Some(peer)) => {
+                let cluster = Arc::clone(&self.cluster);
+                let label = self.label_of(&peer);
+                Box::pin(crate::drill::send(cluster, peer, label, w))
+            }
+            Err(p) => Box::pin(async move { Err(p) }),
+        }
+    }
+    fn drill_active(
+        &self,
+        node: &str,
+    ) -> BoxFuture<Result<Option<telltale_api::model::ActiveDrill>, Problem>> {
+        match self.drill_node(node) {
+            Ok(None) => self.local.drill_active("local"),
+            Ok(Some(peer)) => {
+                let cluster = Arc::clone(&self.cluster);
+                Box::pin(async move {
+                    let body = serde_json::to_vec(&crate::drill::Op::Active)
+                        .map_err(|e| Problem::internal(e.to_string()))?;
+                    let reply = cluster
+                        .call(&peer, crate::drill::KIND, body, Duration::from_secs(2))
+                        .await
+                        .map_err(|e| {
+                            Problem::new(
+                                telltale_api::problem::Code::NodeUnreachable,
+                                format!("{peer} didn't answer: {e}"),
+                            )
+                        })?;
+                    serde_json::from_slice(&reply)
+                        .map_err(|e| Problem::internal(format!("unreadable answer: {e}")))
+                })
+            }
+            Err(p) => Box::pin(async move { Err(p) }),
+        }
+    }
+    // REQ: CLU-014 — every node keeps the reports of the drills it ran: merged, newest first.
+    fn drills(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> BoxFuture<Result<telltale_api::model::DrillPage, Problem>> {
+        let (local, cluster) = (Arc::clone(&self.local), Arc::clone(&self.cluster));
+        Box::pin(async move {
+            let mut items = local
+                .drills(50, 0)
+                .await
+                .map(|p| p.items)
+                .unwrap_or_default();
+            let (answers, missing) = crate::drill::ask_all(&cluster, &crate::drill::Op::List).await;
+            for (_, body) in answers {
+                if let Ok(v) =
+                    serde_json::from_slice::<Vec<telltale_api::model::DrillSummary>>(&body)
+                {
+                    items.extend(v);
+                }
+            }
+            Ok(crate::drill::page(items, limit, offset, missing))
+        })
+    }
+    // REQ: CLU-014 — a report lives on the node that ran the drill.
+    fn drill_report(
+        &self,
+        id: &str,
+    ) -> BoxFuture<Result<telltale_api::model::DrillReport, Problem>> {
+        let (local, cluster, id) = (
+            Arc::clone(&self.local),
+            Arc::clone(&self.cluster),
+            id.to_owned(),
+        );
+        Box::pin(async move {
+            if let Ok(r) = local.drill_report(&id).await {
+                return Ok(r);
+            }
+            let (answers, missing) =
+                crate::drill::ask_all(&cluster, &crate::drill::Op::Report { id: id.clone() }).await;
+            for (_, body) in answers {
+                if let Ok(Some(r)) =
+                    serde_json::from_slice::<Option<telltale_api::model::DrillReport>>(&body)
+                {
+                    return Ok(r);
+                }
+            }
+            let mut p = Problem::not_found(format!("no drill `{id}`"));
+            p = if missing.is_empty() {
+                p.hint("List them with GET /api/v1/drills.")
+            } else {
+                p.hint(format!(
+                    "It may be on a node that didn't answer: {}.",
+                    missing.join(", ")
+                ))
+            };
+            Err(p)
+        })
+    }
+    // REQ: CLU-014 — every node's seen table, merged per device.
+    fn affinity(&self, days: u32) -> BoxFuture<Result<telltale_api::model::AffinityPage, Problem>> {
+        let (local, cluster, own) = (
+            Arc::clone(&self.local),
+            Arc::clone(&self.cluster),
+            self.own_label(),
+        );
+        Box::pin(async move {
+            let mine = local.affinity(days).await?;
+            let mut per_node = vec![(own, crate::drill::rows_of(&mine))];
+            let (answers, missing) =
+                crate::drill::ask_all(&cluster, &crate::drill::Op::Seen { days }).await;
+            for (label, body) in answers {
+                if let Ok(rows) = serde_json::from_slice::<Vec<crate::drill::SeenRow>>(&body) {
+                    per_node.push((label, rows));
+                }
+            }
+            Ok(crate::drill::affinity_page(days, per_node, missing))
+        })
     }
     // REQ: CLU-013 (T13.2) — the primary runs rollouts and pins: another node asks it (and,
     // without a reachable primary, shows what the version it applied says).

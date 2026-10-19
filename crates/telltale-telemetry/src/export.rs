@@ -115,7 +115,7 @@ impl Exported {
             self.groups.resize(g + 1, [0; crate::N_STATUS]);
         }
         self.groups[g][e.status as usize] += 1;
-        if e.t_upstream_us > 0 && e.status != Status::Dropped {
+        if e.t_upstream_us > 0 && e.status.answered() {
             self.stage_upstream.record(u64::from(e.t_upstream_us));
         }
         if e.status == Status::Blocked {

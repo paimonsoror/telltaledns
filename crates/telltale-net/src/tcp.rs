@@ -367,9 +367,16 @@ async fn serve_conn<S, H>(
                 Response::Ready(len) => Outcome::Now(framed(&out[..len])),
                 Response::Deferred(fut) => Outcome::Later(fut),
                 Response::Drop => Outcome::Now(None),
+                Response::Close => Outcome::Close,
             }
         });
         match outcome {
+            // REQ: CLU-014 — a drill's target: no answer, and the connection goes (answers
+            // already in flight still finish, as on any close).
+            Outcome::Close => {
+                drop(permit);
+                break;
+            }
             Outcome::Now(Some(buf)) => {
                 stats.replies.fetch_add(1, Ordering::Relaxed);
                 drop(permit);
@@ -403,6 +410,7 @@ async fn serve_conn<S, H>(
 enum Outcome {
     Now(Option<Vec<u8>>),
     Later(crate::handler::Deferred),
+    Close,
 }
 
 /// Writes `buf` (and flushes, if `flush`) within `limit`; false on an error. A stall for the

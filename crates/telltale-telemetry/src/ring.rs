@@ -477,7 +477,12 @@ impl Hold {
             out(&kr);
             return;
         }
-        if !matches!(r, Record::Query(..)) {
+        // The node itself (its probes, local programs) is never a pod: nothing to wait for.
+        let own = match &r {
+            Record::Query(e, _) => is_own_loopback(&e.client_ip),
+            Record::Upstream(_) => true,
+        };
+        if own {
             out(&r);
             return;
         }
@@ -512,6 +517,12 @@ impl Hold {
             self.held = std::collections::VecDeque::new();
         }
     }
+}
+
+/// `127.0.0.1` (v4-mapped) or `::1`.
+fn is_own_loopback(ip: &[u8; 16]) -> bool {
+    *ip == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]
+        || *ip == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
 }
 
 /// Receives every drained record on the aggregator thread (the query log's write path).

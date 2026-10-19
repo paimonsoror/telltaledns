@@ -175,7 +175,7 @@ impl Sink for TraceSink {
         let Record::Query(e, _) = rec else {
             return;
         };
-        if e.status == Status::Dropped {
+        if !e.status.answered() {
             return; // not in the latency histogram
         }
         let (path, slot) = (e.status.path() as usize, bucket(e.t_total_us));

@@ -955,6 +955,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         doq: ArcSwap::from_pointee(stats.doq),
         readiness: Arc::clone(&readiness),
         maintenance,
+        drills: Arc::default(),
         identify: Arc::new(crate::identify::Identifier::open(std::path::Path::new(
             cfg.node.data_dir.as_str(),
         ))),
@@ -1086,6 +1087,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&sources),
         http_stopped.clone(),
     ));
+    // REQ: CLU-014 — failover drills: expiry, windows, reports, the seen table's file.
+    crate::drill::spawn(Arc::clone(&sources), http_stopped.clone());
     // REQ: CLU-011 (T8.1) — warm the cache from the cluster's hot names.
     tokio::spawn(crate::warm::run(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OPS-004 (ADR-046) — a daily check of the signed release index (off: nothing leaves).

@@ -23,6 +23,7 @@ export const KINDS: { id: string; label: string }[] = [
   { id: 'build.started', label: 'Builds' },
   { id: 'node.restarted', label: 'Restarts' },
   { id: 'maintenance.entered', label: 'Maintenance' },
+  { id: 'drill.started', label: 'Drills' },
   { id: 'blocking.paused', label: 'Pauses' },
   { id: 'cache.flushed', label: 'Cache' },
   { id: 'upstream.breaker', label: 'Breakers' },
@@ -30,6 +31,7 @@ export const KINDS: { id: string; label: string }[] = [
 /** Kinds a chip stands for besides its own. */
 const ALSO: Record<string, string[]> = {
   'maintenance.entered': ['maintenance.left'],
+  'drill.started': ['drill.ended'],
   'blocking.paused': ['blocking.resumed'],
 };
 

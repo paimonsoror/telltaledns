@@ -69,6 +69,10 @@ pub(crate) enum CtlCommand {
     /// Node maintenance (OPS-010): not ready for new traffic, still answering every query.
     #[command(subcommand)]
     Maintenance(MaintenanceCmd),
+    /// Failover drills (CLU-014): a node stops answering chosen devices for a short time; the
+    /// report says who switched to another node.
+    #[command(subcommand)]
+    Drill(DrillCmd),
     /// Staged rollouts (CLU-013): the version baking on the canary nodes, the guard, and the
     /// pin; promote or abort.
     #[command(subcommand)]
@@ -192,6 +196,42 @@ pub(crate) enum MaintenanceCmd {
     },
     /// Which nodes are in maintenance, until when, and why.
     Status,
+}
+
+/// REQ: CLU-014 — `telltale ctl drill`.
+#[derive(Debug, Subcommand)]
+pub(crate) enum DrillCmd {
+    /// Start a failover drill: for 15 s to 5 min the node stops answering the targets
+    /// (everyone, `--group`, or `--client`s) while the other nodes serve. Devices without a
+    /// working second DNS server lose DNS meanwhile: start with one device.
+    Start {
+        /// How long: `15s` to `5m`, or seconds (default 60).
+        #[arg(long = "for", value_parser = parse_duration)]
+        for_secs: Option<u32>,
+        /// Drill one group's devices.
+        #[arg(long, conflicts_with = "client")]
+        group: Option<String>,
+        /// Drill these devices (addresses, names, or workloads); repeat for several. With
+        /// neither `--group` nor `--client`: everyone.
+        #[arg(long)]
+        client: Vec<String>,
+        /// Why (shown with the report and in the audit log).
+        #[arg(long)]
+        reason: String,
+        /// The node: `local` (the one `--url` points at), or a node's ID, site, or pod name.
+        #[arg(long, default_value = "local")]
+        node: String,
+        /// Check the preconditions and list the devices without dropping anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// End a node's drill now (the report still comes).
+    Stop {
+        #[arg(long, default_value = "local")]
+        node: String,
+    },
+    /// The newest drills, or one drill's report.
+    Report { id: Option<String> },
 }
 
 /// REQ: CLU-013 — `telltale ctl rollout`.
@@ -716,6 +756,165 @@ pub(crate) async fn run(
                     "no node is in maintenance\n".to_owned()
                 } else {
                     table(&["NODE", "UNTIL", "REASON", "BY"], &rows)
+                }
+            })),
+        ),
+        // REQ: CLU-014
+        CtlCommand::Drill(DrillCmd::Start {
+            for_secs,
+            group,
+            client,
+            reason,
+            node,
+            dry_run,
+        }) => {
+            let targets = match (group, client.is_empty()) {
+                (Some(g), _) => json!({ "group": g }),
+                (None, false) => json!({ "clients": client }),
+                (None, true) => json!("all"),
+            };
+            (
+                api.call(
+                    http::Method::POST,
+                    &format!(
+                        "nodes/{}/drill{}",
+                        path_segment(&node),
+                        if dry_run { "?dryRun=true" } else { "" }
+                    ),
+                    Some(&json!({"forSecs": for_secs, "targets": targets, "reason": reason})),
+                )
+                .await?,
+                Some(Box::new(|v: &Value| {
+                    let mut out = String::new();
+                    for c in v["checks"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                    {
+                        let ok = c["ok"].as_bool().unwrap_or(false);
+                        let _ = writeln!(
+                            out,
+                            "{} {}",
+                            if ok { "ok  " } else { "FAIL" },
+                            s(c, "detail")
+                        );
+                    }
+                    if v["dryRun"].as_bool().unwrap_or(false) {
+                        let _ = writeln!(
+                            out,
+                            "would stop answering {} of the {} devices seen in the last hour: {}",
+                            v["targetsResolved"],
+                            v["baseline"],
+                            v["devices"]
+                                .as_array()
+                                .map(Vec::as_slice)
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|d| d["name"]
+                                    .as_str()
+                                    .unwrap_or_else(|| d["client"].as_str().unwrap_or(""))
+                                    .to_owned())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    } else {
+                        let _ = writeln!(
+                            out,
+                            "drill {} on {} until {}: {}\nthe report follows about a minute after it ends: telltale ctl drill report {}",
+                            s(v, "id"),
+                            s(v, "node"),
+                            s(v, "until"),
+                            s(v, "preview"),
+                            s(v, "id")
+                        );
+                    }
+                    out
+                })),
+            )
+        }
+        CtlCommand::Drill(DrillCmd::Stop { node }) => (
+            api.call(
+                http::Method::DELETE,
+                &format!("nodes/{}/drill", path_segment(&node)),
+                None,
+            )
+            .await?,
+            Some(Box::new(|v: &Value| {
+                format!("{}: {}\n", s(v, "node"), s(v, "preview"))
+            })),
+        ),
+        CtlCommand::Drill(DrillCmd::Report { id: Some(id) }) => (
+            api.get(&format!("drills/{}", path_segment(&id))).await?,
+            Some(Box::new(|v: &Value| {
+                let mut out = format!(
+                    "{} on {}: {} followed, {} stuck, {} quiet; coverage {}\n",
+                    s(v, "targets"),
+                    s(v, "node"),
+                    v["followed"],
+                    v["stuck"],
+                    v["quiet"],
+                    v.get("coveragePercent")
+                        .map_or_else(|| "–".to_owned(), |c| format!("{c} %"))
+                );
+                let rows: Vec<Vec<String>> = v["devices"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|d| {
+                        vec![
+                            d["name"]
+                                .as_str()
+                                .map_or_else(|| s(d, "client"), str::to_owned),
+                            s(d, "verdict"),
+                            d["dropped"].to_string(),
+                            d.get("timeToFailoverMs")
+                                .map_or_else(String::new, |t| format!("{t} ms")),
+                            match d.get("returned").and_then(Value::as_bool) {
+                                Some(true) => "came back".into(),
+                                Some(false) => "stayed".into(),
+                                None => String::new(),
+                            },
+                        ]
+                    })
+                    .collect();
+                out.push_str(&table(
+                    &["DEVICE", "VERDICT", "UNANSWERED", "FAILOVER", "AFTER"],
+                    &rows,
+                ));
+                out
+            })),
+        ),
+        CtlCommand::Drill(DrillCmd::Report { id: None }) => (
+            api.get("drills?limit=10").await?,
+            Some(Box::new(|v: &Value| {
+                let rows: Vec<Vec<String>> = v["items"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|d| {
+                        vec![
+                            s(d, "id"),
+                            s(d, "node"),
+                            s(d, "since"),
+                            s(d, "targets"),
+                            s(d, "status"),
+                            d.get("coveragePercent")
+                                .map_or_else(String::new, |c| format!("{c} %")),
+                            d["stuck"].to_string(),
+                        ]
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    "no drills yet\n".to_owned()
+                } else {
+                    table(
+                        &[
+                            "ID", "NODE", "SINCE", "TARGETS", "STATUS", "COVERAGE", "STUCK",
+                        ],
+                        &rows,
+                    )
                 }
             })),
         ),

@@ -906,6 +906,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clients/affinity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which servers each device uses.
+         * @description Per device, its queries on each node over the window and the share on its most-used one
+         *     (`mostly pi`, `both`). A device that has only used one server may still have a second one
+         *     configured: most systems use their first server until it stops answering. Run a drill to
+         *     find out. No finding, no alert, no health reason. Federated over every node's seen table.
+         */
+        get: operations["client_affinity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients/identities": {
         parameters: {
             query?: never;
@@ -1395,6 +1418,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/drills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List failover drills.
+         * @description Newest first, from every node (each keeps the reports of the drills it ran, the last 50):
+         *     when, which node, the targets, the status (`running`, `collecting`, `complete`,
+         *     `cancelled`), coverage (followed / (followed + stuck)), and counts per verdict.
+         *     `missingNodes` names nodes that didn't answer.
+         */
+        get: operations["drills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drills/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A drill's report.
+         * @description Per device: the verdict (`followed`, `stuck`, `quiet`, `elsewhere`), how many queries the
+         *     drilled node didn't answer, how many other nodes did, the time to failover, and whether it
+         *     came back to the drilled node within 15 minutes (`returned`) or stayed on the other one.
+         *     Plus queries per node, coverage, and the median and p90 time to failover. A resolver pod
+         *     behind one balancer address measures the balancer (`viaBalancer`, `balancerSwitchMs`).
+         *     Read from the node that ran it; 404 with a hint naming that node when it's unreachable.
+         *     At privacy level 2 and above, counts only.
+         */
+        get: operations["drill_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/exclusions/default": {
         parameters: {
             query?: never;
@@ -1698,6 +1770,52 @@ export interface paths {
          *     deleted in turn. The configuration is checked first (say, a group still using a list).
          */
         delete: operations["delete_list"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/nodes/{id}/drill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The drill running on a node.
+         * @description Its targets, reason, time left, and how many queries (from how many devices) it hasn't
+         *     answered so far. 404 when none runs.
+         */
+        get: operations["drill_active"];
+        put?: never;
+        /**
+         * Start a failover drill on a node.
+         * @description For `forSecs` (15 to 300, default 60) the node stops answering its `targets` (`"all"`,
+         *     `{"clients": [...]}` with addresses, device names, or Kubernetes workloads, or
+         *     `{"group": "iot"}`): UDP queries get no answer and stream connections are closed, the
+         *     nearest thing to a dead node, counted as status `drilled`. It's a maintenance window too
+         *     (not ready, alerts muted, out of elections; on the primary, `handover` hands the role over
+         *     first). The node's infrastructure, cluster nodes, loopback, and excluded devices are always
+         *     answered. Every node records who asks it during the drill; 60 seconds after the end the
+         *     drilled node merges them into a report (`GET /api/v1/drills/{id}`). Refused (409
+         *     `drill_refused`, the reason in the detail) when no other node is ready and answering, the
+         *     node is in maintenance, a drill ran in the cluster in the last 10 minutes, a rollout is
+         *     pinned or baking, or health is `severe`; 409 `drill_active` while one runs; 422
+         *     `drill_targets` for an unknown group, no device seen in the last hour, or a bad length or
+         *     reason. A restart cancels a drill. `?dryRun=true` returns the checks, the baseline, and the
+         *     devices without dropping anything. Not a configuration change: a GitOps-managed cluster
+         *     takes it too. Needs the operator role (agents: the `ops:drill` scope, which no token gets by
+         *     default); audit-logged as `drill.start`.
+         */
+        post: operations["drill_start"];
+        /**
+         * End a node's drill early.
+         * @description The node answers its targets again at once and leaves the maintenance window; the report
+         *     still runs 60 seconds later. 404 when no drill runs there. Needs the operator role (agents:
+         *     `ops:drill`); audit-logged as `drill.end`.
+         */
+        delete: operations["drill_end"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2693,6 +2811,54 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description REQ: CLU-014 — the drill running on a node. */
+        ActiveDrill: {
+            by: string;
+            /** Format: int32 */
+            devicesDropped: number;
+            /**
+             * Format: int64
+             * @description Queries not answered so far, and from how many devices.
+             */
+            dropped: number;
+            id: string;
+            node: string;
+            reason: string;
+            /** Format: int64 */
+            secondsLeft: number;
+            since: string;
+            targets: string;
+            until: string;
+        };
+        /** @description REQ: CLU-014 — one node's share of a device's queries. */
+        AffinityNode: {
+            node: string;
+            /** Format: int64 */
+            queries: number;
+        };
+        /** @description `GET /api/v1/clients/affinity`. */
+        AffinityPage: {
+            /** @description What the view can't tell. */
+            caveat: string;
+            items: components["schemas"]["AffinityRow"][];
+            missingNodes: string[];
+            /** Format: int32 */
+            windowDays: number;
+        };
+        /** @description REQ: CLU-014 — how a device's queries spread over the nodes. */
+        AffinityRow: {
+            client: string;
+            /** @description `mostly <node>` (90 % or more on one node) or `both` / `several`. */
+            label: string;
+            name?: string | null;
+            nodes: components["schemas"]["AffinityNode"][];
+            /** Format: int64 */
+            queries: number;
+            /** @description The node it used most, and its share of the queries. */
+            topNode: string;
+            /** Format: double */
+            topSharePercent: number;
+        };
         /** @description REQ: OBS-010 (T9.6) — the last delivery to a destination. */
         AlertDelivery: {
             destination: string;
@@ -2742,7 +2908,8 @@ export interface components {
             /**
              * @description `config.applied`, `build.started`, `node.restarted`, `lists.refreshed`, `rollout.stage`,
              *     `maintenance.entered`, `maintenance.left`, `blocking.paused`, `blocking.resumed`,
-             *     `cache.flushed`, `upstream.breaker`, or `note`.
+             *     `cache.flushed`, `upstream.breaker`, `drill.started`, `drill.ended` (CLU-014), or
+             *     `note`.
              * @example config.applied
              */
             kind: string;
@@ -3892,7 +4059,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4109,6 +4276,214 @@ export interface components {
             /** Format: int64 */
             expiresUnixSeconds: number;
             name: string;
+        };
+        /**
+         * @description REQ: CLU-014 — `"all"`: every device (the node's infrastructure, cluster nodes, and
+         *     excluded devices are never dropped).
+         * @enum {string}
+         */
+        DrillAll: "all";
+        /** @description REQ: CLU-014 — one precondition and whether it holds. */
+        DrillCheck: {
+            /** @description In one sentence. */
+            detail: string;
+            /** @description `other_node`, `maintenance`, `recent_drill`, `rollout`, `health`, `targets`. */
+            name: string;
+            ok: boolean;
+        };
+        /** @description REQ: CLU-014 — one device in a drill report. */
+        DrillDevice: {
+            /** @description Its address, or a Kubernetes workload's key. */
+            client: string;
+            /**
+             * Format: int32
+             * @description Queries the drilled node didn't answer.
+             */
+            dropped: number;
+            group?: string | null;
+            name?: string | null;
+            /** @description The nodes that answered it during the drill. */
+            nodes?: string[];
+            /**
+             * Format: int32
+             * @description Queries other nodes answered during the drill.
+             */
+            queriesElsewhere: number;
+            /**
+             * @description Whether it asked the drilled node again within 15 minutes after the drill (false:
+             *     it stayed on the other node, "sticky"); absent until checked, and for other verdicts.
+             */
+            returned?: boolean | null;
+            /**
+             * Format: int64
+             * @description First query elsewhere − first unanswered query (`followed` with something dropped).
+             */
+            timeToFailoverMs?: number | null;
+            /**
+             * @description `followed` (asked another node after its first unanswered query), `stuck` (3 or more
+             *     unanswered, nothing elsewhere: no working second server), `quiet` (no queries during
+             *     the drill: unknown), or `elsewhere` (not a target or in the baseline; asked another
+             *     node: informational).
+             */
+            verdict: string;
+        };
+        /** @description REQ: CLU-014 — queries one node answered (or dropped) during a drill. */
+        DrillNodeCount: {
+            /** Format: int32 */
+            devices: number;
+            node: string;
+            /** Format: int64 */
+            queries: number;
+        };
+        /** @description `GET /api/v1/drills`. */
+        DrillPage: {
+            items: components["schemas"]["DrillSummary"][];
+            missingNodes: string[];
+            nextCursor?: string | null;
+        };
+        /** @description REQ: CLU-014 — a full drill report. */
+        DrillReport: components["schemas"]["DrillSummary"] & {
+            /**
+             * Format: int64
+             * @description `viaBalancer`: last unanswered query − start (how long the balancer kept sending to the
+             *     not-ready pod).
+             */
+            balancerSwitchMs?: number | null;
+            /**
+             * Format: int32
+             * @description Devices seen on the node in the hour before the drill.
+             */
+            baseline: number;
+            /**
+             * @description Every device in the baseline, the targets, or seen anywhere during the drill (privacy
+             *     level 2 and above: empty, counts only).
+             */
+            devices: components["schemas"]["DrillDevice"][];
+            /** @description Queries per node during the drill. */
+            nodes: components["schemas"]["DrillNodeCount"][];
+            /**
+             * Format: int64
+             * @description Devices not tracked because a table was full.
+             */
+            overflow: number;
+            /** @description Whether `returned` has been checked (15 minutes after the drill). */
+            returnedChecked: boolean;
+        };
+        /** @description `POST /api/v1/nodes/{id}/drill`. */
+        DrillRequest: {
+            /**
+             * Format: int32
+             * @description How long, in seconds: 15 to 300 (default 60).
+             * @example 60
+             */
+            forSecs?: number | null;
+            /** @description On the primary under automatic failover: hand the role over first (default true). */
+            handover?: boolean | null;
+            /**
+             * @description Why, in a few words (1 to 200 characters, one line).
+             * @example does the Pi's second server work?
+             */
+            reason?: string | null;
+            targets: components["schemas"]["DrillTargets"];
+        };
+        /** @description REQ: CLU-014 — a drill started (or, with `dryRun`, what would happen). */
+        DrillStart: {
+            /**
+             * Format: int32
+             * @description Devices seen on the node in the last hour (the report's baseline).
+             */
+            baseline: number;
+            /** @description Every precondition (on a start, all hold). */
+            checks: components["schemas"]["DrillCheck"][];
+            /** @description On a dry run: the devices it would stop answering (at most 200). */
+            devices?: components["schemas"]["DrillTargetDevice"][];
+            dryRun: boolean;
+            /**
+             * @description As for maintenance: `started`, `unavailable` (the drill runs anyway: DNS is what's
+             *     tested), `declined`, `not_needed`, or `none`.
+             */
+            handover: string;
+            /** @description The drill's ID (empty on a dry run). */
+            id: string;
+            /** @description The node (its pod, site, or ID). */
+            node: string;
+            note?: string | null;
+            /** @description In plain words, what it will do to devices. */
+            preview: string;
+            /** @description When it started and ends (RFC 3339; on a dry run, as if now). */
+            since: string;
+            /**
+             * @description The targets in words.
+             * @example group iot
+             */
+            targets: string;
+            /**
+             * Format: int32
+             * @description Devices seen on the node in the last hour that the drill stops answering.
+             */
+            targetsResolved: number;
+            until: string;
+        };
+        /** @description REQ: CLU-014 — a drill in a list. */
+        DrillSummary: {
+            by: string;
+            /**
+             * Format: double
+             * @description followed / (followed + stuck), in percent; absent when neither.
+             */
+            coveragePercent?: number | null;
+            /** Format: int32 */
+            elsewhere: number;
+            /** @description When it really ended (early with DELETE, or a restart). */
+            ended?: string | null;
+            /** Format: int32 */
+            followed: number;
+            id: string;
+            /** Format: int64 */
+            medianFailoverMs?: number | null;
+            /** @description Nodes whose part is missing (unreachable, or too old to record drills). */
+            missingNodes: string[];
+            /** @description The drilled node. */
+            node: string;
+            /** Format: int64 */
+            p90FailoverMs?: number | null;
+            /** Format: int32 */
+            quiet: number;
+            reason: string;
+            since: string;
+            /**
+             * @description `running`, `collecting` (the 60-second grace and the other nodes' parts),
+             *     `complete`, or `cancelled` (a restart ended it; no report).
+             */
+            status: string;
+            /** Format: int32 */
+            stuck: number;
+            targets: string;
+            until: string;
+            /** @description A resolver pod behind one balancer address: the verdicts measure the balancer. */
+            viaBalancer: boolean;
+        };
+        /** @description REQ: CLU-014 — a device a drill would stop answering (a dry run lists them). */
+        DrillTargetDevice: {
+            /** @description Its address (or a workload's name). */
+            client: string;
+            name?: string | null;
+        };
+        /**
+         * @description REQ: CLU-014 — who a drill stops answering: `"all"`, `{ "clients": [...] }` (addresses,
+         *     device names, or Kubernetes workloads), or `{ "group": "iot" }`.
+         */
+        DrillTargets: components["schemas"]["DrillAll"] | {
+            /**
+             * @example [
+             *       "192.168.2.14",
+             *       "kids-tablet"
+             *     ]
+             */
+            clients: string[];
+        } | {
+            /** @example iot */
+            group: string;
         };
         /** @description REQ: OBS-019 — answers carrying one EDE code. */
         EdeCount: {
@@ -8871,6 +9246,38 @@ export interface operations {
             };
         };
     };
+    client_affinity: {
+        parameters: {
+            query?: {
+                /** @description `1d` to `7d` (default `7d`). */
+                window?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Devices and their nodes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AffinityPage"];
+                };
+            };
+            /** @description A window outside 1d to 7d. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     identities: {
         parameters: {
             query?: never;
@@ -9825,6 +10232,72 @@ export interface operations {
             };
         };
     };
+    drills: {
+        parameters: {
+            query?: {
+                /** @description At most this many (1 to 50, default 20). */
+                limit?: number;
+                /** @description From a previous page's `nextCursor`. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Drills, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrillPage"];
+                };
+            };
+            /** @description A bad cursor or limit. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drill_report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The drill's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The report. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrillReport"];
+                };
+            };
+            /** @description No such drill, or its node is unreachable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     put_exclusions: {
         parameters: {
             query?: {
@@ -10626,6 +11099,154 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drill_active: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `local`, or a node's ID, site, or pod name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The running drill. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveDrill"];
+                };
+            };
+            /** @description No drill runs there (or no such node). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drill_start: {
+        parameters: {
+            query?: {
+                /** @description Only check the preconditions and resolve the targets; nothing is dropped. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description `local`, or a node's ID, site, or pod name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DrillRequest"];
+            };
+        };
+        responses: {
+            /** @description A dry run: the checks, the baseline, and the devices. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrillStart"];
+                };
+            };
+            /** @description The drill started. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrillStart"];
+                };
+            };
+            /** @description No such node (`node_unknown`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A precondition refuses it (`drill_refused`), or one is running (`drill_active`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unusable targets, length, or reason (`drill_targets`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node isn't reachable over the cluster channel (`node_unreachable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    drill_end: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `local`, or a node's ID, site, or pod name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The drill that ended (`until` is now). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrillStart"];
+                };
+            };
+            /** @description No such node, or no drill running there. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node isn't reachable over the cluster channel (`node_unreachable`). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

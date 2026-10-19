@@ -813,12 +813,15 @@ struct RowIn<'a> {
     group: Option<&'a str>,
 }
 
-/// Logged outcomes that went through the decision: rate-limited, malformed, and dropped
-/// queries never reached it. Refused ones are replayed: a query refused for want of an
-/// upstream went through the filter first, and one refused by `allowed_networks` is decided
-/// again by the same step.
+/// Logged outcomes that went through the decision: rate-limited, malformed, dropped, and
+/// drilled (CLU-014) queries never reached it. Refused ones are replayed: a query refused for
+/// want of an upstream went through the filter first, and one refused by `allowed_networks`
+/// is decided again by the same step.
 fn replayed(s: Status) -> bool {
-    !matches!(s, Status::RateLimited | Status::Malformed | Status::Dropped)
+    !matches!(
+        s,
+        Status::RateLimited | Status::Malformed | Status::Dropped | Status::Drilled
+    )
 }
 
 /// A list's text for the side snapshot: inline rules, a local file, the stored download (when

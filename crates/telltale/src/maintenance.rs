@@ -59,6 +59,10 @@ pub(crate) struct Window {
     /// The primary started handing over (resumed after a restart while it's still primary).
     #[serde(default)]
     pub(crate) handover: bool,
+    /// REQ: CLU-014 (ADR-151) — a failover drill's window (its ID): a restart cancels it
+    /// instead of resuming it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) drill: Option<String>,
 }
 
 impl Window {
@@ -100,6 +104,8 @@ pub(crate) struct Maintenance {
     starts: AtomicU64,
     /// Wakes the expiry task when the window changes.
     changed: tokio::sync::Notify,
+    /// REQ: CLU-014 — a drill's window found at start: cancelled, for the drill module to record.
+    cancelled_drill: Mutex<Option<Window>>,
 }
 
 impl Maintenance {
@@ -118,9 +124,21 @@ impl Maintenance {
             cluster,
             starts: AtomicU64::new(0),
             changed: tokio::sync::Notify::new(),
+            cancelled_drill: Mutex::new(None),
         };
         match std::fs::read(&m.path) {
             Ok(bytes) => match serde_json::from_slice::<Window>(&bytes) {
+                // REQ: CLU-014 — a drill is never resumed: ready at once, nothing dropped.
+                Ok(w) if w.drill.is_some() => {
+                    warn!(
+                        drill = w.drill.as_deref().unwrap_or_default(),
+                        "a failover drill was running when the node stopped: cancelled, not resumed"
+                    );
+                    let _ = std::fs::remove_file(&m.path);
+                    *m.cancelled_drill
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(w);
+                }
                 Ok(w) if w.until_ms > now => {
                     info!(
                         until_ms = w.until_ms,
@@ -164,6 +182,14 @@ impl Maintenance {
         self.starts.load(Ordering::Relaxed)
     }
 
+    /// REQ: CLU-014 — the drill window this process cancelled at start, once.
+    pub(crate) fn take_cancelled_drill(&self) -> Option<Window> {
+        self.cancelled_drill
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
     fn apply(&self, w: Option<&Window>, handover: bool) {
         self.readiness.set_maintenance(w.is_some());
         if let Some(c) = &self.cluster {
@@ -185,19 +211,21 @@ impl Maintenance {
             "maintenance started ({}): /readyz answers 503; DNS keeps answering",
             w.reason
         );
-        // REQ: OBS-033 — a change marker.
+        // REQ: OBS-033 — a change marker (a drill leaves its own).
         let until = telltale_api::time::format_us(w.until_ms.saturating_mul(1000));
-        crate::annotations::record(telltale_api::model::Annotation {
-            actor: Some(w.by.clone()),
-            until: Some(until.clone()),
-            reason: Some(w.reason.clone()),
-            href: Some("#/cluster".into()),
-            ..crate::annotations::marker(
-                "maintenance.entered",
-                now_ms(),
-                format!("maintenance until {until}: {}", w.reason),
-            )
-        });
+        if w.drill.is_none() {
+            crate::annotations::record(telltale_api::model::Annotation {
+                actor: Some(w.by.clone()),
+                until: Some(until.clone()),
+                reason: Some(w.reason.clone()),
+                href: Some("#/cluster".into()),
+                ..crate::annotations::marker(
+                    "maintenance.entered",
+                    now_ms(),
+                    format!("maintenance until {until}: {}", w.reason),
+                )
+            });
+        }
         *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Some(w);
         self.starts.fetch_add(1, Ordering::Relaxed);
         self.changed.notify_one();
@@ -220,7 +248,13 @@ impl Maintenance {
                 return Err(e);
             }
         }
-        if let Some(w) = &was {
+        if let Some(w) = &was
+            && w.drill.is_some()
+        {
+            // REQ: CLU-014 — a drill's window: the drill module leaves the marker.
+            self.apply(None, false);
+            info!("drill ended: ready for traffic again");
+        } else if let Some(w) = &was {
             self.apply(None, false);
             info!("maintenance ended: ready for traffic again");
             // REQ: OBS-033 — a change marker.
@@ -290,7 +324,9 @@ pub(crate) fn spawn_expiry(
                 () = src.maintenance.changed.notified() => continue,
                 _ = stop.wait_for(|s| *s) => return,
             }
-            if let Some(w) = src.maintenance.expire(now_ms()) {
+            if let Some(w) = src.maintenance.expire(now_ms())
+                && w.drill.is_none()
+            {
                 info!(reason = %w.reason, "maintenance window ended by itself");
                 if let Some(auth) = src.auth.get() {
                     auth.record(
@@ -417,6 +453,7 @@ pub(crate) fn apply_here(
                 reason,
                 by,
                 handover: step_down,
+                drill: None,
             };
             src.maintenance
                 .start(w.clone())
@@ -619,6 +656,7 @@ mod tests {
             reason: "SD card swap".into(),
             by: "alice".into(),
             handover: false,
+            drill: None,
         }
     }
 

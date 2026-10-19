@@ -25,6 +25,7 @@ pub mod export;
 pub mod prom;
 pub mod recent;
 pub mod ring;
+pub mod seen;
 pub mod topk;
 pub mod workload;
 
@@ -64,12 +65,15 @@ pub enum Status {
     /// REQ: DNS-007 — an expired answer served at once from the cache while it's refreshed in
     /// the background (RFC 8767 with a zero client response timer,
     /// `[cache] stale_answer_client_timeout_ms = 0`): a cache answer, unlike [`Status::Stale`],
-    /// which says the upstreams failed or were slow. Last, so stored values keep their meaning.
+    /// which says the upstreams failed or were slow.
     Refreshed,
+    /// REQ: CLU-014 (ADR-151) — not answered on purpose: the device is a failover drill's
+    /// target on this node. Last, so stored values keep their meaning.
+    Drilled,
 }
 
 impl Status {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Cached,
         Self::Forwarded,
         Self::Stale,
@@ -82,6 +86,7 @@ impl Status {
         Self::ServFail,
         Self::Dropped,
         Self::Refreshed,
+        Self::Drilled,
     ];
     pub const fn label(self) -> &'static str {
         match self {
@@ -97,10 +102,16 @@ impl Status {
             Self::ServFail => "servfail",
             Self::Dropped => "dropped",
             Self::Refreshed => "refreshed",
+            Self::Drilled => "drilled",
         }
     }
     pub fn from_u8(v: u8) -> Option<Self> {
         Self::ALL.get(usize::from(v)).copied()
+    }
+    /// Whether the client got an answer: everything but [`Status::Dropped`] and (CLU-014)
+    /// [`Status::Drilled`]. Unanswered queries have no latency to count.
+    pub const fn answered(self) -> bool {
+        !matches!(self, Self::Dropped | Self::Drilled)
     }
     /// Latency path this status belongs to (the histogram `path` label).
     pub const fn path(self) -> Path {
@@ -276,7 +287,7 @@ impl Metrics {
             s.rcodes[i].fetch_add(1, Ordering::Relaxed);
         }
         s.qtypes[qtype_index(qtype)].fetch_add(1, Ordering::Relaxed);
-        if status != Status::Dropped {
+        if status.answered() {
             let p = status.path() as usize;
             let us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
             let b = BUCKETS_US

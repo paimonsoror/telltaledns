@@ -914,6 +914,10 @@ fn flt_017_analytics_hold_unknown_addresses_briefly() {
     assert_eq!(out, vec![(4, other)], "a known pod never waits");
     assert_eq!(hold.len(), 2);
     out.clear();
+    let local = ipv4(127, 0, 0, 1);
+    hold.offer(Some(&before), rec(6, local), t0, |r| out.push(client(r)));
+    assert_eq!(out, vec![(6, local)], "the node itself never waits");
+    out.clear();
 
     // The watch event arrives: the table changes and everything goes out, the pod keyed.
     let after: Arc<crate::workload::Keys> =

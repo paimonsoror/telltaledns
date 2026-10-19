@@ -12,6 +12,8 @@
   import Icon from '../lib/components/Icon.svelte';
   import Topology, { type Node } from '../lib/components/Topology.svelte';
   import MaintenanceForm from '../lib/components/MaintenanceForm.svelte';
+  import DrillForm from '../lib/components/DrillForm.svelte';
+  import DrillPanel from '../lib/components/DrillPanel.svelte';
   import RolloutPanel from '../lib/components/RolloutPanel.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
@@ -99,6 +101,19 @@
     } finally {
       maintBusy = false;
     }
+  }
+  // REQ: CLU-014 (ADR-151) — a failover drill per node: the form, and the tab with reports. A
+  // drilled node is in maintenance with the drill's reason.
+  let drillFor = $state<string | null>(null);
+  let drillNote = $state<string | null>(null);
+  const isDrill = (m: S['NodeMaintenance'] | null | undefined) => !!m && m.reason.startsWith('failover drill');
+  const drilling = $derived(view?.nodes.some((n) => isDrill(n.maintenance)) ?? false);
+  const drillParam = $derived(new URLSearchParams(location.hash.split('?')[1] ?? '').get('drill'));
+  async function drillStarted(r: S['DrillStart']) {
+    drillFor = null;
+    drillNote = `${r.preview} The report follows about a minute after it ends, under Drills.`;
+    await load();
+    void refreshHealth();
   }
   // This node's own window (standalone too).
   const mine = $derived(view?.enabled ? view.nodes.find((n) => n.thisNode)?.maintenance : info?.maintenance);
@@ -201,6 +216,8 @@
     { id: 'rollouts', label: 'Rollouts', count: stageWord[stage] ?? null, alert: stage === 'pinned' },
     { id: 'events', label: 'Events', count: recentProblems || null, alert: recentProblems > 0 },
     { id: 'compare', label: 'Compare', count: oddNodes ? `${oddNodes} odd` : null, alert: oddNodes > 0 },
+    // REQ: CLU-014 — failover drills.
+    { id: 'drills', label: 'Drills', count: drilling ? 'running' : null },
   ]);
   const tab = $derived(activeTab(tabs));
 
@@ -250,6 +267,7 @@
     </div>
   {/if}
   {#if maintNote}<p class="notice small" data-testid="maintenance-note">{maintNote}</p>{/if}
+  {#if drillNote}<p class="notice small" data-testid="drill-note">{drillNote} <a href="#/cluster?tab=drills">Drills</a></p>{/if}
   <ErrorNote error={maintError} />
 
   {#if view && !view.enabled}
@@ -437,6 +455,9 @@ telltale cluster join tt_join_…</pre>
                         {:else if maintFor !== n.nodeId}
                           <button class="link small" onclick={() => (maintFor = n.nodeId)} data-testid="maintenance-open">Maintenance…</button>
                         {/if}
+                        {#if !n.maintenance && drillFor !== n.nodeId && (view?.nodes.length ?? 0) > 1}
+                          · <button class="link small" onclick={() => (drillFor = n.nodeId)} data-testid="drill-open-form">Drill…</button>
+                        {/if}
                       </div>
                     {/if}
                   </td>
@@ -480,6 +501,18 @@ telltale cluster join tt_join_…</pre>
                         canHandover={canHandover(n)}
                         onclose={() => (maintFor = null)}
                         ondone={(r) => changed(r.note)}
+                      />
+                    </td>
+                  </tr>
+                {/if}
+                {#if drillFor === n.nodeId}
+                  <tr class="maint-row">
+                    <td colspan="6">
+                      <DrillForm
+                        node={apiNode(n)}
+                        label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
+                        onclose={() => (drillFor = null)}
+                        ondone={drillStarted}
                       />
                     </td>
                   </tr>
@@ -559,6 +592,8 @@ telltale cluster join tt_join_…</pre>
       <RolloutPanel nodes={view.nodes} onchanged={load} />
     {:else if tab === 'compare'}
       <NodeCompare data={compare} error={compareError} win={compareWin} onwindow={setCompareWin} />
+    {:else if tab === 'drills'}
+      <DrillPanel open={drillParam} />
     {:else}
       <section class="card">
         <h2>Events</h2>

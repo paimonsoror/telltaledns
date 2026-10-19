@@ -384,6 +384,18 @@ pub struct Member {
     pub probe_failing: bool,
     /// REQ: CLU-013 — while it runs a canary version, the stable `seq` that one would replace.
     pub canary_of: u64,
+    /// REQ: CLU-014 — it understands drills (older nodes: no), and the drill it runs.
+    pub drills: bool,
+    pub drill: Option<DrillMark>,
+}
+
+/// REQ: CLU-014 (ADR-151) — a drill as heartbeats carry it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DrillMark {
+    pub id: String,
+    /// Start and end (Unix ms, the drilled node's clock).
+    pub since_ms: u64,
+    pub until_ms: u64,
 }
 
 /// REQ: CLU-013 — the stable version a node is at: its applied version, or, while it runs a
@@ -461,6 +473,8 @@ pub struct LocalState {
     pub probe_failing: bool,
     /// REQ: CLU-013 — while this node runs a canary version, the stable `seq` it would replace.
     pub canary_of: u64,
+    /// REQ: CLU-014 — the drill this node runs (heartbeats carry it).
+    pub drill: Option<DrillMark>,
 }
 
 /// REQ: CLU-013 (T13.2, ADR-116) — the canary head: a version sent only to these peers (node
@@ -1629,6 +1643,10 @@ impl Cluster {
                     .unwrap_or_default(),
                 probe_failing: l.probe_failing,
                 canary_of: l.canary_of,
+                drills: true,
+                drill_id: l.drill.as_ref().map(|d| d.id.clone()).unwrap_or_default(),
+                drill_since_ms: l.drill.as_ref().map_or(0, |d| d.since_ms),
+                drill_until_ms: l.drill.as_ref().map_or(0, |d| d.until_ms),
             })),
         }
     }
@@ -1716,6 +1734,8 @@ impl Cluster {
                             .unwrap_or_default(),
                         probe_failing: prev.as_ref().is_some_and(|p| p.probe_failing),
                         canary_of: prev.as_ref().map_or(0, |p| p.canary_of),
+                        drills: prev.as_ref().is_some_and(|p| p.drills),
+                        drill: prev.as_ref().and_then(|p| p.drill.clone()),
                     },
                 );
                 drop(members);
@@ -1769,6 +1789,13 @@ impl Cluster {
                         ));
                     }
                     m.maintenance = window;
+                    // REQ: CLU-014 — whether it drills, and the drill it runs (older: none).
+                    m.drills = hb.drills;
+                    m.drill = (!hb.drill_id.is_empty()).then(|| DrillMark {
+                        id: std::mem::take(&mut hb.drill_id),
+                        since_ms: hb.drill_since_ms,
+                        until_ms: hb.drill_until_ms,
+                    });
                     m.rollouts = hb.rollouts;
                     m.sync_error = std::mem::take(&mut hb.sync_error);
                     m.probe_failing = hb.probe_failing;

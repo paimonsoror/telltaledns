@@ -20,6 +20,7 @@ mod ctl;
 mod datadir;
 mod devices;
 mod dnstap;
+mod drill;
 mod explain;
 mod federated;
 mod forward;

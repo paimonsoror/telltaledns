@@ -251,7 +251,7 @@ impl<H: QueryHandler> Worker<H> {
                         b.queue_tx(len, peer, rx.local);
                     }
                     Response::Deferred(fut) => self.defer(fut, peer, rx.local),
-                    Response::Drop => {}
+                    Response::Drop | Response::Close => {}
                 }
             }
             let (sent, failed) = b.flush(fd);
@@ -290,7 +290,7 @@ impl<H: QueryHandler> Worker<H> {
                     };
                 }
                 Response::Deferred(fut) => self.defer(fut, peer, None),
-                Response::Drop => {}
+                Response::Drop | Response::Close => {}
             }
             self.handler.sent();
         }

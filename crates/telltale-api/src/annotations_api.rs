@@ -35,6 +35,9 @@ pub const KINDS: &[&str] = &[
     "cache.flushed",
     "upstream.breaker",
     "note",
+    // REQ: CLU-014 — a failover drill started, and ended (with its report's summary).
+    "drill.started",
+    "drill.ended",
 ];
 
 /// The longest note, in characters.

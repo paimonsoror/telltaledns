@@ -297,6 +297,32 @@ pub fn tools() -> Vec<Tool> {
                 ])
             },
         },
+        // REQ: CLU-014 (T15.2)
+        Tool {
+            name: "drill_report",
+            description: "Read-only. Failover drills and their reports. Without an id: the newest drills from every node (when, which node, targets, status, coverage = followed / (followed + stuck), and counts). With an id: the full report: per device the verdict (followed: another node answered it after its first unanswered query; stuck: 3 or more unanswered and nothing elsewhere, so it has no working second DNS server; quiet: too little traffic to tell; elsewhere: not targeted), the unanswered queries, the time to failover, and whether it came back afterwards (returned) or stayed (sticky); plus queries per node and the median and p90 time to failover. Start a drill with plan_failover_drill. Needs analytics:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "id": {"type": "string", "description": "A drill's ID (default: list the newest)."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Drills listed without an id (default 5)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(match s(a, "id") {
+                    Some(id) => vec![("report".into(), format!("/api/v1/drills/{}", enc(&id)))],
+                    None => vec![(
+                        "drills".into(),
+                        format!(
+                            "/api/v1/drills?limit={}",
+                            a.get("limit")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(5)
+                                .clamp(1, 50)
+                        ),
+                    )],
+                })
+            },
+        },
         // REQ: OBS-025 (T13.3)
         Tool {
             name: "identify_device",
@@ -925,6 +951,41 @@ pub fn write_tools() -> Vec<WriteTool> {
                     body: Some(Value::Object(body)),
                     summary: format!("Put the device {client} in {}", groups.join(", ")),
                     merge: Some(("client", client)),
+                })
+            },
+        },
+        // REQ: CLU-014 (T15.2)
+        WriteTool {
+            name: "plan_failover_drill",
+            description: "Plans a change (nothing changes until apply_plan). A failover drill: for 15 to 300 seconds (default 60) one node stops answering the targets (everyone, a group, or some devices) while the other nodes keep serving, so devices with a working second DNS server switch to it. About a minute after it ends, drill_report says who followed, how fast, and who was stuck. The preview lists every precondition (another node ready and answering, no drill in the last 10 minutes, no rollout baking or pin, health not severe), the baseline (devices that used the node in the last hour), and the devices it would stop answering. Devices without a working second server lose DNS for the drill's length: start with one device for 30 seconds. Needs the ops:drill scope, which no token has by default.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node to drill: local (default), or a node's ID, site, or pod name (cluster_status lists them)."},
+                "forSecs": {"type": "integer", "minimum": 15, "maximum": 300, "description": "How long (default 60)."},
+                "group": {"type": "string", "description": "Drill one group's devices."},
+                "clients": {"type": "array", "items": {"type": "string"}, "description": "Drill these devices (addresses, names, or Kubernetes workloads). With neither group nor clients: everyone."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let node = s(a, "node").unwrap_or_else(|| "local".to_owned());
+                let reason = need(a, "reason")?;
+                let clients = strings(a, "clients");
+                let (targets, who) = match (s(a, "group"), clients.is_empty()) {
+                    (Some(_), false) => return Err("give `group` or `clients`, not both".into()),
+                    (Some(g), true) => (json!({"group": g}), format!("group {g}")),
+                    (None, false) => (json!({"clients": clients}), clients.join(", ")),
+                    (None, true) => (json!("all"), "everyone".to_owned()),
+                };
+                let secs = a.get("forSecs").and_then(Value::as_u64).unwrap_or(60);
+                Ok(Write {
+                    method: "POST",
+                    path: format!("/api/v1/nodes/{}/drill", enc(&node)),
+                    body: Some(json!({"forSecs": secs, "targets": targets, "reason": reason})),
+                    summary: format!("Failover drill on {node} for {secs} s: stop answering {who}"),
+                    merge: None,
                 })
             },
         },
@@ -3000,5 +3061,49 @@ mod flt_017_tests {
         assert_eq!(w.path, "/api/v1/clients/tv");
         assert!(tools().iter().any(|t| t.name == "list_workloads"));
         assert!(tools().iter().any(|t| t.name == "get_workload"));
+    }
+}
+
+#[cfg(test)]
+mod clu_014_tests {
+    use super::*;
+
+    // REQ: CLU-014 (T15.2) — a drill is a plan (destructive: devices without a second server
+    // lose DNS for its length) that POSTs the drill; everyone by default, a group, or devices;
+    // drill_report lists the newest or reads one.
+    #[test]
+    fn clu_014_drill_tools() {
+        let t = write_tools()
+            .into_iter()
+            .find(|t| t.name == "plan_failover_drill")
+            .unwrap();
+        assert!(matches!(t.effect, Effect::Plan) && t.destructive);
+        let w = (t.write)(&json!({"reason": "second server?"})).unwrap();
+        assert_eq!(
+            (w.method, w.path.as_str()),
+            ("POST", "/api/v1/nodes/local/drill")
+        );
+        assert_eq!(
+            w.body,
+            Some(json!({"forSecs": 60, "targets": "all", "reason": "second server?"}))
+        );
+        let w = (t.write)(&json!({"node": "pi", "group": "iot", "forSecs": 30, "reason": "r"}))
+            .unwrap();
+        assert_eq!(w.path, "/api/v1/nodes/pi/drill");
+        assert_eq!(w.body.unwrap()["targets"], json!({"group": "iot"}));
+        assert!((t.write)(&json!({"group": "iot", "clients": ["tv"], "reason": "r"})).is_err());
+        assert!((t.write)(&json!({})).is_err(), "a reason is required");
+        let r = tools()
+            .into_iter()
+            .find(|t| t.name == "drill_report")
+            .unwrap();
+        assert_eq!(
+            (r.calls)(&json!({})).unwrap()[0].1,
+            "/api/v1/drills?limit=5"
+        );
+        assert_eq!(
+            (r.calls)(&json!({"id": "d1-ab"})).unwrap()[0].1,
+            "/api/v1/drills/d1-ab"
+        );
     }
 }

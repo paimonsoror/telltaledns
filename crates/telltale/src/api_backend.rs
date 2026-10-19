@@ -74,6 +74,18 @@ pub(crate) fn workload_spans(src: &Sources, client: &str) -> Option<Vec<([u8; 16
 }
 
 /// The current name of the device at `ip` (v4-mapped), by today's client table.
+/// REQ: CLU-014 — `node` names this node (`local`, its ID, or its label), else `node_unknown`.
+fn local_node(src: &Sources, node: &str) -> Result<(), Problem> {
+    if crate::maintenance::is_local(src, node) {
+        return Ok(());
+    }
+    Err(Problem::new(
+        telltale_api::problem::Code::NodeUnknown,
+        format!("no node `{node}`: this node isn't in a cluster"),
+    )
+    .hint("Use `local` for this node."))
+}
+
 pub(crate) fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
     // REQ: FLT-017 — a workload's analytics key, or a pod address, is named by the workload.
     if telltale_telemetry::workload::is_key(&ip) {
@@ -2137,6 +2149,59 @@ impl Backend for ApiBackend {
         w: telltale_api::MaintenanceWrite,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::MaintenanceResult, Problem>> {
         crate::maintenance::local_backend_call(Arc::clone(&self.src), node, w)
+    }
+
+    // REQ: CLU-014 (ADR-151) — failover drills on this node (a cluster routes them first).
+    fn drill(
+        &self,
+        node: &str,
+        w: telltale_api::DrillWrite,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::DrillStart, Problem>> {
+        let src = Arc::clone(&self.src);
+        if let Err(p) = local_node(&src, node) {
+            return Box::pin(async move { Err(p) });
+        }
+        Box::pin(async move { crate::drill::apply(src, w, None).await })
+    }
+
+    fn drill_active(
+        &self,
+        node: &str,
+    ) -> telltale_api::BoxFuture<Result<Option<telltale_api::model::ActiveDrill>, Problem>> {
+        let r = local_node(&self.src, node).map(|()| crate::drill::active(&self.src));
+        Box::pin(async move { r })
+    }
+
+    fn drills(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::DrillPage, Problem>> {
+        let p = crate::drill::page(crate::drill::list(&self.src), limit, offset, Vec::new());
+        Box::pin(async move { Ok(p) })
+    }
+
+    fn drill_report(
+        &self,
+        id: &str,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::DrillReport, Problem>> {
+        let r = crate::drill::report(&self.src, id).ok_or_else(|| {
+            Problem::not_found(format!("no drill `{id}`"))
+                .hint("List them with GET /api/v1/drills.")
+        });
+        Box::pin(async move { r })
+    }
+
+    fn affinity(
+        &self,
+        days: u32,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::AffinityPage, Problem>> {
+        let own = vec![(
+            crate::maintenance::label(&self.src),
+            crate::drill::seen_rows(&self.src, days),
+        )];
+        let p = crate::drill::affinity_page(days, own, Vec::new());
+        Box::pin(async move { Ok(p) })
     }
 
     // REQ: CLU-013 (T13.2) — rollouts and pins: this node's publisher (the primary), or what

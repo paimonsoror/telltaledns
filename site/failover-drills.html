@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Failover drills — TelltaleDNS</title>
+<meta name="description" content="Does your second DNS server work for every device? A TelltaleDNS failover drill silences one node for chosen devices for a few seconds and reports who switched, how fast, and who was stuck.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="failover-drills">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">High availability</p>
+    <h1>Does your second<br>DNS server work?</h1>
+    <p class="lede">Your router hands out two DNS servers, but a device only uses its second one when the first stops answering. So you find out it doesn't work on the day the first one dies. A <strong>failover drill</strong> finds out now: one node goes quiet for chosen devices for a few seconds, and the report says who switched, how fast, and who was stuck.</p>
+    <div class="cta">
+      <a class="btn primary" href="guide-cluster.html">Build a cluster</a>
+      <a class="btn" href="#how">How it works</a>
+    </div>
+  </div>
+  <figure class="figure">
+    <svg viewBox="0 0 420 260" role="img" width="420" style="max-width:100%;height:auto"><title>A laptop asks the Pi, gets no answer during the drill, and asks the second node one second later; the TV only knows the Pi and is stuck</title>
+      <rect x="12" y="30" width="96" height="34" rx="8" class="svg-box"/><text x="60" y="52" text-anchor="middle" class="svg-mono">laptop</text>
+      <rect x="12" y="180" width="96" height="34" rx="8" class="svg-box"/><text x="60" y="202" text-anchor="middle" class="svg-mono">tv</text>
+      <rect x="282" y="30" width="126" height="34" rx="8" class="svg-box" opacity=".55"/><text x="345" y="52" text-anchor="middle" class="svg-mono">pi (drilled)</text>
+      <rect x="282" y="110" width="126" height="34" rx="8" class="svg-ok" opacity=".85"/><text x="345" y="132" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">second node</text>
+      <path d="M108 44 H282" class="svg-stroke-brand" stroke-width="2" stroke-dasharray="5 5"/><text x="195" y="36" text-anchor="middle" class="svg-sub">no answer</text>
+      <path d="M108 54 L282 122" class="svg-stroke-brand" stroke-width="2"/><text x="190" y="104" text-anchor="middle" class="svg-sub">after 1.1 s: followed</text>
+      <path d="M108 194 L282 56" class="svg-stroke-brand" stroke-width="2" stroke-dasharray="5 5"/><text x="150" y="168" text-anchor="middle" class="svg-sub">only the pi: stuck</text>
+      <text x="210" y="250" text-anchor="middle" class="svg-sub">15 s to 5 min · the other nodes keep serving</text>
+    </svg>
+    <figcaption>What a drill on the Pi shows: the laptop followed, the TV was stuck</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">Why it matters</p>
+  <h2>Two servers you've never tested</h2>
+  <p>Most systems ask their first DNS server until it stops answering, and only then their second. On a healthy network the second server sees nothing from them, so a missing entry, a typo in the router, or a device that only takes one server stays invisible. Watching normal traffic can't tell you; a short, deliberate silence can.</p>
+  <div class="grid">
+    <div class="card"><h3>Who followed, how fast</h3><p>Per device: the queries the drilled node left unanswered, the first query another node answered, and the time between them. Coverage is followed / (followed + stuck), with the median and p90 time to failover.</p></div>
+    <div class="card"><h3>Who was stuck</h3><p>A device that kept asking the silent node and nobody else has no working second server. The report lists them first, with their names and groups, so you know which router setting or device to fix.</p></div>
+    <div class="card"><h3>Who came back</h3><p>Fifteen minutes later the report adds whether each device returned to its first server or stayed on the second. Windows stays for about 15 minutes; that's normal, and worth knowing.</p></div>
+    <div class="card"><h3>Small and safe by default</h3><p>15 seconds to 5 minutes, never longer. Refused when no other node is ready, a drill just ran, a rollout is baking, or health is severe. A restart cancels it. Start with your own laptop.</p></div>
+    <div class="card"><h3>The rest keeps working</h3><p>The node's own probes, its infrastructure, the other cluster nodes, and excluded devices are always answered. The API, the cluster channel, and metrics stay up. It's a maintenance window too, so alerts don't page you.</p></div>
+    <div class="card"><h3>Kubernetes, honestly</h3><p>A resolver pod behind one balancer address measures the balancer, not your devices: they never see a server change. The report says so and how long the Service kept sending to the silent pod.</p></div>
+  </div>
+</section>
+
+<section id="how">
+  <p class="eyebrow">How it works</p>
+  <h2>A maintenance window with a drop</h2>
+  <ol class="steps">
+    <li class="step"><b>Preview</b>: on the Cluster page, a node's <em>Drill…</em>: how long, whom (some devices, a group, everyone), why. The preview runs every check and lists the devices that used the node in the last hour and would go unanswered.</li>
+    <li class="step"><b>The drill</b>: the node tells every other node to start recording, then stops answering its targets: UDP queries get no answer, TCP and DoT connections close, each counted as <code>drilled</code>. It reports not ready, like a node in maintenance.</li>
+    <li class="step"><b>The report</b>: a minute after the end (late switches count), the drilled node gathers what every node saw and works out the verdicts. It's on the Drills tab, in <code>GET /api/v1/drills/{id}</code>, as a marker on the charts, and in the metrics.</li>
+  </ol>
+  <div class="callout"><p>Devices without a working second server lose DNS for the drill's length. Start with one device for 30 seconds, then a group, then everyone. The <a href="guide-cluster.html">cluster guide</a> covers giving devices two servers in the first place.</p></div>
+</section>
+
+<section>
+  <p class="eyebrow">For agents</p>
+  <h2>Planned, approved, reported</h2>
+  <p>An AI agent plans a drill with <code>plan_failover_drill</code>: the preview carries every precondition and the devices, and an operator can approve it in the agent inbox. It needs the <code>ops:drill</code> scope, which no token gets by default. <code>drill_report</code> reads the results. See <a href="agents.html">AI agents</a>.</p>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="kubernetes-workloads.html">← Kubernetes workloads</a>
+    <a class="btn primary" href="guide-cluster.html">Next: build a cluster →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

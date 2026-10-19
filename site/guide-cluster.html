@@ -53,7 +53,7 @@
     <li class="step"><b>Join from the second node.</b> Give an eligible node its own <code>--advertise</code> URL, so it can be reached if it's ever promoted.
 <pre><code>telltale cluster join tt_join_... --site office --advertise https://192.168.3.3:8443</code></pre></li>
     <li class="step"><b>Restart TelltaleDNS on both nodes</b>, then check: <code>telltale cluster status</code>, or the web UI's <b>Cluster</b> page (both nodes up on <b>Nodes</b>; every check passing on <b>Health</b>).</li>
-    <li class="step"><b>Hand out both nodes in DHCP</b> as the first and second DNS server.</li>
+    <li class="step"><b>Hand out both nodes in DHCP</b> as the first and second DNS server. Then check that devices really use the second one: a <a href="failover-drills.html">failover drill</a> (<b>Drill…</b> on a node's row) silences the first for a few seconds and lists who switched and who was stuck.</li>
   </ol>
   <div class="callout">
     <p><b>The cluster port</b> is <code>[cluster] listen</code> (default <code>0.0.0.0:8443</code>). Only the first node's port must be reachable: joining nodes connect out to it, so they can sit behind NAT. If you also serve DoH on 8443, move one of them (<code>telltale config check</code> warns about the clash).</p>

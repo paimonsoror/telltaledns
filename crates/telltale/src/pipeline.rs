@@ -451,6 +451,35 @@ impl FilterState {
 }
 
 /// REQ: FLT-017 — the workload table, loaded only for a query a workload asked.
+/// REQ: CLU-014 — a device's `[[client]]` name and groups as identification sees them from its
+/// address alone (no MAC or client ID): drill targets and reports, off the query path.
+pub(crate) fn name_and_groups(
+    p: &Pipeline,
+    ip: std::net::IpAddr,
+) -> (Option<String>, Vec<Box<str>>) {
+    let st = p.state.load();
+    let c = &st.policy.clients;
+    let ident = c.identify(ip, None, None, &p.neighbors, &p.workloads);
+    (
+        c.client(ident).map(|x| x.name.to_string()),
+        c.group_names(ident).to_vec(),
+    )
+}
+
+/// REQ: CLU-014 — a device's group for a drill report (a workload's from its labels).
+pub(crate) fn group_of(p: &Pipeline, ip: std::net::IpAddr) -> Option<String> {
+    if let std::net::IpAddr::V6(v6) = ip
+        && telltale_telemetry::workload::is_key(&v6.octets())
+    {
+        return p
+            .workloads
+            .snapshot()
+            .by_key(&v6.octets())
+            .and_then(|w| w.group.as_deref().map(str::to_owned));
+    }
+    name_and_groups(p, ip).1.first().map(ToString::to_string)
+}
+
 pub(crate) fn workload_table(
     ident: Identity,
     workloads: &telltale_policy::Workloads,
@@ -536,6 +565,8 @@ pub(crate) struct Pipeline {
     pub(crate) workloads: Arc<telltale_policy::Workloads>,
     /// REQ: FLT-017 — the Kubernetes watcher's (or the peer side's) status and counters.
     pub(crate) kube: Arc<crate::kubernetes::Kube>,
+    /// REQ: CLU-014 — a failover drill's targets on this node (one relaxed load when none).
+    pub(crate) drill: Arc<crate::drill::Gate>,
     /// Blocking paused globally or per group (FLT-009). Kept across reloads.
     pub(crate) pause: Pause,
     /// REQ: FLT-010 (T7.10) — schedules on now (the ticker in `server` updates it).
@@ -628,6 +659,7 @@ impl Pipeline {
             neighbors: Arc::new(Neighbors::default()),
             workloads: Arc::default(),
             kube: Arc::default(),
+            drill: Arc::default(),
             pause: Pause::default(),
             schedules: arc_swap::ArcSwap::from_pointee(ScheduleNow::default()),
             dnstap: std::sync::OnceLock::new(),
@@ -823,6 +855,7 @@ impl Pipeline {
     }
 
     /// The synchronous stage: parse, then answer from cache or defer.
+    #[allow(clippy::too_many_lines)] // the query path in order, one step after another
     fn handle_sync(
         self: &Arc<Self>,
         req: &[u8],
@@ -872,6 +905,27 @@ impl Pipeline {
             .first()
             .copied()
             .unwrap_or(0);
+        // REQ: CLU-014 (ADR-151) — a failover drill's target gets no answer (after
+        // identification, so groups and names work; before rate limiting). One relaxed load
+        // when no drill runs.
+        if let Some(t) = self.drill.active() {
+            let workloads = workload_table(ident, &self.workloads);
+            let workload = workloads
+                .as_ref()
+                .and_then(|w| w.get(who.peer))
+                .map(|h| &*h.workload.text);
+            let name = st.policy.clients.client(ident).map(|c| &*c.name);
+            if t.drops(
+                who.peer,
+                name,
+                workload,
+                st.policy.clients.group_names(ident),
+            ) {
+                self.drill.count();
+                oc.status = Status::Drilled;
+                return Response::Close;
+            }
+        }
         let special = match self.pre_checks(&q, meta, out, start, oc) {
             Ok(special) => special,
             Err(early) => return early,
@@ -1446,7 +1500,7 @@ impl Pipeline {
                     Some(o)
                 }))
             }
-            Response::Drop => Response::Drop,
+            r @ (Response::Drop | Response::Close) => r,
         }
     }
 
@@ -2666,7 +2720,7 @@ impl QueryHandler for Handler {
                     Duration::ZERO,
                 );
             }
-            Response::Drop => {
+            Response::Drop | Response::Close => {
                 self.0.metrics.record(
                     proto(meta.transport),
                     oc.status,
@@ -4306,7 +4360,7 @@ groups = ["kids"]
             match Handler(Arc::clone(&p)).handle(&query(name, rtype::PTR, true), &meta, &mut out) {
                 Response::Ready(len) => (Some(summarize(&out[..len]).unwrap().rcode), None),
                 Response::Deferred(f) => (None, Some(f)),
-                Response::Drop => (None, None),
+                Response::Drop | Response::Close => (None, None),
             }
         };
         // The LAN's reverse zone: to the router.
@@ -4358,7 +4412,7 @@ groups = ["kids"]
             match Handler(Arc::clone(p)).handle(&req, meta, &mut out) {
                 Response::Ready(len) => (true, out[..len].to_vec()),
                 Response::Deferred(f) => (false, f.await.unwrap_or_default()),
-                Response::Drop => (false, Vec::new()),
+                Response::Drop | Response::Close => (false, Vec::new()),
             }
         }
         // EDE (option 15), two bytes long: info code 3 (Stale Answer), no text.

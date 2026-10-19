@@ -44,6 +44,8 @@ pub(crate) struct Sources {
     pub(crate) readiness: Arc<crate::readiness::Readiness>,
     /// REQ: OPS-010 — this node's maintenance window.
     pub(crate) maintenance: Arc<crate::maintenance::Maintenance>,
+    /// REQ: CLU-014 — this node's failover drills.
+    pub(crate) drills: Arc<crate::drill::Drills>,
     /// REQ: OBS-025 — what kind of device each address is.
     pub(crate) identify: Arc<crate::identify::Identifier>,
     /// REQ: CLU-013 — the operator's rollout and pin commands for the publish loop, and what
@@ -699,6 +701,8 @@ pub(crate) fn render(src: &Sources) -> String {
     src.identify.render(&mut w);
     // REQ: FLT-017 — the workload table's size, age, and the watcher's errors.
     src.pipeline.kube.render(&mut w, crate::kubernetes::now_s());
+    // REQ: CLU-014 — drills: running, dropped, and the last report's numbers.
+    crate::drill::render(src, &mut w);
     render_slo(&mut w, &src.config.load().slo);
     render_probes(&mut w, &src.probes);
     render_filter_index(src, &mut w);
@@ -1926,6 +1930,20 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn sources() -> Sources {
+        let dir = std::env::temp_dir().join(format!(
+            "telltale-http-{}-{}",
+            std::process::id(),
+            crate::maintenance::now_ms()
+        ));
+        let mut s = sources_in(&dir);
+        // Most tests don't care where state goes; keep the default configuration they expect.
+        s.config = ArcSwap::from_pointee(telltale_config::Config::default());
+        s
+    }
+
+    /// REQ: CLU-014 — sources whose data directory (and configuration's) is `dir`: a second call
+    /// with the same directory is the node after a restart.
+    pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         let metrics = Arc::new(Metrics::new(2));
         metrics.record(
             Proto::Udp,
@@ -1936,21 +1954,24 @@ pub(crate) mod tests {
         );
         let cache = Arc::new(Cache::new(CachePolicy::default()));
         let readiness = Arc::new(crate::readiness::Readiness::ready_now());
-        let dir = std::env::temp_dir().join(format!(
-            "telltale-http-{}-{}",
-            std::process::id(),
-            crate::maintenance::now_ms()
-        ));
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::create_dir_all(dir);
+        let mut cfg = telltale_config::Config::default();
+        if let Some(d) = dir
+            .to_str()
+            .and_then(|d| telltale_config::SafeString::new(d).ok())
+        {
+            cfg.node.data_dir = d;
+        }
         Sources {
-            identify: Arc::new(crate::identify::Identifier::open(&dir)),
+            identify: Arc::new(crate::identify::Identifier::open(dir)),
             rollout: Arc::default(),
             maintenance: Arc::new(crate::maintenance::Maintenance::open(
-                &dir,
+                dir,
                 Arc::clone(&readiness),
                 None,
                 0,
             )),
+            drills: Arc::default(),
             readiness,
             metrics,
             cache: Arc::clone(&cache),
@@ -1967,7 +1988,7 @@ pub(crate) mod tests {
             started: Instant::now(),
             lists: ArcSwapOption::empty(),
             qlog: None,
-            config: ArcSwap::from_pointee(telltale_config::Config::default()),
+            config: ArcSwap::from_pointee(cfg),
             file_config: ArcSwap::from_pointee(telltale_config::Config::default()),
             config_files: Vec::new(),
             update: Arc::new(std::sync::Mutex::new(crate::updates::initial(false))),
@@ -2066,6 +2087,7 @@ pub(crate) mod tests {
                 reason: "SD card swap".into(),
                 by: "alice".into(),
                 handover: false,
+                drill: None,
             })
             .unwrap();
         assert_eq!(

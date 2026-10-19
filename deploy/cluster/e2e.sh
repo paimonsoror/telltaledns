@@ -206,7 +206,12 @@ PY
 q() { python3 "$E/q.py" one "$@"; }
 
 "$B" cluster init --name e2e --advertise https://127.0.0.1:28441 -c "$E/p.toml" >/dev/null
-TELLTALE_KUBERNETES_FIXTURE="$E/k8s.json" "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
+# REQ: CLU-014 — the drill hooks: no 10-minute gap between drills, the "came back" check after
+# 15 s instead of 15 minutes, missing parts retried for 10 s instead of 5 minutes, and the health
+# check ignored (these nodes have no working upstream, so their health is severe).
+TELLTALE_KUBERNETES_FIXTURE="$E/k8s.json" TELLTALE_DRILL_GAP_SECS=0 TELLTALE_DRILL_RETURN_SECS=15 \
+  TELLTALE_DRILL_RETRY_SECS=10 TELLTALE_DRILL_IGNORE_HEALTH=1 \
+  "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 T=$("$B" cluster token create --ttl 10m --eligible -c "$E/p.toml" 2>/dev/null)
 # Retries until the primary's cluster port is up (a loaded machine can take longer to start).
@@ -317,7 +322,14 @@ for s in site:r node:r; do
   [ "$(get "/api/v1/queries?name=fed1.r.test&scope=$s" | field 'len(d["items"])')" -ge 1 ] \
     || fail "scope=$s missed the replica's query"
 done
-site_r=$(get '/api/v1/stats/summary?scope=site:r' | field 'd["queries"]')
+# The replica restarted above: its own totals start over, and with Kubernetes on (FLT-017) its
+# analytics take a query from an address no workload holds up to 2 s late.
+for _ in $(seq 20); do
+  site_r=$(get '/api/v1/stats/summary?scope=site:r' | field 'd["queries"]')
+  [ "$site_r" -gt 0 ] && break
+  python3 "$E/q.py" one 25302 a.p.test >/dev/null 2>&1 || true
+  sleep 0.5
+done
 { [ "$site_r" -gt 0 ] && [ "$site_r" -lt "$both" ]; } || fail "site:r totals ($site_r) aren't a part of the cluster's ($both)"
 code=$(curl -s -o /dev/null -w '%{http_code}' -b "$E/jar" "$API/api/v1/stats/summary?scope=site:nowhere")
 [ "$code" = 400 ] || fail "an unknown site answered $code"
@@ -619,6 +631,136 @@ code=$(curl -s -o "$E/m.json" -w '%{http_code}' -b "$E/jar" -X POST -H "x-csrf-t
 code=$(mreq POST nowhere '{"forSecs":600,"reason":"x"}')
 [ "$code" = 404 ] || fail "an unknown node answered $code"
 echo "ok"
+
+echo "== failover drill on the primary: who followed, who was stuck (CLU-014)"
+# Stub resolvers like a device's: each second ask the servers in order, 1 s timeout each.
+cat > "$E/stub.py" <<'PY'
+import json, random, socket, struct, sys, time
+out, src, dur, every = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
+ports = [int(p) for p in sys.argv[5:]]
+name = b'\x01a\x01p\x04test\x00'
+end = time.time() + dur
+with open(out, 'w') as log:
+    while time.time() < end:
+        t0 = time.time()
+        for port in ports:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind((src, 0)); s.settimeout(1.0)
+            q = struct.pack('>HHHHHH', random.randrange(65536), 0x0100, 1, 0, 0, 0) + name + struct.pack('>HH', 1, 1)
+            s.sendto(q, ('127.0.0.1', port))
+            try:
+                s.recvfrom(4096)
+                log.write(json.dumps({"t": time.time(), "port": port}) + "\n"); log.flush()
+                break
+            except socket.timeout:
+                pass
+            finally:
+                s.close()
+        time.sleep(max(0.0, every - (time.time() - t0)))
+PY
+dreq() { # method node [json] [query] -> HTTP status; the body in d.json
+  curl -s -o "$E/d.json" -w '%{http_code}' --max-time 20 -b "$E/jar" -X "$1" -H "x-csrf-token: $PCSRF" \
+    -H 'content-type: application/json' ${3:+-d "$3"} "$API/api/v1/nodes/$2/drill${4:-}"
+}
+# The replica must have answered something (a drill with nobody to fail over to is refused).
+for i in 1 2 3; do python3 "$E/q.py" one 25302 a.p.test >/dev/null 2>&1 || true; done
+# A: both servers, the primary first. B: the primary only.
+python3 "$E/stub.py" "$E/stubA.jsonl" 127.0.0.31 75 1 25301 25302 & SA=$!
+python3 "$E/stub.py" "$E/stubB.jsonl" 127.0.0.32 75 1 25301 & SB=$!
+sleep 4
+TARGETS='{"clients":["127.0.0.31","127.0.0.32"]}'
+for _ in $(seq 30); do
+  code=$(dreq POST local "{\"forSecs\":20,\"targets\":$TARGETS,\"reason\":\"e2e drill\"}" '?dryRun=true')
+  [ "$code" = 200 ] && python3 -c "import json,sys; d=json.load(open('$E/d.json')); sys.exit(0 if all(c['ok'] for c in d['checks']) else 1)" && break
+  sleep 1
+done
+python3 - "$E/d.json" <<'PY' || fail "the dry run: $(cat "$E/d.json")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["dryRun"] and d["id"] == "", d
+assert d["targetsResolved"] == 2, d["targetsResolved"]
+assert all(c["ok"] for c in d["checks"]), d["checks"]
+assert {x["client"] for x in d["devices"]} == {"127.0.0.31", "127.0.0.32"}, d["devices"]
+PY
+code=$(dreq POST local "{\"forSecs\":20,\"targets\":$TARGETS,\"reason\":\"e2e drill\"}")
+[ "$code" = 201 ] || fail "starting the drill answered $code: $(cat "$E/d.json")"
+DID=$(field 'd["id"]' < "$E/d.json")
+code=$(dreq POST local "{\"forSecs\":20,\"targets\":$TARGETS,\"reason\":\"twice\"}")
+[ "$code" = 409 ] && grep -q drill_active "$E/d.json" || fail "a second start answered $code: $(cat "$E/d.json")"
+sleep 5
+[ "$(readyz 29001)" = 503 ] || fail "the drilled primary still reports ready"
+get '/api/v1/nodes/local/drill' > "$E/active.json" || fail "no running drill listed"
+python3 -c "import json,sys; d=json.load(open('$E/active.json')); sys.exit(0 if d['dropped'] >= 2 and d['devicesDropped'] == 2 else 1)" \
+  || fail "the running drill hasn't dropped both stubs: $(cat "$E/active.json")"
+# The report: 20 s of drill, 60 s of grace, then the parts are merged.
+for _ in $(seq 150); do
+  get "/api/v1/drills/$DID" > "$E/report.json" 2>/dev/null && grep -q '"status":"complete"' "$E/report.json" && break
+  sleep 1
+done
+python3 - "$E/report.json" <<'PY' || fail "the drill report: $(cat "$E/report.json")"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["status"] == "complete", r["status"]
+dev = {d["client"]: d for d in r["devices"]}
+a, b = dev["127.0.0.31"], dev["127.0.0.32"]
+assert a["verdict"] == "followed", a
+assert 900 <= a["timeToFailoverMs"] <= 3000, a["timeToFailoverMs"]
+assert a["nodes"] == ["r"], a["nodes"]
+assert b["verdict"] == "stuck" and b["dropped"] >= 3, b
+assert r["coveragePercent"] == 50.0, r["coveragePercent"]
+assert r["missingNodes"] == [], r["missingNodes"]
+labels = {n["node"] for n in r["nodes"]}
+assert len(labels) == 2 and "r" in labels, r["nodes"]
+print(f"ok: A followed in {a['timeToFailoverMs']} ms, B stuck after {b['dropped']} unanswered, coverage 50 %")
+PY
+[ "$(readyz 29001)" = 200 ] || fail "the primary isn't ready after the drill"
+dannok() { get "/api/v1/annotations?from=-1h&kinds=$1" > "$E/dann.json" && grep -q "\"$1\"" "$E/dann.json"; }
+dannok drill.started || fail "no drill.started marker"
+dannok drill.ended || fail "no drill.ended marker"
+curl -s http://127.0.0.1:29001/metrics > "$E/dm.txt"
+grep -q '^telltale_drill_last_coverage_percent 50' "$E/dm.txt" || fail "the coverage metric: $(grep drill "$E/dm.txt")"
+grep -q '^telltale_drills_total{result="completed"} 1' "$E/dm.txt" || fail "the drills counter: $(grep drill "$E/dm.txt")"
+# Listed from the replica, with every node's answer.
+curl -sf -b "$E/rjar" "$RAPI/api/v1/drills" > "$E/rdrills.json" || fail "the replica can't list drills"
+python3 - "$E/rdrills.json" "$DID" <<'PY' || fail "drills listed from the replica: $(cat "$E/rdrills.json")"
+import json, sys
+p = json.load(open(sys.argv[1]))
+assert [d["id"] for d in p["items"]][:1] == [sys.argv[2]], p["items"]
+assert p["missingNodes"] == [], p["missingNodes"]
+PY
+# AC 5 — A asked the primary again after the drill: `returned` (checked 15 s after, test hook).
+for _ in $(seq 40); do
+  get "/api/v1/drills/$DID" > "$E/report.json" && grep -q '"returnedChecked":true' "$E/report.json" && break
+  sleep 1
+done
+python3 -c "import json,sys; r=json.load(open('$E/report.json')); a=[d for d in r['devices'] if d['client']=='127.0.0.31'][0]; sys.exit(0 if r['returnedChecked'] and a.get('returned') is True else 1)" \
+  || fail "A didn't come back as returned: $(cat "$E/report.json")"
+wait "$SA" "$SB" 2>/dev/null || true
+echo "ok: report merged from both nodes, listed from the replica, A returned"
+
+echo "== a drill whose replica stops before the grace ends: retried, then listed missing"
+python3 "$E/stub.py" "$E/stubC.jsonl" 127.0.0.31 45 1 25301 25302 & SC=$!
+# The replica's heartbeat has to show it answered something in the last minute.
+for _ in $(seq 30); do
+  python3 "$E/q.py" one 25302 a.p.test >/dev/null 2>&1 || true
+  code=$(dreq POST local '{"forSecs":15,"targets":"all","reason":"e2e drill 2"}')
+  [ "$code" = 201 ] && break
+  sleep 1
+done
+[ "$code" = 201 ] || fail "the second drill answered $code: $(cat "$E/d.json")"
+DID2=$(field 'd["id"]' < "$E/d.json")
+sleep 18
+kill -STOP "$R_PID"
+for _ in $(seq 120); do
+  get "/api/v1/drills/$DID2" > "$E/report2.json" 2>/dev/null && grep -q '"status":"complete"' "$E/report2.json" && break
+  sleep 1
+done
+kill -CONT "$R_PID"
+python3 -c "import json,sys; r=json.load(open('$E/report2.json')); sys.exit(0 if r['status']=='complete' and r['missingNodes']==['r'] else 1)" \
+  || fail "the second report doesn't list the stopped replica as missing: $(cat "$E/report2.json")"
+wait "$SC" 2>/dev/null || true
+for _ in $(seq 60); do [ "$(readyz 29002)" = 200 ] && break; sleep 0.5; done
+echo "ok: the stopped replica is listed missing"
 
 # The cluster's settings travel too: a new authority on the primary reaches the replica.
 "$B" cluster set-authority gitops -c "$E/p.toml" >/dev/null

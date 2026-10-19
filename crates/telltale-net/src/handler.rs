@@ -87,6 +87,10 @@ pub enum Response {
     Deferred(Deferred),
     /// Send nothing.
     Drop,
+    /// REQ: CLU-014 (ADR-151) — send nothing and close the connection, like a dead server:
+    /// TCP and DoT close it; UDP, DoH, and DoQ treat it as [`Response::Drop`] (closing a
+    /// multiplexed HTTP/2 or QUIC connection would cut off other queries on it).
+    Close,
 }
 
 impl std::fmt::Debug for Response {
@@ -95,6 +99,7 @@ impl std::fmt::Debug for Response {
             Self::Ready(n) => write!(f, "Ready({n})"),
             Self::Deferred(_) => f.write_str("Deferred(..)"),
             Self::Drop => f.write_str("Drop"),
+            Self::Close => f.write_str("Close"),
         }
     }
 }

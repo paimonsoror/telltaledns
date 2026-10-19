@@ -1938,6 +1938,49 @@
         }
       }
     },
+    "/api/v1/clients/affinity": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Which servers each device uses.",
+        "description": "Per device, its queries on each node over the window and the share on its most-used one\n(`mostly pi`, `both`). A device that has only used one server may still have a second one\nconfigured: most systems use their first server until it stops answering. Run a drill to\nfind out. No finding, no alert, no health reason. Federated over every node's seen table.",
+        "operationId": "client_affinity",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "description": "`1d` to `7d` (default `7d`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Devices and their nodes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AffinityPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A window outside 1d to 7d.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/identities": {
       "get": {
         "tags": [
@@ -3195,6 +3238,102 @@
         }
       }
     },
+    "/api/v1/drills": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "List failover drills.",
+        "description": "Newest first, from every node (each keeps the reports of the drills it ran, the last 50):\nwhen, which node, the targets, the status (`running`, `collecting`, `complete`,\n`cancelled`), coverage (followed / (followed + stuck)), and counts per verdict.\n`missingNodes` names nodes that didn't answer.",
+        "operationId": "drills",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many (1 to 50, default 20).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "From a previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Drills, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrillPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad cursor or limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/drills/{id}": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "A drill's report.",
+        "description": "Per device: the verdict (`followed`, `stuck`, `quiet`, `elsewhere`), how many queries the\ndrilled node didn't answer, how many other nodes did, the time to failover, and whether it\ncame back to the drilled node within 15 minutes (`returned`) or stayed on the other one.\nPlus queries per node, coverage, and the median and p90 time to failover. A resolver pod\nbehind one balancer address measures the balancer (`viaBalancer`, `balancerSwitchMs`).\nRead from the node that ran it; 404 with a hint naming that node when it's unreachable.\nAt privacy level 2 and above, counts only.",
+        "operationId": "drill_report",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The drill's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrillReport"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such drill, or its node is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/exclusions/default": {
       "put": {
         "tags": [
@@ -4321,6 +4460,200 @@
           },
           "422": {
             "description": "Something still uses it: problem+json says what.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/nodes/{id}/drill": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The drill running on a node.",
+        "description": "Its targets, reason, time left, and how many queries (from how many devices) it hasn't\nanswered so far. 404 when none runs.",
+        "operationId": "drill_active",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`local`, or a node's ID, site, or pod name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The running drill.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveDrill"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No drill runs there (or no such node).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Start a failover drill on a node.",
+        "description": "For `forSecs` (15 to 300, default 60) the node stops answering its `targets` (`\"all\"`,\n`{\"clients\": [...]}` with addresses, device names, or Kubernetes workloads, or\n`{\"group\": \"iot\"}`): UDP queries get no answer and stream connections are closed, the\nnearest thing to a dead node, counted as status `drilled`. It's a maintenance window too\n(not ready, alerts muted, out of elections; on the primary, `handover` hands the role over\nfirst). The node's infrastructure, cluster nodes, loopback, and excluded devices are always\nanswered. Every node records who asks it during the drill; 60 seconds after the end the\ndrilled node merges them into a report (`GET /api/v1/drills/{id}`). Refused (409\n`drill_refused`, the reason in the detail) when no other node is ready and answering, the\nnode is in maintenance, a drill ran in the cluster in the last 10 minutes, a rollout is\npinned or baking, or health is `severe`; 409 `drill_active` while one runs; 422\n`drill_targets` for an unknown group, no device seen in the last hour, or a bad length or\nreason. A restart cancels a drill. `?dryRun=true` returns the checks, the baseline, and the\ndevices without dropping anything. Not a configuration change: a GitOps-managed cluster\ntakes it too. Needs the operator role (agents: the `ops:drill` scope, which no token gets by\ndefault); audit-logged as `drill.start`.",
+        "operationId": "drill_start",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`local`, or a node's ID, site, or pod name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Only check the preconditions and resolve the targets; nothing is dropped.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DrillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A dry run: the checks, the baseline, and the devices.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrillStart"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The drill started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrillStart"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such node (`node_unknown`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A precondition refuses it (`drill_refused`), or one is running (`drill_active`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unusable targets, length, or reason (`drill_targets`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node isn't reachable over the cluster channel (`node_unreachable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "system"
+        ],
+        "summary": "End a node's drill early.",
+        "description": "The node answers its targets again at once and leaves the maintenance window; the report\nstill runs 60 seconds later. 404 when no drill runs there. Needs the operator role (agents:\n`ops:drill`); audit-logged as `drill.end`.",
+        "operationId": "drill_end",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`local`, or a node's ID, site, or pod name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The drill that ended (`until` is now).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrillStart"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such node, or no drill running there.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node isn't reachable over the cluster channel (`node_unreachable`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -7515,6 +7848,158 @@
   },
   "components": {
     "schemas": {
+      "ActiveDrill": {
+        "type": "object",
+        "description": "REQ: CLU-014 — the drill running on a node.",
+        "required": [
+          "id",
+          "node",
+          "since",
+          "until",
+          "secondsLeft",
+          "targets",
+          "reason",
+          "by",
+          "dropped",
+          "devicesDropped"
+        ],
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "devicesDropped": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queries not answered so far, and from how many devices.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "secondsLeft": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "since": {
+            "type": "string"
+          },
+          "targets": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          }
+        }
+      },
+      "AffinityNode": {
+        "type": "object",
+        "description": "REQ: CLU-014 — one node's share of a device's queries.",
+        "required": [
+          "node",
+          "queries"
+        ],
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "queries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AffinityPage": {
+        "type": "object",
+        "description": "`GET /api/v1/clients/affinity`.",
+        "required": [
+          "windowDays",
+          "items",
+          "missingNodes",
+          "caveat"
+        ],
+        "properties": {
+          "caveat": {
+            "type": "string",
+            "description": "What the view can't tell."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AffinityRow"
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "windowDays": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AffinityRow": {
+        "type": "object",
+        "description": "REQ: CLU-014 — how a device's queries spread over the nodes.",
+        "required": [
+          "client",
+          "queries",
+          "nodes",
+          "topNode",
+          "topSharePercent",
+          "label"
+        ],
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "`mostly <node>` (90 % or more on one node) or `both` / `several`."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AffinityNode"
+            }
+          },
+          "queries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "topNode": {
+            "type": "string",
+            "description": "The node it used most, and its share of the queries."
+          },
+          "topSharePercent": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
       "AlertDelivery": {
         "type": "object",
         "description": "REQ: OBS-010 (T9.6) — the last delivery to a destination.",
@@ -7639,7 +8124,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`config.applied`, `build.started`, `node.restarted`, `lists.refreshed`, `rollout.stage`,\n`maintenance.entered`, `maintenance.left`, `blocking.paused`, `blocking.resumed`,\n`cache.flushed`, `upstream.breaker`, or `note`.",
+            "description": "`config.applied`, `build.started`, `node.restarted`, `lists.refreshed`, `rollout.stage`,\n`maintenance.entered`, `maintenance.left`, `blocking.paused`, `blocking.resumed`,\n`cache.flushed`, `upstream.breaker`, `drill.started`, `drill.ended` (CLU-014), or\n`note`.",
             "example": "config.applied"
           },
           "lists": {
@@ -10349,7 +10834,10 @@
           "method_not_allowed",
           "heatmap_window",
           "privacy_level",
-          "kubernetes_disabled"
+          "kubernetes_disabled",
+          "drill_refused",
+          "drill_active",
+          "drill_targets"
         ]
       },
       "ConfigChange": {
@@ -10913,6 +11401,500 @@
             "type": "string"
           }
         }
+      },
+      "DrillAll": {
+        "type": "string",
+        "description": "REQ: CLU-014 — `\"all\"`: every device (the node's infrastructure, cluster nodes, and\nexcluded devices are never dropped).",
+        "enum": [
+          "all"
+        ]
+      },
+      "DrillCheck": {
+        "type": "object",
+        "description": "REQ: CLU-014 — one precondition and whether it holds.",
+        "required": [
+          "name",
+          "ok",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "In one sentence."
+          },
+          "name": {
+            "type": "string",
+            "description": "`other_node`, `maintenance`, `recent_drill`, `rollout`, `health`, `targets`."
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DrillDevice": {
+        "type": "object",
+        "description": "REQ: CLU-014 — one device in a drill report.",
+        "required": [
+          "client",
+          "verdict",
+          "dropped",
+          "queriesElsewhere"
+        ],
+        "properties": {
+          "client": {
+            "type": "string",
+            "description": "Its address, or a Kubernetes workload's key."
+          },
+          "dropped": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Queries the drilled node didn't answer.",
+            "minimum": 0
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The nodes that answered it during the drill."
+          },
+          "queriesElsewhere": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Queries other nodes answered during the drill.",
+            "minimum": 0
+          },
+          "returned": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether it asked the drilled node again within 15 minutes after the drill (false:\nit stayed on the other node, \"sticky\"); absent until checked, and for other verdicts."
+          },
+          "timeToFailoverMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "First query elsewhere − first unanswered query (`followed` with something dropped).",
+            "minimum": 0
+          },
+          "verdict": {
+            "type": "string",
+            "description": "`followed` (asked another node after its first unanswered query), `stuck` (3 or more\nunanswered, nothing elsewhere: no working second server), `quiet` (no queries during\nthe drill: unknown), or `elsewhere` (not a target or in the baseline; asked another\nnode: informational)."
+          }
+        }
+      },
+      "DrillNodeCount": {
+        "type": "object",
+        "description": "REQ: CLU-014 — queries one node answered (or dropped) during a drill.",
+        "required": [
+          "node",
+          "queries",
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "node": {
+            "type": "string"
+          },
+          "queries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DrillPage": {
+        "type": "object",
+        "description": "`GET /api/v1/drills`.",
+        "required": [
+          "items",
+          "missingNodes"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DrillSummary"
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DrillReport": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DrillSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "baseline",
+              "devices",
+              "nodes",
+              "overflow",
+              "returnedChecked"
+            ],
+            "properties": {
+              "balancerSwitchMs": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "`viaBalancer`: last unanswered query − start (how long the balancer kept sending to the\nnot-ready pod).",
+                "minimum": 0
+              },
+              "baseline": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Devices seen on the node in the hour before the drill.",
+                "minimum": 0
+              },
+              "devices": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DrillDevice"
+                },
+                "description": "Every device in the baseline, the targets, or seen anywhere during the drill (privacy\nlevel 2 and above: empty, counts only)."
+              },
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DrillNodeCount"
+                },
+                "description": "Queries per node during the drill."
+              },
+              "overflow": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Devices not tracked because a table was full.",
+                "minimum": 0
+              },
+              "returnedChecked": {
+                "type": "boolean",
+                "description": "Whether `returned` has been checked (15 minutes after the drill)."
+              }
+            }
+          }
+        ],
+        "description": "REQ: CLU-014 — a full drill report."
+      },
+      "DrillRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/nodes/{id}/drill`.",
+        "required": [
+          "targets"
+        ],
+        "properties": {
+          "forSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How long, in seconds: 15 to 300 (default 60).",
+            "example": 60,
+            "minimum": 0
+          },
+          "handover": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On the primary under automatic failover: hand the role over first (default true)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, in a few words (1 to 200 characters, one line).",
+            "example": "does the Pi's second server work?"
+          },
+          "targets": {
+            "$ref": "#/components/schemas/DrillTargets"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DrillStart": {
+        "type": "object",
+        "description": "REQ: CLU-014 — a drill started (or, with `dryRun`, what would happen).",
+        "required": [
+          "id",
+          "node",
+          "dryRun",
+          "since",
+          "until",
+          "targets",
+          "targetsResolved",
+          "baseline",
+          "checks",
+          "handover",
+          "preview"
+        ],
+        "properties": {
+          "baseline": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Devices seen on the node in the last hour (the report's baseline).",
+            "minimum": 0
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DrillCheck"
+            },
+            "description": "Every precondition (on a start, all hold)."
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DrillTargetDevice"
+            },
+            "description": "On a dry run: the devices it would stop answering (at most 200)."
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "handover": {
+            "type": "string",
+            "description": "As for maintenance: `started`, `unavailable` (the drill runs anyway: DNS is what's\ntested), `declined`, `not_needed`, or `none`."
+          },
+          "id": {
+            "type": "string",
+            "description": "The drill's ID (empty on a dry run)."
+          },
+          "node": {
+            "type": "string",
+            "description": "The node (its pod, site, or ID)."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preview": {
+            "type": "string",
+            "description": "In plain words, what it will do to devices."
+          },
+          "since": {
+            "type": "string",
+            "description": "When it started and ends (RFC 3339; on a dry run, as if now)."
+          },
+          "targets": {
+            "type": "string",
+            "description": "The targets in words.",
+            "example": "group iot"
+          },
+          "targetsResolved": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Devices seen on the node in the last hour that the drill stops answering.",
+            "minimum": 0
+          },
+          "until": {
+            "type": "string"
+          }
+        }
+      },
+      "DrillSummary": {
+        "type": "object",
+        "description": "REQ: CLU-014 — a drill in a list.",
+        "required": [
+          "id",
+          "node",
+          "since",
+          "until",
+          "targets",
+          "reason",
+          "by",
+          "status",
+          "followed",
+          "stuck",
+          "quiet",
+          "elsewhere",
+          "viaBalancer",
+          "missingNodes"
+        ],
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "coveragePercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "followed / (followed + stuck), in percent; absent when neither."
+          },
+          "elsewhere": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "ended": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it really ended (early with DELETE, or a restart)."
+          },
+          "followed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "medianFailoverMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Nodes whose part is missing (unreachable, or too old to record drills)."
+          },
+          "node": {
+            "type": "string",
+            "description": "The drilled node."
+          },
+          "p90FailoverMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "quiet": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`running`, `collecting` (the 60-second grace and the other nodes' parts),\n`complete`, or `cancelled` (a restart ended it; no report)."
+          },
+          "stuck": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "targets": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          },
+          "viaBalancer": {
+            "type": "boolean",
+            "description": "A resolver pod behind one balancer address: the verdicts measure the balancer."
+          }
+        }
+      },
+      "DrillTargetDevice": {
+        "type": "object",
+        "description": "REQ: CLU-014 — a device a drill would stop answering (a dry run lists them).",
+        "required": [
+          "client"
+        ],
+        "properties": {
+          "client": {
+            "type": "string",
+            "description": "Its address (or a workload's name)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DrillTargets": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/DrillAll"
+          },
+          {
+            "type": "object",
+            "required": [
+              "clients"
+            ],
+            "properties": {
+              "clients": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "example": [
+                  "192.168.2.14",
+                  "kids-tablet"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "group"
+            ],
+            "properties": {
+              "group": {
+                "type": "string",
+                "example": "iot"
+              }
+            }
+          }
+        ],
+        "description": "REQ: CLU-014 — who a drill stops answering: `\"all\"`, `{ \"clients\": [...] }` (addresses,\ndevice names, or Kubernetes workloads), or `{ \"group\": \"iot\" }`."
       },
       "EdeCount": {
         "type": "object",

@@ -213,6 +213,14 @@ export const api = {
   startMaintenance: (node: string, body: S['MaintenanceRequest']) =>
     post<S['MaintenanceResult']>(`/nodes/${encodeURIComponent(node)}/maintenance`, body),
   endMaintenance: (node: string) => call<S['MaintenanceResult']>('DELETE', `/nodes/${encodeURIComponent(node)}/maintenance`),
+  // REQ: CLU-014 (T15.2) — failover drills (operators start and end them).
+  startDrill: (node: string, body: S['DrillRequest'], dryRun = false) =>
+    call<S['DrillStart']>('POST', `/nodes/${encodeURIComponent(node)}/drill`, { body, query: { dryRun: dryRun || undefined } }),
+  endDrill: (node: string) => call<S['DrillStart']>('DELETE', `/nodes/${encodeURIComponent(node)}/drill`),
+  activeDrill: (node: string) => get<S['ActiveDrill']>(`/nodes/${encodeURIComponent(node)}/drill`),
+  drills: (limit = 20) => get<S['DrillPage']>('/drills', { limit }),
+  drillReport: (id: string) => get<S['DrillReport']>(`/drills/${encodeURIComponent(id)}`),
+  affinity: (window = '7d') => get<S['AffinityPage']>('/clients/affinity', { window }),
   // REQ: CLU-013 (T13.2) — staged rollouts and pins (commands need an admin).
   rolloutStatus: () => get<S['RolloutStatus']>('/cluster/rollout'),
   clusterVersions: () => get<S['ClusterVersions']>('/cluster/versions'),

@@ -156,6 +156,37 @@
       "general": true
     },
     {
+      "id": "failover-drill",
+      "title": "Does the second DNS server work?",
+      "term": "Failover drill",
+      "summary": "One node stops answering chosen devices (or a group, or everyone) for 15 seconds to 5 minutes while the other nodes keep serving. Devices with a working second DNS server switch to it within a few seconds; a report then says, per device, who followed, how fast, who was stuck, and who came back afterwards.",
+      "when": "You hand out two DNS servers (say the Pi and a second machine) and want to know they both work for every device, before the day one of them breaks. On a healthy network a device never touches its second server, so nothing else can tell you.",
+      "example": "A 30-second drill on the Pi for your laptop: the laptop asks the other node after about a second and is listed as followed in 1.1 s; the TV, drilled next, is stuck: it only has the Pi as its DNS server.",
+      "caution": "Devices without a working second server lose DNS for the drill's length. Start with one device for 30 seconds, then a group, then everyone. A drill is a maintenance window too: the node reports not ready and its alerts pause until it ends; a restart cancels it.",
+      "docs": "failover-drills"
+    },
+    {
+      "id": "drill",
+      "title": "A planned, short outage on one node",
+      "term": "Drill",
+      "summary": "A failover drill: one node deliberately leaves some devices unanswered for a short time, to see whether they switch to another node.",
+      "when": "You see the status drilled in the query log, or a drill marker on a chart.",
+      "example": "drilled: the node didn't answer this query because a drill targeted the device.",
+      "caution": "Queries marked drilled got no answer from that node; if the device has another DNS server, it asked that one.",
+      "docs": "failover-drills",
+      "general": true
+    },
+    {
+      "id": "affinity",
+      "title": "Which server each device uses",
+      "term": "Server affinity",
+      "summary": "Per device, its queries on each node over the last week, and the share on the node it uses most: mostly pi, both, or several.",
+      "when": "You want to see which devices lean on one server, for example before taking that server down.",
+      "example": "The TV: mostly pi (100 %); the laptop: both. That doesn't mean the TV has no second server.",
+      "caution": "A device that has only used one server may still have a second one configured; most systems use their first server until it stops answering. Run a drill to find out.",
+      "docs": "failover-drills"
+    },
+    {
       "id": "anomalies",
       "title": "When a device behaves differently",
       "term": "Anomaly detection",

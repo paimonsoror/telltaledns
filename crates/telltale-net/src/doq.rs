@@ -254,7 +254,7 @@ async fn serve_stream<H: QueryHandler + ?Sized>(
         match handler.handle(msg, meta, &mut out[..]) {
             Response::Ready(n) => Ok(Some(out[..n].to_vec())),
             Response::Deferred(fut) => Err(fut),
-            Response::Drop => Ok(None),
+            Response::Drop | Response::Close => Ok(None),
         }
     }) {
         Ok(a) => a,

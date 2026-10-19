@@ -1977,6 +1977,76 @@ for peers. The Helm chart's node alerts leave out a node whose last reported win
 A node that's really failing during its window stays quiet until the window ends: keep windows
 short.
 
+## Failover drills
+Your router hands devices two DNS servers, say the Pi and a second machine. On a healthy network
+a device only ever uses its first one: most systems switch to the second only when the first stops
+answering. So nothing shows whether the second one works for every device, until the day the Pi's
+SD card dies. A **drill** finds out on purpose, for a short time.
+
+For 15 seconds to 5 minutes (60 by default), one node stops answering the devices you choose
+(some devices, a group, or everyone) while the other nodes keep serving:
+
+- **UDP queries get no answer** and TCP and DoT connections are closed without one: to a device,
+  the node looks dead. DoH and DoQ queries get no answer (their connections stay open, since
+  other queries share them). Each such query is logged with the status **drilled**.
+- **Never left unanswered:** the node itself (`127.0.0.1`, `::1`: its probes and local programs),
+  its infrastructure (the default gateways, `TELLTALE_NODE_IPS`, `[clients] infrastructure`), the
+  cluster's nodes, and [excluded](#keeping-names-and-devices-out-of-the-log) devices.
+- **It's a maintenance window too:** the node reports not ready, its alerts pause, and a primary
+  hands its role over first (as for [maintenance](#taking-a-node-down-for-maintenance)). Unlike
+  maintenance, **a restart cancels a drill**: the node comes back answering everyone.
+
+Every node keeps a record of who asked it while the drill runs. A minute after the drill ends (late
+switches still count), the drilled node gathers them into a **report**:
+
+| Verdict | Meaning |
+|---|---|
+| **followed** | another node answered it after its first unanswered query: its second server works. With the time it took (`timeToFailoverMs`). |
+| **stuck** | 3 or more unanswered queries and nothing elsewhere: it has no working second server, or its second server is the same node. |
+| **quiet** | too few queries to tell (it may just have been idle). |
+| **elsewhere** | not targeted, but it asked another node during the drill: for information. |
+
+**Coverage** is followed / (followed + stuck). Fifteen minutes after the drill, the report also
+says whether each device that followed **came back** to the drilled node or **stayed** on the other
+one (Windows stays for about 15 minutes; that's normal).
+
+Start small: one device of your own for 30 seconds, then a group, then everyone. Devices without
+a working second server lose DNS for the drill's length.
+
+```sh
+# on the Cluster page: a node's Drill… (how long, whom, why), Preview, then Start drill
+curl -X POST https://pi:8443/api/v1/nodes/pi/drill?dryRun=true -d '{"forSecs":30,"targets":{"clients":["192.168.1.20"]},"reason":"does the second server work?"}'
+```
+
+A drill is refused (409 `drill_refused`, with the reason) when no other node is ready and
+answering (a drill would be an outage), the node is in maintenance, a drill ran in the cluster in
+the last 10 minutes, a rollout is baking or the cluster is pinned, or health is severe. Unknown
+targets, or targets no device seen on the node in the last hour matches, are 422 `drill_targets`.
+`?dryRun=true` runs every check and lists the devices without dropping anything. `DELETE
+/api/v1/nodes/{id}/drill` ends it early (the report still comes); the **Drills** tab on the Cluster
+page lists every node's reports (`GET /api/v1/drills`, `GET /api/v1/drills/{id}`). Drills are
+audited as `drill.start` and `drill.end`, leave `drill.started` and `drill.ended` markers on the
+charts, and need an operator; AI agents plan one with `plan_failover_drill` (the `ops:drill`
+scope, which no token has by default) and read reports with `drill_report`. At privacy level 2 and
+above, reports have counts only.
+
+**Kubernetes.** A drill on a resolver pod behind one balancer address tests the balancer, not the
+devices: they never see a server change. The pod reports not ready, the Service stops sending it
+queries, and the report's `balancerSwitchMs` says how long that took. For two real servers (the Pi
+and the cluster's address), drill the Pi.
+
+**Metrics.** `telltale_drill_active`, `telltale_drill_dropped_total`,
+`telltale_drill_last_coverage_percent`, `telltale_drill_last_stuck`,
+`telltale_drill_last_failover_ms{quantile}`, and `telltale_drills_total{result}`. A drill never
+changes the health level. An alert rule with `when = "maintenance"` hears about drills too (the
+reason starts with "failover drill").
+
+**Which servers devices use.** In the Advanced view, the Clients page has a **Servers** column:
+each device's queries per node over the last week, and its share on the node it uses most ("mostly
+pi", "both"; `GET /api/v1/clients/affinity?window=7d`). A device that has only used one server
+may still have a second one configured; most systems use their first server until it stops
+answering. Run a drill to find out.
+
 ## Rolling a change out in stages
 A bad change (a typo in an upstream, a list that blocks the bank) normally reaches every node
 within seconds. With **canary nodes** set, a change reaches them (and the primary) first, and
@@ -2694,6 +2764,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
 | `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit |
 | `ops:pause`, `ops:cache`, `ops:anomalies`, `ops:maintenance`, `ops:annotate` | pause blocking; flush the cache; acknowledge device anomalies; start and end [node maintenance](#taking-a-node-down-for-maintenance) (at most 2 hours); leave [notes](#change-markers) on the time charts |
+| `ops:drill` | start and end [failover drills](#failover-drills) (at most 5 minutes; never a default scope) |
 | `cluster:admin` | promote a node to primary |
 
 The default is `analytics:read` and `config:read`: read-only, without the query log. A token never gets more than its owner's role allows.
@@ -2739,6 +2810,8 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `list_annotations` | what changed and when: every node's [change markers](#change-markers), newest first (needs `analytics:read`) |
 | `annotate` | leave a note on every time chart (needs `ops:annotate`; changes at once, audited) |
 | `start_maintenance`, `end_maintenance` | put a node in [maintenance](#taking-a-node-down-for-maintenance) for up to 2 hours (not ready, still answering, alerts paused), or end it (needs `ops:maintenance`; changes at once, audited) |
+| `plan_failover_drill` | plan a [failover drill](#failover-drills): the preview lists every precondition, the baseline, and the devices (needs `ops:drill` to apply; never a default scope) |
+| `drill_report` | the newest drills, or one report: who followed, who was stuck, time to failover, who came back |
 | `get_config` | one configuration section (no secrets) |
 
 ### Analytics in one query (vqlog)

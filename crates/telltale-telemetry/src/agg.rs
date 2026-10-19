@@ -361,7 +361,7 @@ const SERVFAIL: u8 = 2;
 
 /// REQ: OBS-016 — the latency objective's bad answer: answered, and slower than `slow_us`.
 fn is_slow(e: &QueryEvent, slow_us: u64) -> bool {
-    e.status != Status::Dropped && u64::from(e.t_total_us) > slow_us
+    e.status.answered() && u64::from(e.t_total_us) > slow_us
 }
 
 fn bump(v: &mut Vec<u32>, id: usize) {
@@ -394,7 +394,7 @@ impl Counts {
             }
         }
         // REQ: OBS-030 — one bucket index and an increment (answered queries only).
-        if with_lat && e.status != Status::Dropped {
+        if with_lat && e.status.answered() {
             let l = self.lat.get_or_insert_with(Box::default);
             let b = lat_bucket(e.t_total_us);
             let cell = &mut l.by_path[e.status.path() as usize][b];
@@ -738,7 +738,7 @@ impl Hour {
         }
         self.clients.offer(&e.client_ip, |ip| *ip);
         self.group_add(e, wire);
-        if e.status != Status::Dropped {
+        if e.status.answered() {
             let us = u64::from(e.t_total_us);
             self.total[e.status.path() as usize * Proto::ALL.len() + e.proto as usize].record(us);
             self.qtype[qtype_index(e.qtype)].record(us);
@@ -832,6 +832,10 @@ pub struct Aggregates {
     /// REQ: FLT-017 — queries and blocks per Kubernetes workload over the last day, by its
     /// analytics key (only events whose client is a workload key land here).
     workloads: std::collections::HashMap<[u8; 16], crate::workload::Counts>,
+    /// REQ: CLU-014 — every client that asked this node (a drill's baseline, the affinity view).
+    seen: crate::seen::Seen,
+    /// REQ: CLU-014 — per client during a drill anywhere in the cluster (this node's part).
+    window: Option<crate::seen::Window>,
 }
 
 /// The latency objective's default threshold (`[slo] latency_ms = 250`).
@@ -865,7 +869,36 @@ impl Aggregates {
             latency_hist: true,
             flow_joints: true,
             workloads: std::collections::HashMap::new(),
+            seen: crate::seen::Seen::default(),
+            window: None,
         }
+    }
+
+    /// REQ: CLU-014 — the clients that asked this node.
+    pub fn seen(&self) -> &crate::seen::Seen {
+        &self.seen
+    }
+
+    /// REQ: CLU-014 — for loading a saved table and expiring old entries.
+    pub fn seen_mut(&mut self) -> &mut crate::seen::Seen {
+        &mut self.seen
+    }
+
+    /// REQ: CLU-014 — starts recording a drill window (`id`), replacing any other.
+    pub fn start_window(&mut self, id: &str, since_ms: u64) {
+        if self.window.as_ref().is_none_or(|w| w.id != id) {
+            self.window = Some(crate::seen::Window::new(id, since_ms));
+        }
+    }
+
+    /// REQ: CLU-014 — the drill window being recorded.
+    pub fn window(&self) -> Option<&crate::seen::Window> {
+        self.window.as_ref()
+    }
+
+    /// REQ: CLU-014 — stops recording and returns the window.
+    pub fn take_window(&mut self) -> Option<crate::seen::Window> {
+        self.window.take()
     }
 
     /// REQ: FLT-017 — per-workload counts, by analytics key.
@@ -933,6 +966,11 @@ impl Aggregates {
                 self.exported.add_query(e);
                 self.recent.add(e.client_ip, ts_s);
                 self.count_workload(e, ts_s);
+                // REQ: CLU-014 — one hash update; the window only while a drill runs.
+                self.seen.add(e.client_ip, ts_s);
+                if let Some(w) = &mut self.window {
+                    w.add(e);
+                }
                 let slow_us = self.slo_latency_us;
                 if let Some(c) = self.seconds.at(ts_s) {
                     c.add_query(e, slow_us, false, false);
