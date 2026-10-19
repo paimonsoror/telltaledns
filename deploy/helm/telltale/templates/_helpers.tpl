@@ -82,6 +82,22 @@ app.kubernetes.io/component: resolver
 {{- end }}
 {{- end }}
 {{- end }}
+{{/* REQ: FLT-017 — TelltaleDNS's own pods ask CoreDNS, not their own Service: with the
+kubelet's cluster DNS pointed at TelltaleDNS, they'd otherwise start by asking themselves. */}}
+{{- define "telltale.podDns" -}}
+{{- if and .Values.kubernetes.enabled .Values.kubernetes.ownPodsUseClusterDns }}
+dnsPolicy: None
+dnsConfig:
+  nameservers: [{{ .Values.kubernetes.clusterDns | quote }}]
+  searches:
+    - {{ printf "%s.svc.%s" .Release.Namespace .Values.kubernetes.clusterDomain }}
+    - {{ printf "svc.%s" .Values.kubernetes.clusterDomain }}
+    - {{ .Values.kubernetes.clusterDomain }}
+  options: [{ name: ndots, value: "5" }]
+{{- else if .Values.hostNetwork }}
+dnsPolicy: ClusterFirstWithHostNet
+{{- end }}
+{{- end }}
 {{/* The controller's in-cluster cluster URL (what resolver pods join). */}}
 {{- define "telltale.clusterURL" -}}
 https://{{ include "telltale.fullname" . }}-cluster.{{ .Release.Namespace }}.svc:{{ .Values.cluster.port }}

@@ -390,6 +390,8 @@ TelltaleDNS, every query comes from CoreDNS's address. Two ways to do it:
    both servers at once, so some of their lookups arrive through CoreDNS and count under it.
    To start new clusters this way, have the install script write the file before installing
    k3s (`sudo install -D -m 0600 k3s-config.yaml /etc/rancher/k3s/config.yaml`).
+   TelltaleDNS's own pods keep asking CoreDNS (`kubernetes.ownPodsUseClusterDns`, on by
+   default), so they never depend on their own Service.
 2. **One workload at a time** (a good first step before the whole cluster). Give its pods
    their own DNS settings:
    ```yaml

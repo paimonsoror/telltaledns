@@ -32,7 +32,9 @@ spec:
       {{- end }}
       {{- if .Values.hostNetwork }}
       hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with include "telltale.podDns" . | trim }}
+      {{- . | nindent 6 }}
       {{- end }}
       enableServiceLinks: false
       {{- if .Values.kubernetes.enabled }}

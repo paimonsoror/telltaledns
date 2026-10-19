@@ -225,6 +225,7 @@ service:
 <pre><code>sudo install -D -m 0600 k3s-config.yaml /etc/rancher/k3s/config.yaml
 curl -sfL https://get.k3s.io | sh -</code></pre></li>
       <li>On other distributions, set <code>clusterDNS</code> in the kubelet's configuration file the same way.</li>
+      <li>TelltaleDNS's own pods keep asking CoreDNS (<code>kubernetes.ownPodsUseClusterDns</code>, on by default), so they never depend on their own Service.</li>
     </ul></li>
     <li class="step"><b>Give the nodes a second DNS server.</b> CoreDNS sends everything outside the cluster to the node's own DNS servers, and so does the node itself. With only one, that server is a single point of failure for every pod. List two, such as the Pi and TelltaleDNS's LoadBalancer address. On Ubuntu with netplan:
 <pre><code>      nameservers:
