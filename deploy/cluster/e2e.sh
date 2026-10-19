@@ -307,7 +307,9 @@ t0=$(date +%s.%N)
 for _ in $(seq 650); do [ "$(wl 29002)" = 3 ] && break; sleep 0.1; done
 pulled=$(python3 -c "import time; print(round(time.time() - $t0, 1))")
 [ "$(wl 29002)" = 3 ] || fail "the restarted replica didn't pull the table within 65 s"
-python3 -c "import sys; sys.exit(0 if $pulled <= 60 else 1)" || fail "the restarted replica took ${pulled} s to pull the table (over 60 s)"
+# The pull runs every 60 s from the replica's start; the clock here also counts the process
+# starting and its stream connecting (CI saw 61.0 s), so allow 5 s for that.
+python3 -c "import sys; sys.exit(0 if $pulled <= 65 else 1)" || fail "the restarted replica took ${pulled} s to pull the table (over 60 s plus 5 s to start)"
 for _ in $(seq 100); do [ "$(q 25302 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 # The next steps read the replica through the primary: wait until it's connected again.
 for _ in $(seq 400); do
