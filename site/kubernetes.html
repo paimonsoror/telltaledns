@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TelltaleDNS on Kubernetes</title>
+<meta name="description" content="What TelltaleDNS does when it runs on Kubernetes: one Helm chart, real client addresses on one IP, resolver pods that scale, a Raspberry Pi in the same cluster, pods named by their workload, tested failover, staged rollouts, and Prometheus built in.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="kubernetes">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">Kubernetes</p>
+    <h1>Your network's DNS,<br>and your cluster's too.</h1>
+    <p class="lede">TelltaleDNS runs from one Helm chart. Your devices get filtered, encrypted DNS on one address, your pods get named by the workload that runs them, and a Raspberry Pi can join as the second DNS server, all managed from one place.</p>
+    <div class="cta">
+      <a class="btn primary" href="guide-kubernetes.html">Run it on Kubernetes</a>
+      <a class="btn" href="#what">What you get</a>
+    </div>
+  </div>
+  <figure class="figure" aria-label="Devices and pods ask TelltaleDNS on one address; a Pi outside the cluster is the second DNS server">
+    <svg viewBox="0 0 520 330" role="img">
+      <title>Devices on the network and pods in the cluster both ask TelltaleDNS. Inside Kubernetes, a controller and resolver pods share one address; a Pi outside joins the same cluster as the second DNS server. Cluster names go on to CoreDNS.</title>
+      <defs><marker id="k-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+      <rect x="14" y="30" width="104" height="44" rx="10" class="svg-box"/><text x="66" y="57" text-anchor="middle" class="svg-text">📱 Devices</text>
+      <rect x="14" y="250" width="104" height="44" rx="10" class="svg-box"/><text x="66" y="270" text-anchor="middle" class="svg-text">🍓 Pi</text><text x="66" y="286" text-anchor="middle" class="svg-sub">second DNS</text>
+      <rect x="150" y="16" width="356" height="216" rx="16" fill="none" class="svg-ink" stroke-dasharray="4 4"/>
+      <text x="164" y="36" class="svg-sub">☸️ Kubernetes</text>
+      <rect x="164" y="46" width="132" height="40" rx="10" class="svg-box"/><text x="230" y="64" text-anchor="middle" class="svg-text">One address</text><text x="230" y="79" text-anchor="middle" class="svg-sub">DNS · web UI · cluster</text>
+      <rect x="164" y="104" width="132" height="54" rx="12" class="svg-brand"/><text x="230" y="127" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">controller</text><text x="230" y="145" text-anchor="middle" fill="#e8eef6" font-size="11">UI, API, lists, log</text>
+      <rect x="164" y="170" width="62" height="44" rx="10" class="svg-brand" opacity=".8"/><text x="195" y="196" text-anchor="middle" fill="#e8eef6" font-size="11">resolver</text>
+      <rect x="234" y="170" width="62" height="44" rx="10" class="svg-brand" opacity=".8"/><text x="265" y="196" text-anchor="middle" fill="#e8eef6" font-size="11">resolver</text>
+      <rect x="340" y="46" width="152" height="44" rx="10" class="svg-box"/><text x="352" y="65" class="svg-text">Your pods</text><text x="352" y="81" class="svg-sub">media/deploy/jellyfin …</text>
+      <rect x="340" y="170" width="152" height="44" rx="10" class="svg-box"/><text x="352" y="189" class="svg-text">CoreDNS</text><text x="352" y="205" class="svg-sub">cluster.local</text>
+      <g class="svg-stroke-brand" stroke-width="2" fill="none" marker-end="url(#k-arrow)">
+        <path d="M118 52 H162"/>
+        <path d="M340 68 H298"/>
+        <path d="M230 86 V102"/>
+        <path d="M298 192 H338"/>
+      </g>
+      <path d="M118 272 C190 272 200 240 214 216" class="svg-stroke-accent" stroke-width="2" stroke-dasharray="5 4" fill="none"/>
+      <text x="252" y="262" class="svg-sub">one configuration, one query log,</text>
+      <text x="252" y="278" class="svg-sub">managed from any node</text>
+      <text x="252" y="306" class="svg-sub" font-style="italic">(illustration)</text>
+    </svg>
+  </figure>
+</section>
+
+<section id="what">
+  <p class="eyebrow">What you get</p>
+  <h2>Built for running in a cluster</h2>
+  <div class="grid">
+    <a class="card" href="guide-kubernetes.html#install"><h3>One Helm chart</h3><p>Published to GitHub's registry on every build, for amd64 and arm64, with a values schema that rejects a mistyped option by its path. Settings and Secrets come from values, so Argo CD and Flux manage it like anything else.</p></a>
+    <a class="card" href="guide-kubernetes.html#clients"><h3>Real client addresses</h3><p>Per-device statistics and rules need the real sender. The DNS Service keeps it, and if something in between hides it, the web UI says so.</p></a>
+    <a class="card" href="guide-kubernetes.html#ip"><h3>One IP for everything</h3><p>DNS, the web UI, and the cluster port can share the DNS Service's address: one IP to hand out in DHCP and to remember.</p></a>
+    <a class="card" href="guide-kubernetes.html#scaled"><h3>Resolver pods that scale</h3><p>Stateless resolver pods join the controller by themselves, take its configuration and compiled lists, and ship their query log back. A pod leaves the Service within about 4 seconds of failing, and a rollout drains it first.</p></a>
+    <a class="card" href="guide-kubernetes.html#pi"><h3>A Pi in the same cluster</h3><p>A Raspberry Pi outside Kubernetes joins as a full member and second DNS server: the same lists, groups, and rules, its queries in the same log, and all of it managed from either side.</p></a>
+    <a class="card" href="kubernetes-workloads.html"><h3>Pods as devices</h3><p>Pods are named by the workload that runs them, so a Deployment is one device across every rollout, with its own top domains, timeline, and anomaly baseline. Namespaces get groups with a label.</p></a>
+    <a class="card" href="failover-drills.html"><h3>Failover you've tested</h3><p>A drill takes a node out for a few minutes and reports which devices moved to the other server, how fast, and which ones are stuck. On a resolver pod it also measures how long the Service kept sending to it.</p></a>
+    <a class="card" href="guide-changes.html"><h3>Changes that canary</h3><p>Each configuration change can reach the resolver pods first and the Pi after a bake time, and the cluster goes back to the last good version by itself if the canaries start failing.</p></a>
+    <a class="card" href="guide-kubernetes.html#extras"><h3>Monitoring included</h3><p>A ServiceMonitor, alert rules, and the Grafana dashboard from chart values, plus a NetworkPolicy and DoT, DoH, and DoQ with a cert-manager certificate.</p></a>
+    <a class="card" href="agents.html"><h3>Agent-ready</h3><p>Workloads are in the API and in MCP (<code>list_workloads</code>, <code>get_workload</code>), and a change an agent proposes is a plan you approve.</p></a>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Your cluster's own DNS</p>
+  <h2>Point the cluster at it</h2>
+  <p>With pod naming on, TelltaleDNS answers your pods too: they're filtered by their namespace's group, show up by workload, and still resolve Service names, because TelltaleDNS sends <code>cluster.local</code> on to CoreDNS. Try it on one workload, then make it the cluster's default.</p>
+  <ol class="steps">
+    <li class="step"><b>Turn on pod naming</b> in the chart values, with CoreDNS's address and a fixed address for the DNS Service.</li>
+    <li class="step"><b>Try one workload</b> with <code>dnsPolicy: None</code> and TelltaleDNS as its nameserver.</li>
+    <li class="step"><b>Make it the default</b> with the kubelet's cluster DNS (one line in k3s's config file), with CoreDNS second in case TelltaleDNS is unreachable.</li>
+  </ol>
+  <p><a href="guide-kubernetes.html#cluster-dns">The step-by-step guide →</a></p>
+</section>
+
+<section>
+  <p class="eyebrow">See it</p>
+  <h2>Workloads, not pod addresses</h2>
+  <figure class="figure">
+    <picture>
+      <source srcset="assets/shots/k8s-workloads-dark.jpg" media="(prefers-color-scheme: dark)">
+      <img src="assets/shots/k8s-workloads-light.jpg" alt="The Clients page's Workloads tab: each workload by namespace and kind, its group and where the group came from, its pods, and its queries and blocks in the last 24 hours" width="1280" height="860" loading="lazy">
+    </picture>
+    <figcaption>The Workloads tab (a kind cluster with made-up apps)</figcaption>
+  </figure>
+  <figure class="figure">
+    <picture>
+      <source srcset="assets/shots/cluster-dark.jpg" media="(prefers-color-scheme: dark)">
+      <img src="assets/shots/cluster-light.jpg" alt="Cluster page: a live topology of a Kubernetes site and a Pi" width="1280" height="860" loading="lazy">
+    </picture>
+    <figcaption>The Cluster page draws the sites, pods by Kubernetes node, and each node's share of the queries (example data)</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="callout"><p><b>Start small.</b> <code>mode: allInOne</code> (one pod) answers tens of thousands of queries a second. Move to <code>mode: scaled</code> or add a Pi when you want a second server, and turn on pod naming when you want to see your workloads. Every step is a chart value.</p></div>
+  <div class="guide-nav">
+    <a class="btn" href="start.html">← Get started</a>
+    <a class="btn primary" href="guide-kubernetes.html">Next: Run on Kubernetes →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

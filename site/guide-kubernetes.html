@@ -26,6 +26,7 @@
     <li><a href="#scaled">More pods</a></li>
     <li><a href="#pi">A Pi in the same cluster</a></li>
     <li><a href="#workloads">Your pods as devices</a></li>
+    <li><a href="#cluster-dns">Your cluster's DNS through TelltaleDNS</a></li>
     <li><a href="#extras">Monitoring and encrypted DNS</a></li>
   </ul>
 </section>
@@ -188,18 +189,50 @@ resolvers:
   enabled: true
   clusterDns: 10.43.0.10
   podCidr: 10.42.0.0/16       # optional: PTR lookups for pods and Services go to CoreDNS too
-  serviceCidr: 10.43.0.0/16
+  serviceCidr: 10.43.0.0/16   #   (leave both out if your nodes use TelltaleDNS: see below)
 service:
   dns:
     clusterIP: 10.43.0.53</code></pre>
     The controller gets a token that can only read pods and namespaces; resolver pods get none.</li>
-    <li class="step"><b>Send the pods' DNS to TelltaleDNS.</b> For the whole cluster, point the kubelet at it. On k3s, in <code>/etc/rancher/k3s/config.yaml</code> on every node, then restart k3s and your workloads:
-<pre><code>kubelet-arg:
-  - "cluster-dns=10.43.0.53"</code></pre>
-    Use <code>kubelet-arg</code>, not k3s's own <code>cluster-dns</code> option, which moves CoreDNS's Service too. Or, for one workload, set <code>dnsPolicy: None</code> with <code>dnsConfig.nameservers: ["10.43.0.53"]</code> and the cluster search domains.</li>
+    <li class="step"><b>Send the pods' DNS to TelltaleDNS</b>: one workload first, then the whole cluster through the kubelet. The <a href="#cluster-dns">next section</a> walks through it.</li>
     <li class="step"><b>Group them.</b> Label a namespace (<code>kubectl label namespace media telltaledns.io/group=media</code>) or a pod the same way, list rules in <code>kubernetes.map</code> (<code>[{namespace: "media*", group: "iot"}]</code>), or use <b>Add to group…</b> on a workload in the web UI. Labels win, then rules, then <code>kubernetes.defaultGroup</code>, then the pod's network group.</li>
   </ol>
   <div class="callout"><p><b>Through CoreDNS, every pod looks like CoreDNS.</b> If CoreDNS forwards to TelltaleDNS instead, all you see is CoreDNS's address. The API server being unreachable never affects answering: pods keep their last names, and the health level turns degraded after 15 minutes.</p></div>
+</section>
+
+<section id="cluster-dns">
+  <h2>Your cluster's DNS through TelltaleDNS</h2>
+  <p>Pods only show up as themselves when they ask TelltaleDNS directly. The safe order is one workload, then the cluster's default, then the nodes. The examples use k3s, with TelltaleDNS's DNS Service at <code>10.43.0.53</code> and CoreDNS at <code>10.43.0.10</code>.</p>
+  <ol class="steps">
+    <li class="step"><b>Try one workload.</b> Give a low-stakes Deployment or CronJob its own DNS settings:
+<pre><code>spec:
+  template:
+    spec:
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: ["10.43.0.53"]
+        searches: [media.svc.cluster.local, svc.cluster.local, cluster.local]
+        options: [{name: ndots, value: "5"}]</code></pre>
+    Use the workload's own namespace first in <code>searches</code>. When its pods restart, the workload appears on the <b>Workloads</b> tab, and its Service names still resolve (TelltaleDNS sends <code>cluster.local</code> on to CoreDNS).</li>
+    <li class="step"><b>Make it the cluster's default.</b> Point the kubelet at TelltaleDNS first and CoreDNS second, in <code>/etc/rancher/k3s/config.yaml</code> on every node, then restart k3s:
+<pre><code>kubelet-arg:
+  - "cluster-dns=10.43.0.53,10.43.0.10"</code></pre>
+    <ul>
+      <li>Use <code>kubelet-arg</code>, not k3s's own <code>cluster-dns</code> option, which moves CoreDNS's Service too.</li>
+      <li>Restarting k3s leaves running pods running: each pod gets the new setting when it's next created. Move a namespace over when it suits you with <code>kubectl -n media rollout restart deploy</code>.</li>
+      <li>CoreDNS second keeps lookups working if TelltaleDNS's Service has no ready pods. Images based on Alpine (musl) ask both servers at once and take the first answer, so some of their lookups arrive through CoreDNS and are counted under CoreDNS.</li>
+      <li>For new clusters, have your install script write the file before it installs k3s:
+<pre><code>sudo install -D -m 0600 k3s-config.yaml /etc/rancher/k3s/config.yaml
+curl -sfL https://get.k3s.io | sh -</code></pre></li>
+      <li>On other distributions, set <code>clusterDNS</code> in the kubelet's configuration file the same way.</li>
+    </ul></li>
+    <li class="step"><b>Give the nodes a second DNS server.</b> CoreDNS sends everything outside the cluster to the node's own DNS servers, and so does the node itself. With only one, that server is a single point of failure for every pod. List two, such as the Pi and TelltaleDNS's LoadBalancer address. On Ubuntu with netplan:
+<pre><code>      nameservers:
+        addresses: [192.168.1.2, 192.168.1.53]</code></pre>
+    Then <code>sudo netplan generate &amp;&amp; sudo nmcli connection reload &amp;&amp; sudo nmcli device reapply &lt;interface&gt;</code> applies it without taking the link down (NetworkManager), and <code>kubectl -n kube-system rollout restart deploy/coredns</code> makes CoreDNS read it.</li>
+  </ol>
+  <div class="callout warn"><p><b>Once the nodes use TelltaleDNS, leave <code>kubernetes.podCidr</code> and <code>serviceCidr</code> out.</b> With them, TelltaleDNS sends reverse lookups for those ranges to CoreDNS, and CoreDNS passes the ones it doesn't know to the node's DNS servers, which now include TelltaleDNS: an unknown address's PTR would go round in a loop.</p></div>
+  <div class="callout"><p><b>A Pi in the same cluster needs nothing.</b> The chart's route to CoreDNS is marked <code>node_only</code>, so it stays on the pods in Kubernetes, and the Pi answers <code>cluster.local</code> as it would any other name. To undo the default, delete the <code>kubelet-arg</code> line and restart k3s.</p></div>
 </section>
 
 <section id="extras">

@@ -92,6 +92,23 @@
 </section>
 
 <section>
+  <p class="eyebrow">Two ways in</p>
+  <h2>Starts on a Pi. Grows into Kubernetes.</h2>
+  <div class="grid">
+    <a class="card" href="start.html">
+      <h3>🍓 Your home network</h3>
+      <p>One small program on a Raspberry Pi, a Linux box, or Docker. Point your router's DHCP at it and every device is filtered, encrypted, and explained.</p>
+      <span class="more">Get started →</span>
+    </a>
+    <a class="card" href="kubernetes.html">
+      <h3>☸️ Your Kubernetes cluster</h3>
+      <p>One Helm chart: resolver pods that scale, one IP for DNS and the web UI, a Pi as the second server, pods named by their workload, and failover drills that prove your second server works.</p>
+      <span class="more">What you get on Kubernetes →</span>
+    </a>
+  </div>
+</section>
+
+<section>
   <p class="eyebrow">Standing on the shoulders of giants</p>
   <h2>Inspired by Pi-hole and Technitium</h2>
   <p class="muted">TelltaleDNS exists because two projects showed what self-hosted DNS can be. We're grateful to both communities, and if either one already serves you well, keep using it.</p>
@@ -125,6 +142,8 @@
       <tr><th scope="row">Keeps answering when upstreams fail (serve-stale)</th><td class="us y">✓</td></tr>
       <tr><th scope="row">A small footprint: about 50 MB on a Pi 4 with 2.7 million blocked names</th><td class="us y">✓</td></tr>
       <tr><th scope="row">One cluster across a Pi and Kubernetes, managed from any node</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Kubernetes pods named by the workload that runs them, one device across every rollout: <a href="kubernetes-workloads.html">see how</a></th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Failover drills: take a server out on purpose and see which devices really move to the other one: <a href="failover-drills.html">see how</a></th><td class="us y">✓</td></tr>
       <tr><th scope="row">Changes reach a few canary nodes first, and the cluster goes back to the last good version by itself if they start failing</th><td class="us y">✓</td></tr>
       <tr><th scope="row">Planned maintenance: take a node out of service for a while, with no dropped queries and no false alarms</th><td class="us y">✓</td></tr>
       <tr><th scope="row">Prometheus metrics and a Grafana dashboard built in</th><td class="us y">✓</td></tr>

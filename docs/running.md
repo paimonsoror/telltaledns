@@ -356,7 +356,7 @@ kubernetes:
   enabled: true
   clusterDns: 10.43.0.10     # kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'
   podCidr: 10.42.0.0/16      # optional: PTR lookups for pod and Service addresses go to CoreDNS too
-  serviceCidr: 10.43.0.0/16
+  serviceCidr: 10.43.0.0/16  #   (leave both out if the nodes' own DNS includes TelltaleDNS, below)
 service:
   dns:
     clusterIP: 10.43.0.53    # a fixed address inside the Service network, for the kubelet setting
@@ -366,22 +366,32 @@ can only `get`, `list`, and `watch` pods and namespaces. Resolver pods get no to
 controller sends the workload table to every node in the cluster (a Pi included, so it names
 the rows it ships), and the nodes ask for it again every minute. The chart also sends
 `cluster.local` (and the reverse zones of `podCidr` and `serviceCidr`) on to CoreDNS, so
-Service names keep working. Set Kubernetes options through these values, not as a
-`[kubernetes]` table in `config`: the chart writes that table.
+Service names keep working. That route is `node_only` (CLU-006): a Pi in the same cluster
+doesn't get it, since it can't reach CoreDNS, and answers `cluster.local` like any other name.
+Set Kubernetes options through these values, not as a `[kubernetes]` table in `config`: the
+chart writes that table.
 
 **Pods must ask TelltaleDNS directly.** If they ask CoreDNS and CoreDNS forwards to
 TelltaleDNS, every query comes from CoreDNS's address. Two ways to do it:
 1. **The whole cluster (recommended).** Point the kubelet's cluster DNS at TelltaleDNS's DNS
-   Service. On k3s, in `/etc/rancher/k3s/config.yaml` on every node, then restart k3s:
+   Service first and CoreDNS second. On k3s, in `/etc/rancher/k3s/config.yaml` on every
+   node, then restart k3s:
    ```yaml
    kubelet-arg:
-     - "cluster-dns=10.43.0.53"   # service.dns.clusterIP
+     - "cluster-dns=10.43.0.53,10.43.0.10"   # service.dns.clusterIP, then CoreDNS
    ```
    Use `kubelet-arg`, not k3s's own `cluster-dns` option, which also moves CoreDNS's
-   Service. New pods use the setting; restart workloads to move the pods that are running. On
-   kubeadm clusters, set `clusterDNS` in the kubelet's configuration. TelltaleDNS keeps
-   answering the cluster's names through CoreDNS, so Services resolve as before.
-2. **One workload at a time.** Give its pods their own DNS settings:
+   Service (k3s keeps its own value in the kubelet's configuration file, and the flag wins).
+   Restarting k3s leaves running pods running; new pods use the setting, so restart workloads
+   (`kubectl -n media rollout restart deploy`) to move the ones that are running. On kubeadm
+   clusters, set `clusterDNS` in the kubelet's configuration. TelltaleDNS keeps answering
+   the cluster's names through CoreDNS, so Services resolve as before. CoreDNS second keeps
+   lookups working if the DNS Service has no ready pods; images based on Alpine (musl) ask
+   both servers at once, so some of their lookups arrive through CoreDNS and count under it.
+   To start new clusters this way, have the install script write the file before installing
+   k3s (`sudo install -D -m 0600 k3s-config.yaml /etc/rancher/k3s/config.yaml`).
+2. **One workload at a time** (a good first step before the whole cluster). Give its pods
+   their own DNS settings:
    ```yaml
    spec:
      dnsPolicy: "None"
@@ -390,6 +400,16 @@ TelltaleDNS, every query comes from CoreDNS's address. Two ways to do it:
        searches: ["media.svc.cluster.local", "svc.cluster.local", "cluster.local"]
        options: [{ name: ndots, value: "5" }]
    ```
+**The nodes' own DNS.** CoreDNS sends everything outside the cluster to the node's DNS
+servers (its `forward . /etc/resolv.conf`), so give each node two, for example a Pi and
+TelltaleDNS's LoadBalancer address. On Ubuntu with NetworkManager, add the second to the
+netplan file's `nameservers.addresses`, apply it without taking the link down (`sudo netplan
+generate && sudo nmcli connection reload && sudo nmcli device reapply <interface>`), then
+`kubectl -n kube-system rollout restart deploy/coredns`. Once the nodes' DNS includes
+TelltaleDNS, leave `kubernetes.podCidr` and `serviceCidr` out: CoreDNS passes reverse names it
+doesn't know (`fallthrough in-addr.arpa`) to the node's servers, so an unknown pod address's
+PTR would loop between TelltaleDNS and CoreDNS.
+
 Traffic from a pod to a Service address keeps the pod's own address (kube-proxy and Cilium don't
 rewrite it), so "Client IPs appear masked" isn't affected. With `ndots: 5` you'll see
 questions like `grafana.com.media.svc.cluster.local`. They go to CoreDNS and come back

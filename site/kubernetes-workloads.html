@@ -63,7 +63,7 @@
     <li class="step"><b>Every node gets the table</b> over the cluster channel within a couple of seconds, and asks again every minute, so resolver pods recognize pods on the query path and a Pi in the cluster names the rows it ships.</li>
     <li class="step"><b>Pods send their DNS to TelltaleDNS</b>: the kubelet's cluster DNS for the whole cluster, or a workload's own <code>dnsConfig</code>. TelltaleDNS sends <code>cluster.local</code> on to CoreDNS, so Service names work as before.</li>
   </ol>
-  <div class="callout"><p>Through CoreDNS forwarding, every pod would look like CoreDNS: pods have to ask TelltaleDNS themselves. The <a href="guide-kubernetes.html#workloads">guide</a> shows both ways, with the k3s setting.</p></div>
+  <div class="callout"><p>Through CoreDNS forwarding, every pod would look like CoreDNS: pods have to ask TelltaleDNS themselves. The <a href="guide-kubernetes.html#cluster-dns">guide</a> shows both ways, with the k3s setting.</p></div>
 </section>
 
 <section>

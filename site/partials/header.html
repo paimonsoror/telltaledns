@@ -7,11 +7,13 @@
     </a>
     <!-- T6.10, ADR-122: Get started, then three menus by what the reader wants: what it does
          (Features), how to do something (Guides), and to look something up (Reference). On phones
-         all of it folds into ☰. Built on <details>, so it works without JavaScript. -->
+         all of it folds into ☰. Built on <details>, so it works without JavaScript. Kubernetes
+         is a page of its own beside Get started (2026-10-19): the second way in. -->
     <details class="menu" open>
       <summary aria-label="Menu"><span aria-hidden="true">☰</span></summary>
       <nav class="nav" aria-label="Main">
         <a href="start.html" data-page="start">Get started</a>
+        <a href="kubernetes.html" data-page="kubernetes">Kubernetes</a>
         <details class="sub" data-group="index tour how-it-works groups monitoring kubernetes-workloads failover-drills agents performance">
           <summary>Features</summary>
           <div class="sub-list">

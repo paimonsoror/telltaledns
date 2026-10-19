@@ -167,6 +167,7 @@ kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token 
         <li>Your settings go in <code>config:</code> (TOML, the same keys as the <a href="config.html">configuration reference</a>); secrets come from existing Secrets.</li>
         <li>Encrypted DNS for phones: <code>encrypted.dot.enabled</code> / <code>encrypted.doh.enabled</code> with a cert-manager certificate.</li>
         <li>Monitoring: <code>serviceMonitor.enabled</code>, <code>prometheusRule.enabled</code>, <code>grafanaDashboard.enabled</code>.</li>
+        <li>More pods, a Pi beside them, your pods named by workload, and failover drills: <a href="kubernetes.html">what you get on Kubernetes</a>.</li>
         <li>More pods: <code>mode: scaled</code> adds resolver pods beside the controller (<a href="#cluster">below</a>).</li>
       </ul>
     </div>
@@ -279,6 +280,7 @@ strategy = "fastest"</code></pre>
   <div class="cta">
     <a class="btn primary" href="guide-cluster.html">Guide: Build a cluster</a>
     <a class="btn" href="guide-kubernetes.html">Guide: Run on Kubernetes</a>
+    <a class="btn" href="kubernetes.html">What you get on Kubernetes</a>
   </div>
 </section>
 
