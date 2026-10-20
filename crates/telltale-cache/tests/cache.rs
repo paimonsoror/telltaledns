@@ -824,6 +824,35 @@ fn dns_006_opt_counted_as_an_answer_is_unusable() {
     );
 }
 
+/// REQ: NFR-004 — bytes after an upstream answer's last record (fuzz target `cache_response`)
+/// are dropped: kept, they sat between the records and the client's OPT, and the answer
+/// didn't parse.
+#[test]
+fn nfr_004_bytes_after_the_last_record_are_dropped() {
+    let req = query_bytes("fuzz.example.com", rtype::A, Some(EdnsOut::new(1232)), 7);
+    let q = parse_query(&req).unwrap();
+    let client = Client::from_query(&q, Some(EdnsOut::new(1232)));
+    for with_opt in [false, true] {
+        let mut resp = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut resp, rcode::NOERROR).unwrap();
+        b.answer_a(300, Ipv4Addr::new(192, 0, 2, 1)).unwrap();
+        let len = b.finish(with_opt.then(|| EdnsOut::new(1232))).unwrap();
+        let mut v = resp[..len].to_vec();
+        v.extend_from_slice(&[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00]);
+        let mut out = [0u8; 512];
+        let n = Cache::render(&q, &v, &client, &mut out).unwrap();
+        assert!(summarize(&out[..n]).is_ok(), "render, opt {with_opt}");
+        let cache = Cache::new(CachePolicy::default());
+        let now = Instant::now();
+        cache.insert(&key(&q), &q, &v, now).unwrap();
+        let Lookup::Hit { len, .. } = cache.get(&key(&q), &q.qname, &client, now, &mut out) else {
+            panic!("cached but missed");
+        };
+        assert!(summarize(&out[..len]).is_ok(), "get, opt {with_opt}");
+        assert_eq!(answer_ttls(&out[..len]), vec![300]);
+    }
+}
+
 /// REQ: DNS-005, DNS-006 — a cached answer larger than the caller's buffer (a UDP worker's
 /// 4 KiB) is served truncated from the cache: TC=1, the client's question and OPT, no
 /// records. It is a hit, not a miss that resolves the name upstream again.

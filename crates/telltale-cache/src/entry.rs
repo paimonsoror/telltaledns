@@ -247,8 +247,10 @@ fn finish(
     question_end: usize,
     now: Instant,
 ) -> Result<Entry, Uncacheable> {
-    // Strip OPT (only if it's the last record) and collect TTL offsets.
-    let mut end = resp.len();
+    // Strip OPT (only if it's the last record) and collect TTL offsets. The entry ends with
+    // the last record: bytes after it would sit between the records and the OPT appended for
+    // an EDNS client, which then doesn't parse (NFR-004, fuzz target `cache_response`).
+    let mut end = question_end;
     let mut arcount = s.header.arcount;
     let mut offsets = Vec::new();
     let mut ttls = Vec::new();
@@ -260,10 +262,10 @@ fn finish(
         }
         if r.is_opt() {
             seen_opt = true;
-            end = r.name_off;
             arcount = arcount.saturating_sub(1);
             continue;
         }
+        end = r.rdata_off + usize::from(r.rdlen);
         offsets.push(u16::try_from(r.ttl_off).map_err(|_| Uncacheable::Malformed)?);
         ttls.push(r.ttl);
     }
