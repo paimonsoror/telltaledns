@@ -196,7 +196,7 @@ jobs:
       - uses: azure/setup-helm@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - uses: helm/chart-testing-action@v2.7.0
+      - uses: helm/chart-testing-action@v2.9.0
       - run: ct lint --config ct.yaml --all
       # The monitoring templates need CRDs a test cluster lacks, so ct install never renders
       # them: lint them here (an unquoted ": " in an alert once slipped through).
