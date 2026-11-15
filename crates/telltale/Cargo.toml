@@ -37,7 +37,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 # mimalloc's huge pages tripled idle RSS (22 MiB vs 6 MiB), breaking the 20 MiB gate (00 §5).
 mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
 # REQ: OPS-004 — self-update verifies minisign signatures (tiny, no dependencies).
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 rand = "0.10.3"
 # REQ: API-007 (T6.3) — Pi-hole keeps groups in SQLite (gravity.db) and Teleporter archives
 # are zip / tar.gz. Both crates are already in the tree (telltale-store, telltale-git).
