@@ -15,16 +15,16 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
         with: { components: rustfmt }
       - run: cargo fmt --all --check
 
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
         with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -35,8 +35,8 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --workspace
         shell: bash
@@ -60,7 +60,7 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   # REQ: NFR-001 — the harness runs end to end. Hosted runners are too noisy for the 5%
@@ -69,13 +69,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - run: sh .github/scripts/apt-install.sh dnsperf
         timeout-minutes: 12
       - run: make bench-smoke
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench-smoke
@@ -86,7 +86,7 @@ jobs:
   site:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: python3 site/build.py --check
       # REQ: OBS-005 — the Grafana dashboard is regenerated from deploy/grafana/build.py.
       - run: python3 deploy/grafana/build.py --check
@@ -102,8 +102,8 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -119,13 +119,13 @@ jobs:
       - run: npm run check:help
       - name: Build (fails over the size budget)
         run: npm run build
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p telltale
         working-directory: .
       - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run test:e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -139,17 +139,17 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Start Keycloak and Authentik
         run: docker compose -f tests/oidc/compose.yml up -d --wait --wait-timeout 300
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run build
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p telltale
         working-directory: .
@@ -173,7 +173,7 @@ jobs:
       - name: Provider logs
         if: failure()
         run: docker compose -f tests/oidc/compose.yml logs --tail 200
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report-oidc
@@ -191,12 +191,12 @@ jobs:
           - { runner: ubuntu-24.04-arm, tool: k3d }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
-      - uses: azure/setup-helm@v4
-      - uses: actions/setup-python@v5
+      - uses: azure/setup-helm@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
-      - uses: helm/chart-testing-action@v2.7.0
+      - uses: helm/chart-testing-action@v2.9.0
       - run: ct lint --config ct.yaml --all
       # The monitoring templates need CRDs a test cluster lacks, so ct install never renders
       # them: lint them here (an unquoted ": " in an alert once slipped through).
@@ -237,8 +237,8 @@ jobs:
     # The cluster e2e's maintenance steps (T13.4) add about six minutes.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --profile bench-fast -p telltale
       - name: Compose bundle
@@ -316,8 +316,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --profile bench-fast -p telltale
       - run: sh .github/scripts/apt-install.sh dnsutils
