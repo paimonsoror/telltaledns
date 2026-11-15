@@ -16,7 +16,7 @@ workspace = true
 # small. SHA-1 object IDs and Ed25519 commit signatures use ring, already in the tree.
 miniz_oxide = "0.8"
 ring = "0.17.14"
-base64 = "0.22.1"
+base64 = "0.23.1"
 
 [dev-dependencies]
 tempfile = "3.27.0"

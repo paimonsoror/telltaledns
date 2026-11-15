@@ -3499,7 +3499,7 @@ dependencies = [
  "allocation-counter",
  "arc-swap",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "bytes",
  "clap",
@@ -3654,7 +3654,7 @@ dependencies = [
 name = "telltale-git"
 version = "0.7.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "miniz_oxide",
  "ring",
  "tempfile",
