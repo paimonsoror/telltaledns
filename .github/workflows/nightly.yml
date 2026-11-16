@@ -57,7 +57,7 @@ jobs:
             cargo llvm-cov report --summary-only | tail -n 60
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: target/cov/html

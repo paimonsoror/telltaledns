@@ -80,7 +80,7 @@ jobs:
       - run: sh .github/scripts/apt-install.sh dnsperf
         timeout-minutes: 12
       - run: make bench-smoke
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench-smoke
@@ -130,7 +130,7 @@ jobs:
         working-directory: .
       - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run test:e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -178,7 +178,7 @@ jobs:
       - name: Provider logs
         if: failure()
         run: docker compose -f tests/oidc/compose.yml logs --tail 200
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report-oidc
