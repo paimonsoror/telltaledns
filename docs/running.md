@@ -104,6 +104,22 @@ Re-running it upgrades the binary in place. `sudo telltale self-update --restart
 
 Then point your router's DHCP DNS server setting at the Pi's address so every device uses it.
 
+## Unraid
+`deploy/unraid/telltale.xml` is a Docker template for Unraid 6.10 and later. From the Unraid terminal:
+```sh
+curl -fsSL -o /boot/config/plugins/dockerMan/templates-user/my-TelltaleDNS.xml \
+  https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/unraid/telltale.xml
+mkdir -p /mnt/user/appdata/telltale/config      # optional: the starter config from deploy/compose
+curl -fsSL -o /mnt/user/appdata/telltale/config/telltale.toml \
+  https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+```
+Then **Docker → Add Container**, pick **TelltaleDNS**, give it a fixed IP address, and **Apply**. Sign in to the web UI with the setup token in `/mnt/user/appdata/telltale/data/setup-token`, or set the template's bootstrap admin variables.
+- The container uses `br0`, so it has its own LAN address: each device shows up as itself and port 53 doesn't clash with the server. Enable **Settings → Docker → Host access to custom networks** if the Unraid server itself should use it.
+- `appdata/telltale/config` is mounted read-only at `/etc/telltale`, `appdata/telltale/data` at `/var/lib/telltale`, and `appdata/telltale/secrets` read-only at `/run/secrets` for `*_file` settings.
+- It runs as root inside the container with only `NET_BIND_SERVICE`, a read-only root filesystem, and `no-new-privileges`, as the Compose bundle does. The image has no shell, so use `docker exec TelltaleDNS telltale ...` from the Unraid terminal instead of the Docker page's Console.
+
+[deploy/unraid/README.md](../deploy/unraid/README.md) has the details.
+
 ## Moving from Pi-hole
 `telltale import pihole PATH -o pihole.toml` turns a Pi-hole setup into TelltaleDNS configuration. PATH is a Teleporter export (Settings → Teleporter → Export: a `.zip` from Pi-hole v6, a `.tar.gz` from v5), a `gravity.db`, or a copy of `/etc/pihole`. The output is checked to load before it's written.
 
