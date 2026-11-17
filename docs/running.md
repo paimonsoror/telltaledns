@@ -116,7 +116,7 @@ curl -fsSL -o /mnt/user/appdata/telltale/config/telltale.toml \
 Then **Docker → Add Container**, pick **TelltaleDNS**, give it a fixed IP address, and **Apply**. Sign in to the web UI with the setup token in `/mnt/user/appdata/telltale/data/setup-token`, or set the template's bootstrap admin variables.
 - The container uses `br0`, so it has its own LAN address: each device shows up as itself and port 53 doesn't clash with the server. Enable **Settings → Docker → Host access to custom networks** if the Unraid server itself should use it.
 - `appdata/telltale/config` is mounted read-only at `/etc/telltale`, `appdata/telltale/data` at `/var/lib/telltale`, and `appdata/telltale/secrets` read-only at `/run/secrets` for `*_file` settings.
-- Router key files (UniFi `api_key_file`, `tls_ca`; OPNsense `api_key_file`, `api_secret_file`) go in `appdata/telltale/config` (`/etc/telltale/...` in `telltale.toml`, as in the examples above) or `appdata/telltale/secrets` (`/run/secrets/...`).
+- Router keys: one pasted in the UI is saved in `appdata/telltale/data/secrets/`, the only place the UI takes key files from. Key files for routers in `telltale.toml` go in `appdata/telltale/config` (`/etc/telltale/...`) or `appdata/telltale/secrets` (`/run/secrets/...`).
 - It runs as root inside the container with only `NET_BIND_SERVICE`, a read-only root filesystem, and `no-new-privileges`, as the Compose bundle does. The image has no shell, so use `docker exec TelltaleDNS telltale ...` from the Unraid terminal instead of the Docker page's Console.
 
 [deploy/unraid/README.md](../deploy/unraid/README.md) has the details.
