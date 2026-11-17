@@ -962,9 +962,9 @@ pub(crate) const ROUTER_SECRETS: [&str; 3] = ["api_key", "api_secret", "password
 /// The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi
 /// console: `{"type": "unifi", "url": "https://192.168.1.1", "api_key": "…",
 /// "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
-/// UniFi password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
-/// each to a new file only it can read under `<data_dir>/secrets/` and stores that file's
-/// path; the value is never stored, logged, or returned (ADR-171). Credential files named
+/// UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:
+/// TelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and
+/// stores that file's path; the value is never stored, logged, or returned (ADR-171). Credential files named
 /// here (`api_key_file`, …) must be under `<data_dir>/secrets/` too. Leave a credential out to
 /// keep the current one, unless the type, address, site, or TLS settings change: then it must
 /// be entered again. Admins only (agents: `config:write:routers`, which `config:write:*`

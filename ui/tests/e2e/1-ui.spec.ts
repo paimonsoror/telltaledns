@@ -1690,6 +1690,28 @@ test('t8_2 routers are added and changed in the UI', async () => {
   await expect(row).toHaveCount(0);
 });
 
+// REQ: T8.2 (ADR-172) — a MikroTik router: a RouterOS user and its password, typed once and saved
+// to a file like a key.
+test('t8_2 a MikroTik router is added in the UI', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/clients?tab=discovered');
+  const editor = page.getByTestId('editor-router');
+  await editor.getByRole('button', { name: 'Add router' }).click();
+  await page.getByLabel('Name', { exact: true }).fill('mt-e2e');
+  await page.getByLabel('Type', { exact: true }).selectOption('mikrotik');
+  await page.getByLabel('Address', { exact: true }).fill('https://192.0.2.3');
+  await page.getByLabel('Username (MikroTik; UniFi without an API key)', { exact: true }).fill('telltale');
+  await page.getByLabel('Password (MikroTik; UniFi without an API key)', { exact: true }).fill('e2e-routeros-pass');
+  await page.getByLabel("Don't check the certificate", { exact: true }).check();
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).not.toContainText('e2e-routeros-pass');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  const row = editor.getByTestId('entry-row').filter({ hasText: 'mt-e2e' });
+  await expect(row).toContainText('mikrotik · https://192.0.2.3');
+  await row.getByRole('button', { name: 'Remove' }).click();
+  await expect(row).toHaveCount(0);
+});
+
 // REQ: OBS-010 (T9.6) — the Alerts page: add a destination, send it a test, add a rule that
 // fires, see it under "Now" with the delivery, then remove both.
 test('obs_010 alerts page: destinations, test, rules', async () => {

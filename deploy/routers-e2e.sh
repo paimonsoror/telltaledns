@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# REQ: T8.2, T8.3 — router integrations against fake UniFi OS and OPNsense APIs, and mDNS: a UniFi login
-# (cookie) and its client list (connected, then the offline clients it knows), OPNsense leases with an
-# API key, the leases in the API, and a device named from the router in the query log. Needs python3, dig, curl.
+# REQ: T8.2, T8.3 — router integrations against fake UniFi OS, OPNsense, and MikroTik RouterOS APIs, and
+# mDNS: a UniFi login (cookie) and its client list (connected, then the offline clients it knows), OPNsense
+# leases with an API key, MikroTik's DHCP leases over REST with a RouterOS user (bound, then static ones
+# offline), the leases in the API, and a device named from the router in the query log. Needs python3, dig, curl.
 # Usage: deploy/routers-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -78,7 +79,23 @@ class OPN(UniFi):
         if self.path == "/api/kea/leases4/search":
             return self.reply(200, {"rows": [{"address": "192.168.1.40", "hwaddr": "02:00:00:00:00:03", "hostname": "printer"}]})
         self.reply(404, {})
+class MikroTik(UniFi):
+    def do_GET(self):
+        if self.headers.get("authorization") != "Basic " + base64.b64encode(b"telltale:ros-pass").decode():
+            return self.reply(401, {"error": 401, "message": "Unauthorized"})
+        if not self.path.startswith("/rest/ip/dhcp-server/lease?.proplist="):
+            return self.reply(404, {"error": 404, "message": "Not Found"})
+        # RouterOS REST: every value is a string.
+        self.reply(200, [
+            {".id": "*1", "address": "dhcp_pool0", "active-address": "192.168.88.10", "mac-address": "02:00:00:00:01:01",
+             "active-mac-address": "02:00:00:00:01:01", "host-name": "tv-box", "status": "bound", "dynamic": "true", "disabled": "false"},
+            {".id": "*2", "address": "192.168.88.20", "mac-address": "02:00:00:00:01:02", "comment": "Hall thermostat",
+             "status": "waiting", "dynamic": "false", "disabled": "false", "last-seen": "3d2h"},
+            {".id": "*3", "address": "192.168.88.21", "mac-address": "02:00:00:00:01:03", "comment": "Old tablet",
+             "status": "waiting", "dynamic": "false", "disabled": "false", "last-seen": "20w"}])
 s1 = http.server.ThreadingHTTPServer(("127.0.0.1", 26981), UniFi)
+s3 = http.server.ThreadingHTTPServer(("127.0.0.1", 26983), MikroTik)
+threading.Thread(target=s3.serve_forever, daemon=True).start()
 s2 = http.server.ThreadingHTTPServer(("127.0.0.1", 26982), OPN)
 threading.Thread(target=s1.serve_forever, daemon=True).start()
 s2.serve_forever()
@@ -88,6 +105,7 @@ for _ in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:26982/ && break; sl
 echo -n s3cret > "$E/unifi-pass"
 echo -n key1 > "$E/opn-key"
 echo -n secret1 > "$E/opn-secret"
+echo -n ros-pass > "$E/mt-pass"
 
 cat > "$E/telltale.toml" <<EOF
 [node]
@@ -117,14 +135,20 @@ type = "opnsense"
 url = "http://127.0.0.1:26982"
 api_key_file = "$E/opn-key"
 api_secret_file = "$E/opn-secret"
+[[router]]
+name = "mikrotik"
+type = "mikrotik"
+url = "http://127.0.0.1:26983"
+username = "telltale"
+password_file = "$E/mt-pass"
 [clients]
 mdns = true
 mdns_port = 25353
 EOF
 "$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
-for _ in $(seq 50); do [ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 2 ] && break; sleep 0.2; done
-[ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 2 ] || fail "both routers weren't read"
+for _ in $(seq 50); do [ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 3 ] && break; sleep 0.2; done
+[ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 3 ] || fail "the three routers weren't read"
 
 ST=$(cat "$E/data/setup-token")
 CSRF=$(curl -sf -c "$E/jar" -H 'content-type: application/json' \
@@ -139,6 +163,9 @@ assert items["192.168.1.50"]["hostname"] == "Old iPad", "offline clients from th
 assert items["192.168.1.51"]["hostname"] == "Garage camera", "known clients from rest/user"
 assert "192.168.1.52" not in items, "a client last seen 90 days ago is outside offline_days (30)"
 assert items["192.168.1.40"]["hostname"] == "printer", "Kea leases from OPNsense"
+assert items["192.168.88.10"]["hostname"] == "tv-box", "a bound MikroTik lease, at its active address"
+assert items["192.168.88.20"]["hostname"] == "Hall thermostat", "a static MikroTik lease, offline, named by its comment"
+assert "192.168.88.21" not in items, "a static lease last seen 20 weeks ago is outside offline_days (30)"
 print(f"leases: {len(items)} from the routers")
 ' || fail "leases API"
 # REQ: T8.2 (ADR-166) — the console is asked only for the window (30 days = 720 hours).

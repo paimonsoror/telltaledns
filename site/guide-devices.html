@@ -154,7 +154,7 @@ match = ["10.0.5.0/24"]       # no groups: its network's group, else "default"</
 <section id="router">
   <h2>Names from your router and mDNS</h2>
   <p>Your router's DHCP hands out addresses; TelltaleDNS can read its client list, so devices show up by name without any typing.</p>
-  <p><b>In the UI</b> (admins): Clients → Discovered → <b>Routers</b> → Add router. Pick UniFi or OPNsense, give its address, and paste the API key. TelltaleDNS saves it to a new file only it can read, under <code>secrets/</code> in the data folder, and never shows it again; changing the address or TLS settings needs it typed again. Changes apply within seconds, without a restart. Or in the configuration file:</p>
+  <p><b>In the UI</b> (admins): Clients → Discovered → <b>Routers</b> → Add router. Pick UniFi, OPNsense, or MikroTik, give its address, and paste the API key (MikroTik: a username and password). TelltaleDNS saves it to a new file only it can read, under <code>secrets/</code> in the data folder, and never shows it again; changing the address or TLS settings needs it typed again. Changes apply within seconds, without a restart. Or in the configuration file:</p>
 <pre><code>[[router]]
 name = "udm"
 type = "unifi"                         # UniFi OS consoles and the Network application
@@ -168,9 +168,17 @@ name = "firewall"
 type = "opnsense"
 url = "https://opnsense.lan"
 api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
-api_secret_file = "/etc/telltale/opn-secret"</code></pre>
+api_secret_file = "/etc/telltale/opn-secret"
+
+[[router]]
+name = "mikrotik"
+type = "mikrotik"                      # RouterOS 7.1 or later (the REST API, www-ssl)
+url = "https://192.168.88.1"
+username = "telltale"                  # a group with the read, api and rest-api policies
+password_file = "/etc/telltale/mikrotik-pass"
+tls_ca = "/etc/telltale/mikrotik-ca.crt"   # the CA that signed the www-ssl certificate</code></pre>
   <ul>
-    <li><b>UniFi</b> gives the connected clients and the offline ones it saw in the last 30 days (<code>offline_days</code>; 0 for connected ones only), at their last address, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
+    <li><b>UniFi</b> gives the connected clients and the offline ones it saw in the last 30 days (<code>offline_days</code>; 0 for connected ones only), at their last address, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC). <b>MikroTik</b> gives its bound DHCP leases, and the static leases that aren't bound now as offline devices (within <code>offline_days</code>), named by the lease's comment, else the host name.</li>
     <li><b>A self-signed UniFi console:</b> save its certificate as <code>tls_ca</code> (<code>openssl s_client -connect 192.168.1.1:443 &lt;/dev/null | openssl x509 &gt; udm.pem</code>). It names <code>unifi.local</code>, not the address you reach it at, so set <code>tls_server_name</code> to that name. The console is then verified, and only that certificate is trusted.</li>
     <li>Credentials stay in files (a key pasted in the UI is saved to one). Routers are read every <code>interval_secs</code> (300). Routers in the configuration file are read at startup; ones added or changed in the UI apply within 5 seconds.</li>
   </ul>
@@ -183,7 +191,7 @@ mdns = true</code></pre>
     <li><b>In a cluster</b>, one node reading the router (or hearing mDNS) is enough: every node uses the names the others know, so resolver pods name devices the same way the primary does.</li>
     <li><b>Clients → Discovered</b> lists every device a router or mDNS found; naming one from there suggests the name it gave. <code>GET /api/v1/dhcp/leases</code> lists them too.</li>
   </ul>
-  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-from-your-router-unifi-opnsense">Names from your router</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-devices-announce-mdns">Names devices announce</a>.</p>
+  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-from-your-router-unifi-opnsense-mikrotik">Names from your router</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-devices-announce-mdns">Names devices announce</a>.</p>
 </section>
 
 <section id="identify">

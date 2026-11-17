@@ -44,18 +44,18 @@
   const fileHelp =
     'In the data folder\u2019s secrets/ (relative paths are in the data folder, /var/lib/telltale by default). Leave it empty for a new file there; or name a new one; or name a file you put in secrets/ yourself and leave the field above empty. A file elsewhere is set in telltale.toml.';
   const routerFields: Field[] = [
-    { key: 'type', label: 'Type', type: 'select', options: ['unifi', 'opnsense'], initial: 'unifi' },
+    { key: 'type', label: 'Type', type: 'select', options: ['unifi', 'opnsense', 'mikrotik'], optionLabels: { unifi: 'UniFi', opnsense: 'OPNsense', mikrotik: 'MikroTik (RouterOS 7)' }, initial: 'unifi' },
     { key: 'url', label: 'Address', type: 'text', placeholder: 'https://192.168.1.1',
-      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. Changing it (or the type or TLS settings) needs the key typed again.' },
+      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. MikroTik: https://192.168.88.1 (the www-ssl service). Changing it (or the type or TLS settings) needs the key typed again.' },
     { key: 'api_key', label: 'API key', type: 'secret', placeholderFor: kept('api_key_file', 'API key'),
       help: 'UniFi Network 9+: Settings → Control Plane → Integrations. OPNsense: System → Access → Users → API keys.' },
     { key: 'api_key_file', label: 'API key file', type: 'text', placeholderFor: defaultFile('api_key'), help: fileHelp },
     { key: 'api_secret', label: 'API secret (OPNsense)', type: 'secret', placeholderFor: kept('api_secret_file', 'API secret') },
     { key: 'api_secret_file', label: 'API secret file (OPNsense)', type: 'text', placeholderFor: defaultFile('api_secret') },
-    { key: 'username', label: 'Username (UniFi, instead of an API key)', type: 'text', placeholder: 'telltale', advanced: true,
-      help: 'A local UniFi user; read-only is enough.' },
-    { key: 'password', label: 'Password (UniFi)', type: 'secret', placeholderFor: kept('password_file', 'password'), advanced: true },
-    { key: 'password_file', label: 'Password file (UniFi)', type: 'text', placeholderFor: defaultFile('password'), advanced: true },
+    { key: 'username', label: 'Username (MikroTik; UniFi without an API key)', type: 'text', placeholder: 'telltale',
+      help: 'A local user on the router; read-only is enough. MikroTik: a user in a group with the read, api and rest-api policies.' },
+    { key: 'password', label: 'Password (MikroTik; UniFi without an API key)', type: 'secret', placeholderFor: kept('password_file', 'password') },
+    { key: 'password_file', label: 'Password file', type: 'text', placeholderFor: defaultFile('password'), advanced: true, help: fileHelp },
     { key: 'site', label: 'Site (UniFi)', type: 'text', placeholder: 'default', advanced: true },
     { key: 'tls_ca', label: 'Console certificate', type: 'text', placeholder: '/etc/telltale/udm.pem',
       help: 'A self-signed console: a file with its certificate, so it is verified.' },
@@ -64,8 +64,8 @@
     { key: 'tls_insecure_skip_verify', label: "Don't check the certificate", type: 'bool',
       help: 'Works with any console, but anything on your network could pose as it and receive the key.' },
     { key: 'interval_secs', label: 'Read every (seconds)', type: 'number', placeholder: '300', advanced: true },
-    { key: 'offline_days', label: 'Offline devices seen within (days, UniFi)', type: 'number', placeholder: '30', advanced: true,
-      help: '0: only the connected clients.' },
+    { key: 'offline_days', label: 'Offline devices seen within (days, UniFi and MikroTik)', type: 'number', placeholder: '30', advanced: true,
+      help: '0: only the connected clients. MikroTik: static leases that are not bound now.' },
   ];
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   // REQ: OBS-025 — what each device looks like, by address.
@@ -291,7 +291,7 @@
     <section class="card" data-testid="discovered">
       <h2>Discovered on your network</h2>
       <p class="muted small">
-        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
+        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense, MikroTik), or that devices announced
         themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
         one, change it, or put the device in a group.
       </p>

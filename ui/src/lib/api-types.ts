@@ -1424,9 +1424,9 @@ export interface paths {
         };
         /**
          * Devices found on the network (API-010; T8.2, T8.3).
-         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
-         *     names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
-         *     TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
+         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense,
+         *     MikroTik), then the names devices announce over mDNS (`[clients] mdns`), each with the name
+         *     the device has in TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
          *     because these are the router's DHCP leases.
          */
         get: operations["dhcp_leases"];
@@ -2140,9 +2140,9 @@ export interface paths {
          * @description The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi
          *     console: `{"type": "unifi", "url": "https://192.168.1.1", "api_key": "…",
          *     "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
-         *     UniFi password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
-         *     each to a new file only it can read under `<data_dir>/secrets/` and stores that file's
-         *     path; the value is never stored, logged, or returned (ADR-171). Credential files named
+         *     UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:
+         *     TelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and
+         *     stores that file's path; the value is never stored, logged, or returned (ADR-171). Credential files named
          *     here (`api_key_file`, …) must be under `<data_dir>/secrets/` too. Leave a credential out to
          *     keep the current one, unless the type, address, site, or TLS settings change: then it must
          *     be entered again. Admins only (agents: `config:write:routers`, which `config:write:*`

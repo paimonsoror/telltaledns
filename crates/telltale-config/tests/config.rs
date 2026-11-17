@@ -1159,6 +1159,41 @@ fn t8_2_routers_are_validated() {
     );
 }
 
+/// REQ: T8.2 (ADR-172) — a MikroTik router needs a username and a password file; over plain
+/// http it loads, with a warning that the password travels unencrypted.
+#[test]
+fn t8_2_mikrotik_router_is_validated() {
+    const MT: &str =
+        "[[router]]\nname = \"mt\"\ntype = \"mikrotik\"\nurl = \"https://192.168.88.1\"\n";
+    let ok = load_str(&format!(
+        "{MT}username = \"telltale\"\npassword_file = \"/p\"\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        ok.config.router[0].kind,
+        telltale_config::RouterKind::Mikrotik
+    );
+    assert!(
+        !ok.warnings.iter().any(|w| w.contains("router")),
+        "{:?}",
+        ok.warnings
+    );
+    let errs = load_str(MT).unwrap_err();
+    assert_eq!(paths(&errs), ["router[0]"]);
+    let errs = load_str(&format!("{MT}api_key_file = \"/k\"\n")).unwrap_err();
+    assert_eq!(paths(&errs), ["router[0]"]);
+    let http = MT.replace("https://", "http://");
+    let plain = load_str(&format!(
+        "{http}username = \"telltale\"\npassword_file = \"/p\"\n"
+    ))
+    .unwrap();
+    assert!(
+        plain.warnings.iter().any(|w| w.contains("www-ssl")),
+        "{:?}",
+        plain.warnings
+    );
+}
+
 // REQ: FLT-017 (T15.1) — `[kubernetes]`: map rules name known groups and kinds; the section is
 // shared but left out of the shared part while at its defaults (older replicas).
 #[test]

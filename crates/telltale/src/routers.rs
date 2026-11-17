@@ -7,6 +7,10 @@
 //!   An API key (`X-API-KEY`), or a local username and password.
 //! - **OPNsense**: the DHCP leases (Dnsmasq, Kea, or ISC, whichever the box runs), with an
 //!   API key and secret.
+//! - **MikroTik** (RouterOS v7, ADR-172): the DHCP server's leases over the REST API
+//!   (`/rest/ip/dhcp-server/lease`), with a (read-only) RouterOS user. The bound leases are the
+//!   connected devices; a static lease that isn't bound now is an offline one, named by its
+//!   comment, else the host name the device last sent.
 //!
 //! Polled every `interval_secs`; the result replaces that router's part of the lease view
 //! the naming falls back to (after configured device names and TelltaleDNS's own DHCP).
@@ -41,7 +45,7 @@ pub(crate) type Device = (String, Ipv4Addr, Option<String>);
 /// 130 bytes each, against the cluster channel's 1 MiB frame) and sit in memory on every node.
 pub(crate) const OFFLINE_MAX: usize = 1024;
 
-/// What one poll of a router found: the devices it reports now, and (UniFi) the offline clients
+/// What one poll of a router found: the devices it reports now, and (UniFi, MikroTik) the offline clients
 /// it remembers, kept apart because only the first are "seen" (ADR-166).
 pub(crate) struct Polled {
     pub(crate) now: Seen,
@@ -175,12 +179,13 @@ pub(crate) fn unifi_known(v: &Value, not_before: u64) -> Seen {
     rows.into_iter().map(|(_, c)| c).collect()
 }
 
-/// REQ: T8.2 — the connected clients, then the known ones UniFi has names for, so an offline
+/// REQ: T8.2 — the connected clients, then the known ones the router has names for (UniFi,
+/// MikroTik), so an offline
 /// device's queries still show its name. A connected client keeps its address; a known one
 /// only names it when it has none, and adds a device only for an address no one else holds
 /// (an offline device's last address may since have gone to another one), and for at most
 /// [`OFFLINE_MAX`] devices.
-pub(crate) fn unifi_merge(mut active: Seen, known: Seen) -> Seen {
+pub(crate) fn merge_known(mut active: Seen, known: Seen) -> Seen {
     let mut macs: HashMap<String, usize> = active
         .iter()
         .enumerate()
@@ -207,11 +212,11 @@ pub(crate) fn unifi_merge(mut active: Seen, known: Seen) -> Seen {
     active
 }
 
-/// REQ: T8.2 (ADR-166) — [`unifi_merge`], with the offline devices it appended (after the
+/// REQ: T8.2 (ADR-166) — [`merge_known`], with the offline devices it appended (after the
 /// connected ones, which keep their order) set apart.
-pub(crate) fn unifi_split(active: Seen, known: Seen) -> Polled {
+pub(crate) fn split_known(active: Seen, known: Seen) -> Polled {
     let connected = active.len();
-    let mut now = unifi_merge(active, known);
+    let mut now = merge_known(active, known);
     let offline = now.split_off(connected);
     Polled { now, offline }
 }
@@ -301,7 +306,7 @@ impl UnifiSession<'_> {
                 Err(e) => debug!(error = %e, "router integration: UniFi known clients"),
             }
         }
-        Ok(unifi_split(active, known))
+        Ok(split_known(active, known))
     }
 }
 
@@ -391,6 +396,158 @@ async fn poll_opnsense(
         last = format!("{base}{path}: HTTP {status}");
     }
     Err(format!("no DHCP lease API answered ({last})"))
+}
+
+/// A RouterOS duration (`1w2d3h4m5s`, with `ms` parts ignored; or the older `hh:mm:ss`) in
+/// seconds; `None` for `never` or anything else.
+pub(crate) fn routeros_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.contains(':') {
+        let mut total = 0_u64;
+        for part in s.split(':') {
+            total = total
+                .checked_mul(60)?
+                .checked_add(part.parse::<u64>().ok()?)?;
+        }
+        return Some(total);
+    }
+    let (mut total, mut n, mut any) = (0_u64, None::<u64>, false);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(d) = c.to_digit(10) {
+            n = Some(n.unwrap_or(0).checked_mul(10)?.checked_add(u64::from(d))?);
+            continue;
+        }
+        let v = n.take()?;
+        let unit = match c {
+            'w' => 604_800,
+            'd' => 86_400,
+            'h' => 3_600,
+            's' => 1,
+            'm' if chars.peek() == Some(&'s') => {
+                chars.next();
+                0
+            }
+            'm' => 60,
+            _ => return None,
+        };
+        total = total.checked_add(v.checked_mul(unit)?)?;
+        any = true;
+    }
+    (any && n.is_none()).then_some(total)
+}
+
+/// A RouterOS REST field: every value comes as a string.
+fn ros<'a>(l: &'a Value, k: &str) -> Option<&'a str> {
+    l.get(k).and_then(Value::as_str)
+}
+
+/// REQ: T8.2 (ADR-172) — MikroTik's DHCP leases (`GET /rest/ip/dhcp-server/lease`, a bare array):
+/// the bound ones are connected; the static ones that aren't bound, with a name, last seen within
+/// `max_age` seconds (`None`: none of them), are the offline devices it knows, most recently seen
+/// first, at most [`OFFLINE_MAX`]. Disabled leases are skipped. A lease is named by its comment
+/// (its first line), else the host name the device sent.
+pub(crate) fn mikrotik_leases(v: &Value, max_age: Option<u64>) -> Polled {
+    let rows = v.as_array().map_or(&[][..], Vec::as_slice);
+    let mut now = Seen::new();
+    let mut known: Vec<(u64, Device)> = Vec::new();
+    for l in rows {
+        if ros(l, "disabled") == Some("true") {
+            continue;
+        }
+        let bound = ros(l, "status") == Some("bound");
+        let pick = |keys: &[&str]| {
+            keys.iter()
+                .filter_map(|k| ros(l, k))
+                .map(str::trim)
+                .find(|s| !s.is_empty())
+        };
+        // A bound lease's `active-*` fields are what the device has now; `address` may be a
+        // pool's name on a dynamic lease.
+        let (ip, mac) = if bound {
+            (
+                pick(&["active-address", "address"]),
+                pick(&["active-mac-address", "mac-address"]),
+            )
+        } else {
+            (pick(&["address"]), pick(&["mac-address"]))
+        };
+        let Some(ip) = ip.and_then(|s| s.parse::<Ipv4Addr>().ok()) else {
+            continue;
+        };
+        let Some(mac) = mac.filter(|m| m.len() == 17) else {
+            continue;
+        };
+        if ip.is_unspecified() {
+            continue;
+        }
+        let name = [
+            ros(l, "comment").and_then(|c| c.lines().next()),
+            ros(l, "host-name"),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_owned);
+        let dev = (mac.to_ascii_lowercase(), ip, name);
+        if bound {
+            now.push(dev);
+            continue;
+        }
+        let Some(max_age) = max_age else { continue };
+        if ros(l, "dynamic") == Some("true") || dev.2.is_none() {
+            continue;
+        }
+        // Never seen (`never`): it can't be judged and stays, last (the cap bounds those).
+        let ago = ros(l, "last-seen").and_then(routeros_secs);
+        if ago.is_some_and(|a| a > max_age) {
+            continue;
+        }
+        known.push((ago.unwrap_or(u64::MAX), dev));
+    }
+    known.sort_by_key(|k| k.0);
+    known.truncate(OFFLINE_MAX);
+    split_known(now, known.into_iter().map(|(_, d)| d).collect())
+}
+
+/// One poll of a MikroTik router (RouterOS v7.1+, the `www-ssl` or `www` service).
+async fn poll_mikrotik(
+    client: &telltale_filter::fetch::Client,
+    c: &RouterConfig,
+) -> Result<Polled, String> {
+    let base = c.url.trim_end_matches('/');
+    let user = c
+        .username
+        .as_deref()
+        .ok_or("set username and password_file")?;
+    let pass = secret(c.password_file.as_ref())?.ok_or("set password_file")?;
+    let auth = format!("Basic {}", base64(format!("{user}:{pass}").as_bytes()));
+    // Only the fields used, so a router with thousands of leases answers less.
+    let url = format!(
+        "{base}/rest/ip/dhcp-server/lease?.proplist=address,active-address,mac-address,active-mac-address,host-name,comment,status,dynamic,disabled,last-seen"
+    );
+    let req = http::Request::get(url.as_str())
+        .header("authorization", auth.as_str())
+        .header("accept", "application/json")
+        .body(Vec::new())
+        .map_err(|e| e.to_string())?;
+    let (status, _, v) = call(client, req).await?;
+    if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN {
+        return Err(format!(
+            "{base}: HTTP {status} (check the username, the password, and that the user's group has the read, api and rest-api policies)"
+        ));
+    }
+    if status == http::StatusCode::NOT_FOUND {
+        return Err(format!(
+            "{base}/rest: HTTP 404 (the REST API needs RouterOS v7.1 or later)"
+        ));
+    }
+    if !status.is_success() || !v.is_array() {
+        return Err(format!("{base}/rest/ip/dhcp-server/lease: HTTP {status}"));
+    }
+    let max_age = (c.offline_days > 0).then(|| u64::from(c.offline_days) * 86_400);
+    Ok(mikrotik_leases(&v, max_age))
 }
 
 /// The leases view from every router's last answer. REQ: T8.2 (ADR-166) — an offline client
@@ -486,6 +643,7 @@ pub(crate) async fn run(
             let result = match r.kind {
                 RouterKind::Unifi => poll_unifi(&client, r).await,
                 RouterKind::Opnsense => poll_opnsense(&client, r).await,
+                RouterKind::Mikrotik => poll_mikrotik(&client, r).await,
             };
             let was_failing = failing.get(r.name.as_str()).copied().unwrap_or(false);
             match result {
@@ -593,7 +751,7 @@ mod tests {
         let mut known = unifi_known(&history, 0);
         known.extend(unifi_known(&users, 0));
         assert_eq!(
-            unifi_merge(active, known),
+            merge_known(active, known),
             vec![
                 (
                     "aa:bb:cc:00:00:01".into(),
@@ -663,7 +821,7 @@ mod tests {
     /// REQ: T8.2 (ADR-166) — a poll's connected clients (named from the history when they lack a
     /// name) stay apart from the offline ones, and the offline ones are capped.
     #[test]
-    fn unifi_split_keeps_offline_apart_and_capped() {
+    fn split_known_keeps_offline_apart_and_capped() {
         let ip = |n: u32| Ipv4Addr::from(0x0a00_0000 + n);
         let active: Seen = vec![("aa:aa:aa:00:00:01".into(), ip(1), None)];
         let mut known: Seen = vec![("aa:aa:aa:00:00:01".into(), ip(1), Some("TV".into()))];
@@ -674,7 +832,7 @@ mod tests {
                 Some(format!("off{n}")),
             )
         }));
-        let polled = unifi_split(active, known);
+        let polled = split_known(active, known);
         assert_eq!(
             polled.now,
             vec![("aa:aa:aa:00:00:01".to_owned(), ip(1), Some("TV".to_owned()))]
@@ -718,6 +876,82 @@ mod tests {
             (phone.hostname.as_deref(), phone.offline),
             (Some("Old phone"), true)
         );
+    }
+
+    /// REQ: T8.2 (ADR-172) — RouterOS durations, both spellings; `never` is no date.
+    #[test]
+    fn routeros_durations() {
+        assert_eq!(
+            routeros_secs("1w2d3h4m5s"),
+            Some(604_800 + 2 * 86_400 + 3 * 3_600 + 245)
+        );
+        assert_eq!(routeros_secs("5m33s"), Some(333));
+        assert_eq!(routeros_secs("2s340ms"), Some(2));
+        assert_eq!(routeros_secs("01:02:03"), Some(3_723));
+        assert_eq!(routeros_secs("never"), None);
+        assert_eq!(routeros_secs(""), None);
+        assert_eq!(routeros_secs("5"), None);
+    }
+
+    /// REQ: T8.2 (ADR-172) — MikroTik leases: bound ones are connected (their active address and
+    /// MAC), named by the comment over the host name; a static lease not bound now is offline,
+    /// kept when named and seen within the window (or never seen), never over a connected
+    /// device's address; dynamic leases that aren't bound, and disabled ones, are skipped.
+    #[test]
+    fn mikrotik_leases_bound_and_static() {
+        let v = serde_json::json!([
+            {".id": "*1", "address": "192.168.88.10", "active-address": "192.168.88.10",
+             "mac-address": "AA:BB:CC:00:00:01", "active-mac-address": "AA:BB:CC:00:00:01",
+             "host-name": "android-1", "comment": "Kitchen tablet\nsecond line", "status": "bound",
+             "dynamic": "false", "disabled": "false", "last-seen": "12s"},
+            {".id": "*2", "address": "pool1", "active-address": "192.168.88.200",
+             "mac-address": "aa:bb:cc:00:00:02", "active-mac-address": "aa:bb:cc:00:00:02",
+             "host-name": "roku", "status": "bound", "dynamic": "true", "disabled": "false"},
+            {".id": "*3", "address": "192.168.88.20", "mac-address": "aa:bb:cc:00:00:03",
+             "comment": "Printer", "status": "waiting", "dynamic": "false", "disabled": "false",
+             "last-seen": "2d4h"},
+            {".id": "*4", "address": "192.168.88.21", "mac-address": "aa:bb:cc:00:00:04",
+             "host-name": "old-laptop", "status": "waiting", "dynamic": "false",
+             "disabled": "false", "last-seen": "9w"},
+            {".id": "*5", "address": "192.168.88.22", "mac-address": "aa:bb:cc:00:00:05",
+             "status": "waiting", "dynamic": "false", "disabled": "false", "last-seen": "1h"},
+            {".id": "*6", "address": "192.168.88.23", "mac-address": "aa:bb:cc:00:00:06",
+             "comment": "Spare phone", "status": "waiting", "dynamic": "false",
+             "disabled": "false", "last-seen": "never"},
+            {".id": "*7", "address": "192.168.88.10", "mac-address": "aa:bb:cc:00:00:07",
+             "comment": "Moved away", "status": "waiting", "dynamic": "false",
+             "disabled": "false", "last-seen": "1d"},
+            {".id": "*8", "address": "192.168.88.24", "mac-address": "aa:bb:cc:00:00:08",
+             "comment": "Turned off", "status": "waiting", "dynamic": "false",
+             "disabled": "true", "last-seen": "1h"},
+            {".id": "*9", "address": "192.168.88.25", "mac-address": "aa:bb:cc:00:00:09",
+             "host-name": "expired", "status": "waiting", "dynamic": "true",
+             "disabled": "false", "last-seen": "1h"}
+        ]);
+        let dev = |m: &str, ip: [u8; 4], n: &str| -> Device {
+            (m.to_owned(), Ipv4Addr::from(ip), Some(n.to_owned()))
+        };
+        let p = mikrotik_leases(&v, Some(30 * 86_400));
+        assert_eq!(
+            p.now,
+            vec![
+                dev("aa:bb:cc:00:00:01", [192, 168, 88, 10], "Kitchen tablet"),
+                dev("aa:bb:cc:00:00:02", [192, 168, 88, 200], "roku"),
+            ]
+        );
+        assert_eq!(
+            p.offline,
+            vec![
+                dev("aa:bb:cc:00:00:03", [192, 168, 88, 20], "Printer"),
+                dev("aa:bb:cc:00:00:06", [192, 168, 88, 23], "Spare phone"),
+            ]
+        );
+        // `offline_days = 0`: only the connected devices.
+        let p = mikrotik_leases(&v, None);
+        assert_eq!((p.now.len(), p.offline.len()), (2, 0));
+        // Not a lease list (an error object): nothing.
+        let p = mikrotik_leases(&serde_json::json!({"error": 401}), Some(1));
+        assert_eq!((p.now.len(), p.offline.len()), (0, 0));
     }
 
     /// REQ: T8.2 — OPNsense leases, whichever DHCP server answered.

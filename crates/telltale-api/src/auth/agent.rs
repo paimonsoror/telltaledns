@@ -58,7 +58,7 @@ pub const SCOPES: &[(&str, &str)] = &[
     // scope, for an admin's token, and not part of `config:write:*`.
     (
         "config:write:routers",
-        "add, change, and remove router integrations (UniFi, OPNsense) and their credentials (admin; not in config:write:*)",
+        "add, change, and remove router integrations (UniFi, OPNsense, MikroTik) and their credentials (admin; not in config:write:*)",
     ),
     (
         "config:write:ratelimit",

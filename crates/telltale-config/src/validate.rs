@@ -263,6 +263,17 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                     r.err(p.clone(), "OPNsense needs api_key_file and api_secret_file");
                 }
             }
+            crate::RouterKind::Mikrotik => {
+                if x.username.is_none() || x.password_file.is_none() {
+                    r.err(
+                        p.clone(),
+                        "MikroTik needs username and password_file (a read-only RouterOS user)",
+                    );
+                }
+                if x.url.starts_with("http://") {
+                    r.warn(format!("{p}.url: http:// sends the RouterOS password unencrypted (enable the www-ssl service and use https://)"));
+                }
+            }
         }
         if x.interval_secs < 30 {
             r.err(format!("{p}.interval_secs"), "at least 30 seconds");
