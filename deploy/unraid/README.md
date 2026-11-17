@@ -37,6 +37,24 @@
 | Variables | `TELLTALE_LOG`; `TELLTALE_BOOTSTRAP_ADMIN_USER` with `..._PASSWORD` or `..._PASSWORD_HASH` for the first admin (read only while no user exists). |
 | Extra parameters | `--user 0:0 --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE --security-opt no-new-privileges`, as in `deploy/compose`: root inside the container (so it can write to the appdata folders Unraid creates as root) with no other capability. |
 
+**Router integrations (UniFi, OPNsense)**
+
+The router's key files go next to `telltale.toml`, or in the secrets folder to keep them apart
+from the config. Both are mounted read-only, and the paths in `telltale.toml` are the
+container's paths, not Unraid's:
+
+| Put the file in | Refer to it in `telltale.toml` as |
+|---|---|
+| `/mnt/user/appdata/telltale/config/unifi-key` | `api_key_file = "/etc/telltale/unifi-key"` |
+| `/mnt/user/appdata/telltale/config/udm.pem` | `tls_ca = "/etc/telltale/udm.pem"` |
+| `/mnt/user/appdata/telltale/secrets/opn-key` | `api_key_file = "/run/secrets/opn-key"` |
+| `/mnt/user/appdata/telltale/secrets/opn-secret` | `api_secret_file = "/run/secrets/opn-secret"` |
+
+Keep them readable only by root (`chmod 600`); the container runs as root, so it can still read
+them. The `[[router]]` settings are in "Names from your router (UniFi, OPNsense)" in
+[docs/running.md](../../docs/running.md). On `br0` the container reaches the router like any
+other device on the LAN.
+
 **Notes**
 
 - The image has no shell, so the Docker page's **Console** doesn't open. Use
