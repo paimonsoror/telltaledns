@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Extend the cluster protocol — TelltaleDNS</title>
+<meta name="description" content="How to add a read or a request between TelltaleDNS cluster nodes: older nodes, the one-mebibyte answer limit, who may ask, what a node may never trust from another, and how to test it on real processes.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="dev-cluster">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Developers</p>
+  <h1>Extend the cluster protocol</h1>
+  <p class="lede">A cluster is nodes of different ages, some of them pods that come and go, talking over one authenticated stream. Anything you add to that conversation has to survive an older node, a missing node, a pod, and a node that lies. This page is how.</p>
+  <ul class="onpage">
+    <li><a href="#how">How a read works</a></li>
+    <li><a href="#rules">The rules</a></li>
+    <li><a href="#recipe">The recipe</a></li>
+    <li><a href="#checks">The checks</a></li>
+    <li><a href="#example">Worked example</a></li>
+  </ul>
+  <p class="muted">Background for users is in <a href="guide-cluster.html">Build a cluster</a>. Upgrading a cluster one node at a time is in <a href="guide-upgrades.html#cluster">Upgrades, backups, and moving in</a>.</p>
+</section>
+
+<section id="how">
+  <h2>How a read works</h2>
+  <ul>
+    <li>The node that was asked is the <i>entry node</i>. For a federated read it asks each reachable peer over the cluster stream and merges the answers with its own.</li>
+    <li>The request is one JSON value of the <code>Read</code> enum in <code>crates/telltale/src/federated.rs</code>, sent with kind <code>api.read</code>. The peer decodes it, answers from its own data in <code>answer()</code>, and replies with JSON.</li>
+    <li>A peer that doesn't answer within two seconds, or errors, is left out and listed in the result's <code>missingNodes</code>: a dead node costs a read two seconds, never more (CLU-002).</li>
+    <li>Reads run on blocking threads, never on the DNS path (DNS never depends on the cluster).</li>
+  </ul>
+</section>
+
+<section id="rules">
+  <h2>The rules</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Rule</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><b>Old nodes must not answer wrongly.</b> If adding a field changes what a read means, make it a new <code>Read</code> variant, with a doc comment saying "older peers don't know it".</td><td>A peer decodes what it is sent leniently: it ignores a field it does not know. An old node would answer as if you had not asked, and the entry node would merge a wrong answer into a right one. An unknown variant is an error, so the old node is listed as not reached, which is true.</td></tr>
+      <tr><td><b>An answer fits about a mebibyte.</b> One frame is at most 1 MiB (<code>MAX_FRAME</code> in <code>crates/telltale-cluster/src/wire.rs</code>), and an answer a little under it. A larger answer fails with "answer too large", and the node is listed as missing.</td><td>The stream is shared with heartbeats and replication. Cap what you return (a page limit), paginate, or compress; do not assume it fits.</td></tr>
+      <tr><td><b>An ephemeral member can be asked, but may not change or reveal much.</b> A resolver pod is a member with less trust. Requests that change a node's state, forward configuration writes, or return anything sensitive are refused when the asker is ephemeral (the handler already does this for pauses, cache flushes, maintenance, rollouts, and node removal).</td><td>Pods are created by anyone who can schedule one, and they come and go. They get replicated configuration and their own queries, not the users and tokens.</td></tr>
+      <tr><td><b>Nothing a peer says is trusted.</b> Check sizes, counts, and paths in what it sends. When you report that a node failed, use your own words, not its text.</td><td>Another node is another machine. A bug or a compromise there must not become a bug or an injection here.</td></tr>
+      <tr><td><b>A secret in a request is held in memory and never printable.</b> Give the type a <code>Debug</code> that hides it. Don't log it, store it, or put it in an audit entry.</td><td>The <code>Read</code> enum derives <code>Debug</code>; whatever prints a read (a log, a panic message) would print the secret.</td></tr>
+      <tr><td><b>The query path never waits for the cluster.</b> A read has a deadline and a fallback; a write is forwarded or refused, never blocked on.</td><td>CLU-004: DNS never depends on anything else.</td></tr>
+      <tr><td><b>Don't change the frames casually.</b> The frames and their versions are the cluster protocol (CLU-010), and versions one apart must work together. Extending <code>Read</code> is not a protocol change; changing a frame is.</td><td>A cluster upgraded one node at a time spends days with two versions in it.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="recipe">
+  <h2>The recipe</h2>
+  <ol class="steps">
+    <li class="step"><b>Decide whether it should federate at all.</b> Configuration is replicated from the primary and is the same everywhere; a read that asks each node about <i>its own</i> data (its query log, its cache, its health) is what federates.</li>
+    <li class="step"><b>Add the <code>Read</code> variant</b> with a doc comment (the requirement, and "older peers don't know it").</li>
+    <li class="step"><b>Add a method to the <code>Backend</code> trait</b> in <code>crates/telltale-api/src/lib.rs</code> with a default that returns "unavailable", so a node that is not in a cluster still compiles. Implement it for the node's own data in <code>api_backend.rs</code>.</li>
+    <li class="step"><b>Answer it.</b> An arm in <code>answer()</code> that calls the node's own implementation.</li>
+    <li class="step"><b>Ask for it.</b> In the <code>Federated</code> implementation, build the reads for the peers in scope, call them (<code>gather</code> runs them in parallel with the two-second deadline), merge what came back with the local answer, and keep the failures in the missing list.</li>
+    <li class="step"><b>Gate it.</b> If it changes state or returns anything sensitive, refuse an ephemeral asker in the handler next to the others.</li>
+    <li class="step"><b>Bound it.</b> Cap the rows, the bytes, and the time.</li>
+    <li class="step"><b>Test it</b> (below), document it, and write the ADR if the choice was not obvious.</li>
+  </ol>
+</section>
+
+<section id="checks">
+  <h2>The checks</h2>
+  <ul>
+    <li><b>Unit tests</b> in <code>crates/telltale-cluster</code> run real nodes inside one process over real TLS (<code>net_tests.rs</code>), and the federated merge functions are plain functions you can test directly.</li>
+    <li><b>The end-to-end scripts</b> run real processes: <code>deploy/cluster/e2e.sh</code> starts a primary and a replica and walks the features (federated reads, write forwarding, shipped logs, maintenance), and CI's <code>native</code> job also runs the failover, GitOps failover, and node-removal scripts. Add a step for your read there: it is the only test that crosses a real stream with real sizes.</li>
+    <li><b>Say what you did not run.</b> A mixed-version cluster is hard to test; if you did not, the task's <i>Done</i> note says so.</li>
+    <li><b>Wait for exactly what you assert.</b> A cluster test waits for the condition it then checks. One test asserted a second condition straight after waiting for the first and failed once under load; the suspected cause is that the second is derived from state that arrives separately.</li>
+  </ul>
+</section>
+
+<section id="example">
+  <h2>Worked example: a negated search</h2>
+  <p>The query log's "not" filters (<a href="dev-api.html#example">Add an API parameter</a>) are sent to peers inside the existing <code>Queries</code> read. An older peer would have ignored the new flags and answered with ordinary rows. So a search that uses a flag goes out as <code>QueriesNegated</code>, with the same fields, and the live view as <code>TailOpenNegated</code>. A search without a flag still uses the old variants, so a mixed cluster keeps working for everything that existed before. The peer that doesn't know the new variant errors, and shows as not reached.</p>
+  <div class="guide-nav">
+    <a class="btn" href="dev-api.html">← Add an API parameter</a>
+    <a class="btn primary" href="dev-icons.html">Next: Extend the domain icons →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

@@ -34,3 +34,23 @@ fn api_003_setup_token_is_kept_private_and_reused_across_restarts() {
     assert!(!file.exists(), "no new token once set up");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// REQ: API-004 (issue #63) — with `disable_local_login` on, start-up names the networks that can
+// still sign in with a password, and warns when there are none.
+#[test]
+fn api_004_start_up_says_where_password_sign_in_is_still_open() {
+    let default = Config::default().auth.oidc.allowed_admin_networks;
+    assert!(
+        !default.is_empty(),
+        "the default break-glass list is not empty"
+    );
+    let (warning, line) = break_glass_notice(&default);
+    assert!(!warning, "the default list is information, not a warning");
+    for n in &default {
+        assert!(line.contains(&n.to_string()), "{line} should name {n}");
+    }
+    assert!(line.contains("allowed_admin_networks"));
+    let (warning, line) = break_glass_notice(&[]);
+    assert!(warning, "no break-glass network at all is a warning");
+    assert!(line.contains("nobody can sign in with a password"));
+}

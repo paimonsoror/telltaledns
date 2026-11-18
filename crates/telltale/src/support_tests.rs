@@ -32,6 +32,7 @@ fn req(level: &str, sample: u32, keep_map: bool) -> SupportPackageRequest {
         reveal: Vec::new(),
         query_sample: sample,
         keep_map,
+        cluster: false,
     }
 }
 
@@ -265,6 +266,7 @@ fn ops_011_a_slow_collector_is_left_behind_and_the_rest_carry_on() {
             created_unix: 0,
             created: "t".to_owned(),
             max_bytes: MAX_BYTES,
+            keyed_labels: false,
         },
         &known,
     )

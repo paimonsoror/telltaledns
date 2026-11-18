@@ -184,7 +184,8 @@ role = "viewer"</code></pre></li>
     <li><b>On Kubernetes,</b> mount the client secret with <code>secretMounts</code> (at <code>/etc/telltale-secrets/&lt;name&gt;</code>) and point <code>client_secret_file</code> at it. Put <code>[auth.oidc]</code> under <code>config:</code> in the values.</li>
   </ul>
   <div class="callout">
-    <p><b>Break-glass admin.</b> <code>disable_local_login = true</code> in <code>[auth.oidc]</code> turns off password sign-in and HTTP Basic, except for admins signing in from <code>allowed_admin_networks</code> (private networks by default). Keep a local admin account: it's your way in when the provider is down.</p>
+    <p><b>Break-glass admin.</b> <code>disable_local_login = true</code> in <code>[auth.oidc]</code> turns off password sign-in and HTTP Basic, except for admins signing in from <code>allowed_admin_networks</code>. Keep a local admin account: it's your way in when the provider is down.</p>
+    <p><b>The default list is your private networks and loopback,</b> so on a home or office network, or from a Docker or Kubernetes network, the sign-in form is still shown and the local admin can still sign in. To hide it from the rest of your network, narrow the list: <code>allowed_admin_networks = ["127.0.0.0/8", "::1/128"]</code> keeps it for the machine itself (inside a container the server may see the Docker bridge's address instead, such as <code>172.17.0.1/32</code>). <code>[]</code> turns password sign-in off for everyone, and then nobody can sign in with a password while the provider is down. Behind a reverse proxy, set <code>[api] trusted_proxies</code> as well: without it every browser appears to come from the proxy's address. The start-up log says which networks are open, and two-factor sign-in for the break-glass admin (Settings, Account) is worth turning on.</p>
   </div>
   <p class="muted">Every <code>[auth.oidc]</code> key is in the <a href="config.html">configuration reference</a>.</p>
 </section>

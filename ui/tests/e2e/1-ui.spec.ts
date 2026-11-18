@@ -2,6 +2,7 @@
 // dashboard, the query log and "Why?", explain, tokens, users and roles, sign-out/in, and a
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { query } from './dns';
@@ -768,6 +769,26 @@ test('ops_011 support package', async () => {
   await expect(card.getByTestId('support-map')).toBeDisabled();
 });
 
+// REQ: OPS-011 (ADR-172) — "Every node in the cluster": the request carries `cluster`, the pseudonym map
+// is switched off with it (the names never leave their nodes), and a node that is on its own says so
+// instead of making a package. (The cluster itself is `deploy/cluster/e2e.sh`.)
+test('ops_011 support package for the whole cluster', async () => {
+  await page.goto('/#/settings?tab=system');
+  const card = page.getByTestId('support-package');
+  await card.getByTestId('keep-map').check();
+  await card.getByTestId('cluster').check();
+  await expect(card.getByTestId('keep-map')).toBeDisabled();
+  await expect(card.getByTestId('keep-map')).not.toBeChecked();
+  const asked = page.waitForRequest((r) => r.url().includes('/system/support-package') && r.method() === 'POST');
+  await card.getByTestId('support-preview').click();
+  expect(JSON.parse((await asked).postData() ?? '{}').cluster).toBe(true);
+  await expect(card.getByRole('alert')).toContainText("isn't part of a cluster");
+  // The refusal is a 400, which the browser logs as a console error the suite would count: expected here.
+  problems.splice(0, problems.length, ...problems.filter((m) => !/status of 400/.test(m)));
+  await card.getByTestId('cluster').uncheck();
+  await expect(card.getByTestId('keep-map')).toBeEnabled();
+});
+
 // The header's icon buttons match: the pause button (its own component) is the same round,
 // borderless button as the theme toggle, on the same line (owner report 2026-10-06).
 test('header icon buttons are the same size and aligned', async () => {
@@ -842,6 +863,116 @@ test('admins add users; viewers see less', async () => {
   await page.goto('/');
   await signIn(ADMIN.user, ADMIN.pass);
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+});
+
+// REQ: API-003 (issue #64) — a real 6-digit code goes through the browser's own checks: the box on
+// Settings -> Account that turns two-factor on, and the one on the sign-in form. Both carried a
+// `pattern` that Svelte turned into `[0-9]6`, so no code could be entered and two-factor could not
+// be used from the UI at all. The codes are made here from the secret the page shows (RFC 6238).
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function totpAt(secretBase32: string, ms: number): string {
+  const bits = [...secretBase32.toUpperCase()].map((c) => BASE32.indexOf(c).toString(2).padStart(5, '0')).join('');
+  const key = Buffer.from((bits.match(/.{8}/g) ?? []).map((b) => parseInt(b, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(ms / 30_000)));
+  const h = createHmac('sha1', key).update(counter).digest();
+  const o = h[19] & 0x0f;
+  const n = ((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(n % 1_000_000).padStart(6, '0');
+}
+
+test('api_003 two-factor works from the browser: turn it on, sign in with a code, turn it off', async () => {
+  // The helper first: RFC 6238's own secret ("12345678901234567890") at 59 s gives 94287082.
+  expect(totpAt('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 59_000)).toBe('287082');
+  await page.goto('/#/settings?tab=account');
+  await page.getByRole('button', { name: 'Set up two-factor sign-in' }).click();
+  const secret = ((await page.locator('div.mono.key').textContent()) ?? '').replace(/\s/g, '');
+  expect(secret).toMatch(/^[A-Z2-7]{32}$/);
+  await page.getByPlaceholder('123456').fill(totpAt(secret, Date.now()));
+  await page.getByRole('button', { name: 'Turn on' }).click();
+  await expect(page.getByText('Save these recovery codes now.')).toBeVisible();
+  // Sign in again: the password, then the code. The server takes each time step's code once, so
+  // this one is the next step's (it accepts one step of clock skew).
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  await signIn(ADMIN.user, ADMIN.pass);
+  await expect(page.getByText('Enter the 6-digit code from your authenticator app.')).toBeVisible();
+  await page.locator('input[name="totp"]').fill(totpAt(secret, Date.now() + 30_000));
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await expect(page.getByText('recovery codes left')).toBeVisible();
+  // Leave the admin as the other tests expect it: no second factor.
+  await page.getByLabel('Password, to turn it off').fill(ADMIN.pass);
+  await page.getByRole('button', { name: 'Turn off two-factor' }).click();
+  await expect(page.getByRole('button', { name: 'Set up two-factor sign-in' })).toBeVisible();
+});
+
+// REQ: OBS-003 (ADR-171) — "everything except": each negated filter keeps exactly the rows its filter
+// leaves out (the two add up to the whole window), a flag without its filter is refused, and the
+// Queries page writes and reads the flags: the Match menu's "is not", and the "not" chip for statuses.
+test('obs_003 the query log can keep what a filter does not match', async () => {
+  // One query each: a name asked again would climb the cache page's top list (by hits), which a
+  // later test reads.
+  expect(await query('neg-a.cache.e2e.test')).toBe(0);
+  expect(await query('neg-b.cache.e2e.test')).toBe(0);
+  type Row = { name: string; status: string; qtype: string; client: string; rcode?: string | null };
+  const rows = async (q: string, to?: string) => {
+    const r = await page.request.get(`/api/v1/queries?${q}&from=-1h${to ? `&to=${encodeURIComponent(to)}` : ''}&limit=1000`);
+    expect(r.status(), q).toBe(200);
+    return (await r.json()) as { items: Row[]; nextCursor?: string | null };
+  };
+  await expect.poll(async () => (await rows('name=neg-')).items.length, { timeout: 20_000 }).toBe(2);
+  // One window for every count below, so a probe query logged meanwhile can't move them. It ends
+  // in the past, where the log is whole (it is flushed about once a second), and more than a second
+  // after our rows: the API reads `to` in whole seconds, so a row less than a second before it can
+  // fall outside.
+  await page.waitForTimeout(3000);
+  const to = new Date(Date.now() - 1500).toISOString();
+  const all = await rows('', to);
+  expect(all.nextCursor ?? null, 'the whole window fits in one page').toBeNull();
+  const cases: [string, (r: Row) => boolean][] = [
+    ['name=neg-a', (r) => r.name.includes('neg-a')],
+    ['name=neg-a.cache.e2e.test&match=exact', (r) => r.name === 'neg-a.cache.e2e.test'],
+    ['name=cache.e2e.test&match=suffix', (r) => r.name.endsWith('cache.e2e.test')],
+    ['name=neg-*.cache.e2e.test&match=glob', (r) => /^neg-.\.cache\.e2e\.test$/.test(r.name)],
+    ['name=^neg-[ab][.]cache&match=regex', (r) => /^neg-[ab][.]cache/.test(r.name)],
+    ['status=forwarded', (r) => r.status === 'forwarded'],
+    ['qtype=A', (r) => r.qtype === 'A'],
+    ['client=127.0.0.1', (r) => r.client === '127.0.0.1'],
+    ['rcode=NOERROR', (r) => r.rcode === 'NOERROR'],
+  ];
+  for (const [q, keeps] of cases) {
+    const flag = `${q.split('=')[0]}Not`;
+    const positive = await rows(q, to);
+    const negated = await rows(`${q}&${flag}=true`, to);
+    expect(positive.items.every(keeps), q).toBe(true);
+    expect(negated.items.some(keeps), `${q} negated`).toBe(false);
+    expect(positive.items.length + negated.items.length, `${q}: the match and its negation make the window`).toBe(all.items.length);
+  }
+  expect((await rows('name=neg-a', to)).items).toHaveLength(1);
+  expect((await rows('name=neg-a&nameNot=true', to)).items.filter((r) => r.name.startsWith('neg-'))).toHaveLength(1);
+  // A flag without its filter is refused, naming it.
+  for (const flag of ['nameNot', 'clientNot', 'statusNot', 'qtypeNot', 'rcodeNot']) {
+    const r = await page.request.get(`/api/v1/queries?${flag}=true&from=-1h`);
+    expect(r.status(), flag).toBe(400);
+    expect(await r.text()).toContain(flag);
+  }
+  // The page reads the flag from the address and writes it back.
+  await page.goto('/#/queries?name=neg-a.cache.e2e.test&match=exact&nameNot=true&from=-1h');
+  await expect(page.locator('select[name="match"]')).toHaveValue('!exact');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  await expect(page.locator('table.log tbody')).not.toContainText('neg-a.cache.e2e.test');
+  await page.locator('select[name="match"]').selectOption('substring');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page).not.toHaveURL(/nameNot/);
+  await expect(page.locator('table.log tbody')).toContainText('neg-a.cache.e2e.test');
+  // The "not" chip turns the chosen statuses around.
+  await page.goto('/#/queries?status=blocked&from=-1h');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  await page.getByTestId('status-not').click();
+  await expect(page).toHaveURL(/statusNot=true/);
+  await expect(page.locator('table.log tbody')).not.toContainText('blocked');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
 });
 
 test('works at phone width (360 px)', async () => {

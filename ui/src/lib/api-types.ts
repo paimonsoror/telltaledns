@@ -2009,7 +2009,11 @@ export interface paths {
          * @description Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
          *     glob|regex`), client, status, query type, response code, upstream, minimum latency, and
          *     time range. Pass `nextCursor` back as `cursor` for older rows. Example:
-         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
+         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a
+         *     filter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`
+         *     (`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose
+         *     name does not contain `doubleclick`. A negated search reads every block the time range and
+         *     the other filters leave, so give a time range or another filter on a long log.
          */
         get: operations["queries"];
         put?: never;
@@ -2032,7 +2036,8 @@ export interface paths {
          * @description Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
          *     fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
          *     skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-         *     connection open. Filters are applied on the server. In a browser:
+         *     connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
+         *     applied on the server. In a browser:
          *     `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
          *     in). Honors the query-log privacy level; at most 16 streams per node.
          */
@@ -2142,8 +2147,8 @@ export interface paths {
          *     "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
          *     UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:
          *     TelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and
-         *     stores that file's path; the value is never stored, logged, or returned (ADR-173). Credential files named
-         *     here (`api_key_file`, …) must be under `<data_dir>/secrets/` too. Leave a credential out to
+         *     stores that file's path; the value is never stored, logged, or returned (ADR-173).
+         *     Credential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too. Leave a credential out to
          *     keep the current one, unless the type, address, site, or TLS settings change: then it must
          *     be entered again. Admins only (agents: `config:write:routers`, which `config:write:*`
          *     doesn't include). The routers are read again within seconds; a router the config files
@@ -2682,6 +2687,11 @@ export interface paths {
          *     With `keepMap`, the answer carries `X-Support-Package-Id`, and `GET
          *     /system/support-package/{id}/map` returns the pseudonyms and the real values behind them once,
          *     within ten minutes: it is not for attaching. `?dryRun=true` answers with the manifest only.
+         *
+         *     With **`cluster`**, the package covers every reachable node: each makes and redacts its own part
+         *     under one key made for this package (sent over the cluster channel, never stored), so a device
+         *     has the same pseudonym in every node's files and no real value crosses the network. The
+         *     manifest lists each node and whether it answered; the size cap is shared. Not with `keepMap`.
          *     Free text is redacted by pattern, which is best effort: look the package over before you
          *     attach it. Admin only; audit-logged as `support.package`. Not an MCP tool.
          */
@@ -7526,6 +7536,14 @@ export interface components {
         };
         /** @description REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold. */
         SupportPackageRequest: {
+            /**
+             * @description REQ: OPS-011 (ADR-172) — one package for the whole cluster: every reachable node makes and
+             *     redacts its own part under one key made for this package, so a device has the same
+             *     pseudonym on every node and no real name or address leaves the node it is on. Not with
+             *     `keepMap` (the names never leave their nodes, so there is no map). A node that doesn't
+             *     answer, or is older than this feature, is listed in the manifest.
+             */
+            cluster?: boolean;
             /** @description Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`). */
             keepMap?: boolean;
             /**
@@ -11917,14 +11935,34 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`. Default: `substring`. */
                 match?: components["schemas"]["NameMatch"];
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:
+                 *     does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
+                 *     `name`. Default: false.
+                 */
+                nameNot?: boolean;
                 /** @description Client IP address. */
                 client?: string;
+                /** @description Keep the rows from every client except `client`. Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /**
+                 * @description Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every
+                 *     query that was not blocked). Needs `status`. Default: false.
+                 */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Response codes, comma-separated (`NXDOMAIN,SERVFAIL`). */
                 rcode?: string;
+                /**
+                 * @description Keep the rows whose response code is none of `rcode` (queries that got no response code
+                 *     are kept). Needs `rcode`. Default: false.
+                 */
+                rcodeNot?: boolean;
                 /**
                  * @description Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
                  *     name the upstream that answered for all of them.
@@ -11995,14 +12033,25 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`: `substring` (default), `exact`, `suffix`, or `glob` (`*`, `?`). */
                 match?: components["schemas"]["NameMatch"];
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
+                 *     Needs `name`. Default: false.
+                 */
+                nameNot?: boolean;
                 /** @description Client IP address. */
                 client?: string;
+                /** @description Only queries from every client except `client`. Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description The client's group (its highest-priority group). */
                 group?: string;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /** @description Only queries whose status is none of `status`. Needs `status`. Default: false. */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Only queries whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Upstream ID (from `GET /upstreams`). */
                 upstream?: number;
                 /** @description Only queries that took at least this long. */

@@ -467,8 +467,9 @@
             </li>
             <li>Enter the 6-digit code it shows.</li>
           </ol>
+          <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
           <form class="row" onsubmit={enableTotp}>
-            <input inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="123456" bind:value={totpCode} />
+            <input inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={'[0-9]{6}'} required placeholder="123456" bind:value={totpCode} />
             <button class="primary" type="submit">Turn on</button>
             <button type="button" onclick={() => (totp = null)}>Cancel</button>
           </form>

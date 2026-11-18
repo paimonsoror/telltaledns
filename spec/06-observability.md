@@ -74,6 +74,7 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
   3. Prune blocks with the block index + bloom filter.
   4. Decode only the needed columns, filter, and stream results newest-first with cursor pagination.
   5. Parallelize segments across a small thread pool (1 thread on Pi by default).
+  6. **Negation (ADR-171):** name, client, status, type, and response code can each be turned around ("everything except"). The dictionary's ID set is flipped, the blooms are not used for a negated name or client (they only say "maybe present"), and a block is pruned for a negated status or response code only when every value in it is excluded.
 - **Retention (OBS-003):** by days (default 30) **and** by bytes (default 2 GiB; oldest segments deleted first). Expected compressed size is ~10–20 bytes/row, so 50M rows ≈ 0.5–1 GiB.
 - **Privacy levels** (Pi-hole parity): `0` full; `1` hide domains (stored as hash); `2` hide domains + clients; `3` anonymous (no per-query log, aggregates only). Configurable per group.
 - **Escape hatch:** `telltale ctl qlog export --from --to --format parquet|csv|jsonl` for offline analysis (Parquet behind a feature flag).

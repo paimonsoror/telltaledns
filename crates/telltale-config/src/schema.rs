@@ -2704,9 +2704,21 @@ pub struct OidcConfig {
     /// after sign-out the provider returns to `<public_url>/`; register both with it.
     pub public_url: SafeString,
     /// Turn off password sign-in (and HTTP Basic) except for admins signing in from
-    /// `allowed_admin_networks` (break-glass, for when the provider is down).
+    /// `allowed_admin_networks` (break-glass, for when the provider is down). That list is
+    /// private networks and loopback unless you change it, so on a home or office network the
+    /// sign-in form is still shown and the local admin can still sign in: this is a way in for
+    /// when the provider is down, not a switch that hides the form. Narrow
+    /// `allowed_admin_networks` to hide it from the rest of your network, or set it to `[]` to
+    /// turn password sign-in off for everyone.
     pub disable_local_login: bool,
-    /// Where break-glass admin sign-in is allowed. Default: private networks and loopback.
+    /// Where break-glass admin sign-in is allowed while `disable_local_login` is on. Default:
+    /// private networks and loopback, so from a LAN or a Docker or Kubernetes network the
+    /// password form is still offered. Narrow it to loopback (`["127.0.0.0/8", "::1/128"]`; in a
+    /// container the server may see the Docker bridge's address instead, such as
+    /// `172.17.0.1/32`) or to the one machine you manage from, or set it to `[]` to turn password
+    /// sign-in off for everyone (then nobody can sign in with a password while the provider is
+    /// down). Behind a reverse proxy, set `[api] trusted_proxies` too, or every browser appears
+    /// to come from the proxy's address.
     pub allowed_admin_networks: Vec<Cidr>,
     pub provider: Vec<OidcProvider>,
     /// REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its

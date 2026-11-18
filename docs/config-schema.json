@@ -2615,7 +2615,7 @@
       "type": "object",
       "properties": {
         "allowed_admin_networks": {
-          "description": "Where break-glass admin sign-in is allowed. Default: private networks and loopback.",
+          "description": "Where break-glass admin sign-in is allowed while `disable_local_login` is on. Default:\nprivate networks and loopback, so from a LAN or a Docker or Kubernetes network the\npassword form is still offered. Narrow it to loopback (`[\"127.0.0.0/8\", \"::1/128\"]`; in a\ncontainer the server may see the Docker bridge's address instead, such as\n`172.17.0.1/32`) or to the one machine you manage from, or set it to `[]` to turn password\nsign-in off for everyone (then nobody can sign in with a password while the provider is\ndown). Behind a reverse proxy, set `[api] trusted_proxies` too, or every browser appears\nto come from the proxy's address.",
           "type": "array",
           "default": [
             "10.0.0.0/8",
@@ -2634,7 +2634,7 @@
           }
         },
         "disable_local_login": {
-          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down).",
+          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down). That list is\nprivate networks and loopback unless you change it, so on a home or office network the\nsign-in form is still shown and the local admin can still sign in: this is a way in for\nwhen the provider is down, not a switch that hides the form. Narrow\n`allowed_admin_networks` to hide it from the rest of your network, or set it to `[]` to\nturn password sign-in off for everyone.",
           "type": "boolean",
           "default": false
         },

@@ -174,7 +174,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "search_queries",
-            description: "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
+            description: "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Each of name, client, status, qtype, and rcode can be turned around with its Not flag (name with nameNot: every query whose name does not contain the text; on a long log give a time range too). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "Part of the queried name."},
@@ -183,6 +183,11 @@ pub fn tools() -> Vec<Tool> {
                 "status": {"type": "string", "description": "blocked, cached, forwarded, local, refused, error, ..."},
                 "qtype": {"type": "string", "description": "A, AAAA, HTTPS, ..."},
                 "rcode": {"type": "string", "description": "NOERROR, NXDOMAIN, SERVFAIL, ..."},
+                "nameNot": {"type": "boolean", "description": "Keep the queries whose name does NOT contain `name`. Needs `name`."},
+                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except `client`. Needs `client`."},
+                "statusNot": {"type": "boolean", "description": "Keep the queries whose status is none of `status`. Needs `status`."},
+                "qtypeNot": {"type": "boolean", "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`."},
+                "rcodeNot": {"type": "boolean", "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`."},
                 "minLatencyMs": {"type": "integer", "description": "Only queries slower than this."},
                 "from": {"type": "string", "description": "Start (relative like -1h, or RFC 3339). Default: all retained."},
                 "to": {"type": "string", "description": "End (default now)."},
@@ -203,6 +208,11 @@ pub fn tools() -> Vec<Tool> {
                         ("status", "status"),
                         ("qtype", "qtype"),
                         ("rcode", "rcode"),
+                        ("nameNot", "nameNot"),
+                        ("clientNot", "clientNot"),
+                        ("statusNot", "statusNot"),
+                        ("qtypeNot", "qtypeNot"),
+                        ("rcodeNot", "rcodeNot"),
                         ("minLatencyMs", "minLatencyMs"),
                         ("from", "from"),
                         ("to", "to"),

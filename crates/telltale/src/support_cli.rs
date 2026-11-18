@@ -26,6 +26,8 @@ pub(crate) struct Args {
     pub(crate) list: bool,
     pub(crate) output: Option<PathBuf>,
     pub(crate) offline: bool,
+    /// REQ: OPS-011 (ADR-172) — every reachable node's part, in one package.
+    pub(crate) cluster: bool,
 }
 
 /// How much to read of the node's answer (the cap is 20 MiB of content).
@@ -61,6 +63,9 @@ fn counts(v: Option<&Value>) -> String {
 
 /// What the manifest says, as a table and a total.
 fn show_manifest(m: &Value) -> String {
+    if m["kind"] == "cluster" {
+        return show_cluster(m);
+    }
     let mut rows = vec![vec![
         "FILE".to_owned(),
         "PART".to_owned(),
@@ -137,6 +142,28 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// REQ: OPS-011 (ADR-172) — what a cluster package holds: each node, whether it answered, how much.
+fn show_cluster(m: &Value) -> String {
+    let mut out = String::from("NODE  STATUS  FILES  SIZE  NOTE\n");
+    for n in m["nodes"].as_array().into_iter().flatten() {
+        let _ = writeln!(
+            out,
+            "{}  {}  {}  {}  {}",
+            n["node"].as_str().unwrap_or("?"),
+            n["status"].as_str().unwrap_or("?"),
+            n["files"].as_u64().unwrap_or(0),
+            size(n["bytes"].as_u64().unwrap_or(0)),
+            n["note"].as_str().unwrap_or("")
+        );
+    }
+    let _ = write!(
+        out,
+        "\nLevel {}; one part per node, each redacted on its own node.",
+        m["level"].as_str().unwrap_or("?")
+    );
+    out
+}
+
 /// The package from a running node: `(file name, the map's ID, manifest, archive)`.
 async fn ask_node(
     base: &str,
@@ -151,6 +178,7 @@ async fn ask_node(
         "reveal": req.reveal,
         "querySample": req.query_sample,
         "keepMap": req.keep_map,
+        "cluster": req.cluster,
     });
     let url = format!(
         "{}/api/v1/system/support-package{}",
@@ -248,6 +276,7 @@ pub(crate) fn run(
         reveal: a.reveal.clone(),
         query_sample: a.query_sample,
         keep_map: a.keep_map.is_some(),
+        cluster: a.cluster,
     };
     if let Err(p) = telltale_api::support_api::validate(&req) {
         let hint = p
@@ -255,6 +284,10 @@ pub(crate) fn run(
             .as_deref()
             .map_or_else(String::new, |h| format!(" ({h})"));
         eprintln!("error: {}{hint}", p.detail);
+        return ExitCode::from(2);
+    }
+    if a.cluster && a.offline {
+        eprintln!("error: --cluster asks the running nodes, so it can't be made --offline");
         return ExitCode::from(2);
     }
     let token = match token_file {

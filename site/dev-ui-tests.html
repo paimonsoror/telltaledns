@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Write UI tests — TelltaleDNS</title>
+<meta name="description" content="How the TelltaleDNS web UI is tested: one serial Playwright suite against the real binary, the rules for writing a test that does not disturb the next one, and the timing traps in the query log and the API.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="dev-ui-tests">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Developers</p>
+  <h1>Write UI tests</h1>
+  <p class="lede">The web UI is tested against the real binary, in one browser session, in order. That is what makes the tests honest, and what makes them fragile if you are careless: a test that leaves something behind breaks a test that runs an hour of wall time later. This page is how to write one that doesn't.</p>
+  <ul class="onpage">
+    <li><a href="#layout">How the suite is laid out</a></li>
+    <li><a href="#rules">The rules</a></li>
+    <li><a href="#recipe">Write and run a test</a></li>
+    <li><a href="#time">Time</a></li>
+    <li><a href="#checks">The checks</a></li>
+    <li><a href="#example">Worked examples</a></li>
+  </ul>
+</section>
+
+<section id="layout">
+  <h2>How the suite is laid out</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>File in <code>ui/tests/e2e/</code></th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><code>1-ui.spec.ts</code></td><td>The main suite: <b>one <code>serial</code> group on one server and one signed-in page</b>. The first test creates the admin with the setup token; everything after runs as that admin.</td></tr>
+      <tr><td><code>2-shots.spec.ts</code></td><td>Screenshots for the documentation.</td></tr>
+      <tr><td><code>3-oidc.spec.ts</code></td><td>Sign-in through real Keycloak and Authentik (the <code>oidc</code> job).</td></tr>
+      <tr><td><code>4-icons</code>, <code>5-markers</code>, <code>6-markup</code></td><td>Tests that need no browser page: pure functions and a scan of the source. Fast, and immune to everything on this page.</td></tr>
+      <tr><td><code>server.mjs</code>, <code>dns.ts</code></td><td>The test server and a DNS helper. <code>server.mjs</code> writes a configuration, starts the binary with it on <code>127.0.0.1:18054</code> with the query log flushed every second, and runs a stub upstream that answers any name. <code>query(name)</code> asks the server over UDP and returns the response code.</td></tr>
+    </tbody>
+  </table></div>
+  <p>The configuration is <code>ui/playwright.config.ts</code>: one worker, no parallelism, and <b>no retries</b>.</p>
+</section>
+
+<section id="rules">
+  <h2>The rules</h2>
+  <ul>
+    <li><b>Prefer the test that needs no browser.</b> Put the logic in a plain module and test it directly, as the icon tests do. A page test is for what only a page can show.</li>
+    <li><b>Leave the server as you found it, or in a state no later test reads.</b> Turn a setting back off (the two-factor test switches it on and then off again). Don't leave users, tokens, rules, or notes behind unless a later test needs them.</li>
+    <li><b>Don't change what other tests count.</b> The suite shares one query log and one cache. A name asked three times climbs the Cache page's top list (ranked by hits), and a later test that expected a different name first failed for exactly that reason. Ask a name once, or use one nobody else reads.</li>
+    <li><b>Say what you depend on.</b> The suite's earlier tests create things: the admin, the blocked name <code>ads.e2e.test</code>, the local record <code>nas.e2e.test</code>. If your test needs one, add a comment saying so; if you can, make the thing yourself.</li>
+    <li><b>Assert invariants, not counts of shared state.</b> "A filter and its negation add up to every row in the window" holds whatever else is in the log; "there are 417 rows" does not.</li>
+    <li><b>The test fails on any page error or console error</b>, including a content-security-policy violation (only 401 and 403 are expected). Don't log errors on purpose.</li>
+    <li><b>The title starts with the requirement ID</b> (<code>obs_039 …</code>), with a <code>// REQ:</code> comment above it, so the trace picks it up.</li>
+    <li><b>A failure hides everything after it.</b> In a serial group the rest are "did not run", so the first failure is the real one. That is why there are no retries: a retry would run the group again on top of the state the first attempt left, and fail somewhere else.</li>
+  </ul>
+</section>
+
+<section id="recipe">
+  <h2>Write and run a test</h2>
+  <ol class="steps">
+    <li class="step"><b>Add it to <code>1-ui.spec.ts</code></b> near the feature's neighbours, or to a browser-less file if it needs no page.</li>
+    <li class="step"><b>Build the UI first, then the binary.</b> The binary embeds <code>ui/dist</code>, so a stale build tests old code:
+<pre><code>cd ui
+npm ci
+npm run build
+cargo build -p telltale                 # from the repository root: cd .. first
+npx playwright install chromium         # once
+npx playwright test tests/e2e/1-ui.spec.ts -g "first run|your test title"</code></pre>
+    The first-run test is in the pattern because yours needs the admin it creates. <code>TELLTALE_BIN</code> points the server at another binary.</li>
+    <li class="step"><b>Run the whole file once before you push.</b> A test that passes alone and fails in the suite (or the reverse) is the common failure of this kind. Run the whole <code>ui/tests/e2e</code> folder too: the browser-less files are part of the job.</li>
+    <li class="step"><b>Break it on purpose.</b> Put the bug back and watch the test fail. A test you have never seen fail proves nothing.</li>
+  </ol>
+</section>
+
+<section id="time">
+  <h2>Time</h2>
+  <ul>
+    <li><b>The query log is written about once a second</b> in the test server. A row you just caused is not in the log yet: poll for it (<code>expect.poll</code>), never <code>sleep</code>.</li>
+    <li><b>The API reads <code>from</code> and <code>to</code> in whole seconds.</b> A window that ends less than a second after your last row can exclude it. End a window in the past, a second and a half or more after the rows are in, and use one window for every count so a background query can't move them.</li>
+    <li><b>Background queries exist.</b> The probes and checks write rows too. Count what you caused (by a name only you use), not the log.</li>
+    <li><b>Sign-ins are slow.</b> A password check is deliberately expensive. Expect seconds, and give the step a timeout of its own.</li>
+    <li><b>A time-based credential</b> (a two-factor code) is valid for a window of time, and the server accepts each step once. The two-factor test computes the code from the secret the page shows, then signs in with the <i>next</i> step's code, which the server accepts as clock skew and has not seen.</li>
+  </ul>
+</section>
+
+<section id="checks">
+  <h2>The checks</h2>
+  <ul>
+    <li>The <code>ui</code> job runs the suite against the real binary on every push; the <code>oidc</code> job runs it again with real sign-in providers.</li>
+    <li>A flaky test is a bug. Re-run the failed job to get a green run, say that you did, and open an issue (<a href="https://github.com/paimonsoror/telltaledns/issues/69">#69</a> is an example with the likely cause for each). See <a href="dev-gates.html#flaky">How we work: the gates</a>.</li>
+  </ul>
+</section>
+
+<section id="example">
+  <h2>Worked examples</h2>
+  <ul>
+    <li><b>Two-factor sign-in through the page.</b> The two-factor box carried a pattern that no code could match (<a href="dev-svelte.html">Svelte pitfalls</a>), and no test touched it. The test turns two-factor on with a code computed from the page's secret (checking its own helper against the RFC's published test vector first), signs out, signs in with the next step's code, and turns it off. With the bug put back it fails at the first step, which is how you know it tests the bug.</li>
+    <li><b>The query log's "not" filters.</b> Three traps in one test. It asked a name three times (the Cache page's ranking test failed), it ended its window less than a second after its rows (the API's whole seconds), and it first relied on rows another test would have made. The final version asks each name once, waits three seconds and ends its window a second and a half in the past, and checks invariants: each filter plus its negation equals the whole window.</li>
+  </ul>
+  <div class="guide-nav">
+    <a class="btn" href="dev-icons.html">← Extend the domain icons</a>
+    <a class="btn primary" href="dev-svelte.html">Next: Svelte pitfalls →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

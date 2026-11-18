@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::path::Path;
 
 use serde::Serialize;
-use telltale_store::qlog::{self, Cursor, Filter, NameMatch, Row};
+use telltale_store::qlog::{self, Cursor, Filter, NameMatch, Not, Row};
 use telltale_telemetry::{QTYPES, Status};
 
 /// Search options from the command line.
@@ -18,6 +18,8 @@ pub(crate) struct Args {
     pub(crate) client: Option<IpAddr>,
     pub(crate) status: Vec<String>,
     pub(crate) qtype: Vec<String>,
+    /// REQ: OBS-003 (ADR-171) — keep what the name, client, status, or type filter does NOT match.
+    pub(crate) not: Not,
     pub(crate) since_secs: Option<u64>,
     pub(crate) min_ms: Option<u32>,
     pub(crate) limit: usize,
@@ -60,11 +62,32 @@ fn qtype_text(t: u16) -> String {
         .map_or_else(|| format!("TYPE{t}"), |(_, n)| (*n).to_owned())
 }
 
+/// A `--not-…` flag keeps what its filter does not match, so it needs that filter.
+fn check_negations(a: &Args) -> Result<(), String> {
+    for (on, given, flag, needs) in [
+        (a.not.name, a.name.is_some(), "--not-name", "a name"),
+        (a.not.client, a.client.is_some(), "--not-client", "--client"),
+        (
+            a.not.status,
+            !a.status.is_empty(),
+            "--not-status",
+            "--status",
+        ),
+        (a.not.qtype, !a.qtype.is_empty(), "--not-qtype", "--qtype"),
+    ] {
+        if on && !given {
+            return Err(format!("{flag} needs {needs}"));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run(
     cfg: &telltale_config::Config,
     a: &Args,
     out: &mut dyn Write,
 ) -> Result<(), String> {
+    check_negations(a)?;
     let dir = Path::new(cfg.node.data_dir.as_str()).join("qlog");
     let now_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -100,6 +123,7 @@ pub(crate) fn run(
             })
             .collect::<Result<_, _>>()?,
         min_total_us: a.min_ms.map(|ms| ms.saturating_mul(1000)),
+        not: a.not,
         ..Filter::default()
     };
     let cursor = match &a.cursor {
@@ -182,5 +206,42 @@ fn json_row<'a>(r: &'a Row, lists: &[String]) -> JsonRow<'a> {
             .map(|x| if x.allow { "allow" } else { x.kind.label() }),
         total_us: r.t_total_us,
         upstream_us: r.t_upstream_us,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // REQ: OBS-003 (ADR-171) — a `--not-…` flag without its filter is refused, not ignored.
+    #[test]
+    fn obs_003_cli_negation_needs_its_filter() {
+        let with = |f: fn(&mut Args)| {
+            let mut a = Args::default();
+            f(&mut a);
+            check_negations(&a)
+        };
+        assert!(check_negations(&Args::default()).is_ok());
+        assert_eq!(
+            with(|a| a.not.name = true).unwrap_err(),
+            "--not-name needs a name"
+        );
+        assert!(with(|a| a.not.client = true).is_err());
+        assert!(with(|a| a.not.status = true).is_err());
+        assert!(with(|a| a.not.qtype = true).is_err());
+        assert!(
+            with(|a| {
+                a.not.name = true;
+                a.name = Some("ads".to_owned());
+            })
+            .is_ok()
+        );
+        assert!(
+            with(|a| {
+                a.not.status = true;
+                a.status = vec!["blocked".to_owned()];
+            })
+            .is_ok()
+        );
     }
 }

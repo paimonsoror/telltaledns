@@ -121,6 +121,15 @@ pub trait Backend: Send + Sync + 'static {
             "support packages aren't available on this node",
         ))
     }
+    /// REQ: OPS-011 (ADR-172) — this node's part of a cluster support package, made and redacted
+    /// here under the asking node's key: gzip-compressed JSON that fits one cluster answer
+    /// (about a mebibyte). May take a few seconds; called on a blocking thread.
+    fn support_part(&self, req: &model::SupportCollectRequest) -> Result<Vec<u8>, Problem> {
+        let _ = req;
+        Err(Problem::unavailable(
+            "support packages aren't available on this node",
+        ))
+    }
     /// REQ: OPS-011 — the pseudonym map of the package `id`, once, if it is still held.
     fn support_map(&self, id: &str) -> Option<String> {
         let _ = id;
@@ -813,8 +822,9 @@ pub enum ManagedKind {
     /// `*` for any): the group of the workloads it matches. API rules come before the files'.
     KubernetesMap,
     /// REQ: T8.2, API-002 — a router integration (`/routers/{name}`): a UniFi console, an
-    /// OPNsense box, or a MikroTik router whose clients name devices. Its key, secret, or password may come in the
-    /// body; they're written to files in the data directory, never stored or returned (ADR-173).
+    /// OPNsense box, or a MikroTik router whose clients name devices. Its key, secret, or
+    /// password may come in the body; they're written to files in the data directory, never
+    /// stored or returned (ADR-173).
     Router,
 }
 
@@ -1579,7 +1589,8 @@ async fn stats_timeseries(
 /// Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
 /// fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
 /// skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-/// connection open. Filters are applied on the server. In a browser:
+/// connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
+/// applied on the server. In a browser:
 /// `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
 /// in). Honors the query-log privacy level; at most 16 streams per node.
 #[utoipa::path(get, path = "/api/v1/queries/stream", tag = "queries", params(TailParams),
@@ -1597,6 +1608,17 @@ async fn queries_stream(
     if p.rate.is_some_and(|r| !(1..=2000).contains(&r)) {
         return Err(Problem::invalid("`rate`: 1 to 2000 events per second"));
     }
+    check_negations(&[
+        ("nameNot", p.name_not, "name", p.name.is_some()),
+        ("clientNot", p.client_not, "client", p.client.is_some()),
+        (
+            "statusNot",
+            p.status_not,
+            "status",
+            listed(p.status.as_ref()),
+        ),
+        ("qtypeNot", p.qtype_not, "qtype", listed(p.qtype.as_ref())),
+    ])?;
     let rx = b.tail(&p)?;
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         let event = match rx.recv().await? {
@@ -1720,12 +1742,34 @@ async fn stats_latency(
     }))
 }
 
+/// REQ: OBS-003 (ADR-171) — a `…Not` flag keeps what its filter does not match, so it needs
+/// that filter.
+fn check_negations(flags: &[(&str, Option<bool>, &str, bool)]) -> Result<(), Problem> {
+    for &(flag, on, filter, given) in flags {
+        if on == Some(true) && !given {
+            return Err(Problem::invalid(format!("`{flag}` needs `{filter}`")).hint(format!(
+                "`{flag}=true` keeps the rows that do not match `{filter}`: give `{filter}` too, or drop `{flag}`."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a comma-separated filter names anything.
+fn listed(v: Option<&String>) -> bool {
+    v.is_some_and(|s| s.split(',').any(|x| !x.trim().is_empty()))
+}
+
 /// Search the query log.
 ///
 /// Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
 /// glob|regex`), client, status, query type, response code, upstream, minimum latency, and
 /// time range. Pass `nextCursor` back as `cursor` for older rows. Example:
-/// `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
+/// `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a
+/// filter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`
+/// (`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose
+/// name does not contain `doubleclick`. A negated search reads every block the time range and
+/// the other filters leave, so give a time range or another filter on a long log.
 #[utoipa::path(get, path = "/api/v1/queries", tag = "queries", params(QueryParams),
     responses((status = 200, body = QueryPage, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it."),
         (status = 503, body = Problem, description = "The query log is off.")))]
@@ -1741,6 +1785,18 @@ async fn queries(
     if p.name_match.is_some_and(|m| m != NameMatch::Substring) && p.name.is_none() {
         return Err(Problem::invalid("`match` needs `name`"));
     }
+    check_negations(&[
+        ("nameNot", p.name_not, "name", p.name.is_some()),
+        ("clientNot", p.client_not, "client", p.client.is_some()),
+        (
+            "statusNot",
+            p.status_not,
+            "status",
+            listed(p.status.as_ref()),
+        ),
+        ("qtypeNot", p.qtype_not, "qtype", listed(p.qtype.as_ref())),
+        ("rcodeNot", p.rcode_not, "rcode", listed(p.rcode.as_ref())),
+    ])?;
     // REQ: OBS-017 (ADR-110) — a trace ID names the microsecond its query started; of the rows
     // logged then, the one whose fields give the same ID. Checked here, after every node
     // answered, so nodes that don't know `trace` still help.

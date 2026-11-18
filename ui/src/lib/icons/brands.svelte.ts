@@ -1,6 +1,8 @@
 // Icon lab — the brand glyphs are a separate chunk, fetched once when the first icon needs one, so
 // a page that shows none never pays for them.
-export const brandData = $state<{ ready: boolean; data: Record<string, [string, string]> }>({
+// A glyph is [brand colour, path, grid size]: the size is left out for the 24 grid of Simple Icons and
+// is 16 for the glyphs of Bootstrap Icons.
+export const brandData = $state<{ ready: boolean; data: Record<string, [string, string, number?]> }>({
   ready: false,
   data: {},
 });

@@ -6,6 +6,7 @@
 //! well-known public resolvers are left alone.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// What a name stands for, which decides its pseudonym's shape and its own counter.
@@ -63,15 +64,40 @@ impl Category {
     }
 }
 
+/// How a name's label is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Labels {
+    /// A number, in the order names are first met (`device-3`): readable, but a different node
+    /// would number the same device differently.
+    #[default]
+    Counted,
+    /// REQ: OPS-011 (ADR-172) — a few bytes of a keyed hash of the name (`device-a3f9c2e1`): the
+    /// same name gets the same label in every package made under one key, whatever order it is
+    /// met in, which is how the nodes of one cluster package agree on a device's label.
+    Keyed,
+}
+
 /// The package's pseudonyms, under one random key.
 #[derive(Debug)]
 pub struct Pseudonyms {
     key: [u8; 32],
+    labels: Labels,
     names: HashMap<(Category, String), (String, String)>,
+    /// Keyed labels in use, so two names that land on one label can be told apart.
+    taken: HashMap<String, (Category, String)>,
     next: BTreeMap<Category, u32>,
     reveal: HashSet<String>,
     ips: HashMap<IpAddr, IpAddr>,
     macs: HashMap<[u8; 6], [u8; 6]>,
+}
+
+/// A name's pseudonym from its tag: `device-3`, `zone-3.example`, `user-3@example.invalid`.
+fn label(cat: Category, tag: &str) -> String {
+    match cat {
+        Category::Zone => format!("zone-{tag}.example"),
+        Category::Email => format!("user-{tag}@example.invalid"),
+        _ => format!("{}-{tag}", cat.prefix()),
+    }
 }
 
 /// Top-level domains of names nobody can look up; the rest of the names are public.
@@ -195,7 +221,9 @@ impl Pseudonyms {
     pub fn new(key: [u8; 32]) -> Self {
         Self {
             key,
+            labels: Labels::Counted,
             names: HashMap::new(),
+            taken: HashMap::new(),
             next: BTreeMap::new(),
             reveal: HashSet::new(),
             ips: HashMap::new(),
@@ -208,6 +236,40 @@ impl Pseudonyms {
     pub fn with_reveal(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.reveal = names.into_iter().map(|n| n.to_ascii_lowercase()).collect();
         self
+    }
+
+    /// Labels from a keyed hash instead of numbers (see [`Labels::Keyed`]).
+    #[must_use]
+    pub fn with_keyed_labels(mut self) -> Self {
+        self.labels = Labels::Keyed;
+        self
+    }
+
+    /// A name's tag under keyed labels: eight hex digits of a keyed hash of what it is, two more
+    /// bytes each time a different name already holds that label.
+    fn keyed_tag(&mut self, cat: Category, lower: &str) -> String {
+        let h = blake3::keyed_hash(
+            &self.key,
+            format!("label\0{}\0{lower}", cat.prefix()).as_bytes(),
+        );
+        let bytes = h.as_bytes();
+        let mut len = 4;
+        loop {
+            let mut tag = String::with_capacity(len * 2);
+            for b in &bytes[..len] {
+                let _ = write!(tag, "{b:02x}");
+            }
+            let name = label(cat, &tag);
+            let held = self
+                .taken
+                .get(&name)
+                .is_some_and(|(c, other)| (*c, other.as_str()) != (cat, lower));
+            if !held || len >= bytes.len() {
+                self.taken.insert(name, (cat, lower.to_owned()));
+                return tag;
+            }
+            len += 2;
+        }
     }
 
     fn revealed(&self, name: &str) -> bool {
@@ -223,13 +285,15 @@ impl Pseudonyms {
         if let Some((p, _)) = self.names.get(&(cat, lower.clone())) {
             return p.clone();
         }
-        let n = self.next.entry(cat).or_insert(0);
-        *n += 1;
-        let p = match cat {
-            Category::Zone => format!("zone-{n}.example"),
-            Category::Email => format!("user-{n}@example.invalid"),
-            _ => format!("{}-{n}", cat.prefix()),
+        let tag = match self.labels {
+            Labels::Counted => {
+                let n = self.next.entry(cat).or_insert(0);
+                *n += 1;
+                n.to_string()
+            }
+            Labels::Keyed => self.keyed_tag(cat, &lower),
         };
+        let p = label(cat, &tag);
         self.names
             .insert((cat, lower), (p.clone(), original.to_owned()));
         p
@@ -454,6 +518,46 @@ mod tests {
         assert_eq!(s.name(Category::Namespace, "media"), "ns-1");
         assert_eq!(s.name(Category::Zone, "home.example.com"), "zone-1.example");
         assert_eq!(s.email("Me@Example.org"), "user-1@example.invalid");
+    }
+
+    // REQ: OPS-011 (ADR-172) — under keyed labels a name's label depends on the key and the name, not on
+    // what was met before it, so two nodes under one key agree.
+    #[test]
+    fn ops_011_keyed_labels_are_the_same_whatever_the_order() {
+        let mut a = Pseudonyms::new([7; 32]).with_keyed_labels();
+        let mut b = Pseudonyms::new([7; 32]).with_keyed_labels();
+        let x1 = a.name(Category::Device, "Living-TV");
+        let y1 = a.name(Category::Device, "printer");
+        let y2 = b.name(Category::Device, "printer");
+        let x2 = b.name(Category::Device, "living-tv");
+        assert_eq!(
+            (&x1, &y1),
+            (&x2, &y2),
+            "met in another order, the same labels"
+        );
+        assert_ne!(x1, y1);
+        assert!(
+            x1.starts_with("device-") && x1.len() == "device-".len() + 8,
+            "{x1}"
+        );
+        let mut c = Pseudonyms::new([8; 32]).with_keyed_labels();
+        assert_ne!(
+            c.name(Category::Device, "Living-TV"),
+            x1,
+            "another key, another label"
+        );
+        assert!(a.name(Category::Zone, "home.lan").ends_with(".example"));
+        assert!(
+            a.name(Category::Email, "me@x.io")
+                .ends_with("@example.invalid")
+        );
+        // The same name in another kind is another label, and the map still lists each pair.
+        assert_ne!(a.name(Category::Group, "Living-TV"), x1);
+        assert!(a.map().contains("Living-TV"));
+        // Counted labels are unchanged.
+        let mut n = Pseudonyms::new([7; 32]);
+        assert_eq!(n.name(Category::Device, "Living-TV"), "device-1");
+        assert_eq!(n.name(Category::Device, "printer"), "device-2");
     }
 
     #[test]

@@ -31,7 +31,7 @@ const DEADLINE: Duration = Duration::from_secs(5);
 /// How long the whole package may take; collectors after it are skipped.
 const TOTAL: Duration = Duration::from_secs(30);
 /// The most file content in one package (the largest files are cut first).
-const MAX_BYTES: usize = 20 * 1024 * 1024;
+pub(crate) const MAX_BYTES: usize = 20 * 1024 * 1024;
 /// How long the pseudonym map waits for its one download.
 const MAP_TTL: Duration = Duration::from_secs(600);
 
@@ -150,7 +150,7 @@ fn names_in(v: &Value, keys: &[&str], cat: Category, known: &mut Known) {
 }
 
 /// A compact UTC time for a file name: `20261116T045632Z`.
-fn stamp(us: u64) -> String {
+pub(crate) fn stamp(us: u64) -> String {
     let t = telltale_api::time::format_us(us);
     let head = t.split('.').next().unwrap_or(&t);
     head.chars()
@@ -160,7 +160,7 @@ fn stamp(us: u64) -> String {
 }
 
 /// Lowercase hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut s, b| {
         let _ = write!(s, "{b:02x}");
@@ -315,21 +315,39 @@ fn add_watchdog(pkg: &mut Package, data_dir: &std::path::Path, detailed: bool) {
     pkg.add_text("watchdog/latest-dump.txt", "watchdog", &text, true);
 }
 
-/// The package: collect, redact, archive. A `dry_run` stops at the manifest.
-pub(crate) fn build(
+/// What decides a package's names, key, and size: this node's own package (numbered names, a key
+/// of its own), or its part of a cluster package (keyed labels, the asking node's key, and the
+/// share of the size cap that node gave it).
+struct Basis {
+    key: [u8; 32],
+    keyed: bool,
+    max_bytes: usize,
+}
+
+/// This node's data, collected and put through the redactor, not yet finished.
+struct Made {
+    pkg: Package,
+    node_name: String,
+    now_us: u64,
+}
+
+fn busy() -> Problem {
+    Problem::new(
+        Code::Conflict,
+        "a support package is already being made on this node",
+    )
+    .hint("Wait for it to finish (a few seconds), then ask again.")
+}
+
+/// Collects this node's state and redacts it into a package.
+fn make(
     b: &ApiBackend,
-    req: &SupportPackageRequest,
-    dry_run: bool,
-) -> Result<SupportPackageOutput, Problem> {
-    let Some(_busy) = BusyGuard::take() else {
-        return Err(Problem::new(
-            Code::Conflict,
-            "a support package is already being made on this node",
-        )
-        .hint("Wait for it to finish (a few seconds), then ask again."));
-    };
+    level: Level,
+    query_sample: u32,
+    reveal: &[String],
+    basis: &Basis,
+) -> Result<Made, Problem> {
     let started = Instant::now();
-    let level = to_level(req.level.as_deref());
     let detailed = level != Level::Strict;
     let me = Arc::new(ApiBackend {
         src: Arc::clone(&b.src),
@@ -341,15 +359,16 @@ pub(crate) fn build(
     let now_us = now.saturating_mul(1_000_000);
 
     // Collected first, so the redactor knows every name before it writes a line.
-    let collected = collect(&me, started, detailed, req.query_sample, now);
+    let collected = collect(&me, started, detailed, query_sample, now);
     let known = known_names(&cfg_json, &collected);
     let opts = Options {
         level,
-        key: rand::random::<[u8; 32]>(),
-        reveal: req.reveal.clone(),
+        key: basis.key,
+        reveal: reveal.to_vec(),
         created_unix: now,
         created: telltale_api::time::format_us(now_us),
-        max_bytes: MAX_BYTES,
+        max_bytes: basis.max_bytes,
+        keyed_labels: basis.keyed,
     };
     let mut pkg = Package::new(opts, &known)
         .map_err(|e| Problem::internal(format!("the package couldn't start: {e}")))?;
@@ -359,9 +378,16 @@ pub(crate) fn build(
         std::path::Path::new(cfg.node.data_dir.as_str()),
         detailed,
     );
+    Ok(Made {
+        pkg,
+        node_name: cfg.node.name.as_str().to_owned(),
+        now_us,
+    })
+}
 
-    // Its name: the node's, as a pseudonym unless the package shows real values.
-    let node_name = cfg.node.name.as_str();
+/// The node's label in a file name or a cluster package: a pseudonym, unless the package shows
+/// real values.
+fn node_label(pkg: &mut Package, level: Level, node_name: &str) -> String {
     let who = if level == Level::Off {
         node_name
             .chars()
@@ -370,11 +396,88 @@ pub(crate) fn build(
     } else {
         pkg.redactor().name(Category::Node, node_name)
     };
-    let who = if who.is_empty() {
+    if who.is_empty() {
         "node".to_owned()
     } else {
         who
+    }
+}
+
+/// The most a part may weigh once compressed: the cluster channel carries about a mebibyte per answer.
+const WIRE_LIMIT: usize = 1_000_000;
+
+/// 64 hex digits as 32 bytes.
+fn unhex32(s: &str) -> Option<[u8; 32]> {
+    let s = s.trim();
+    if s.len() != 64 || !s.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// REQ: OPS-011 (ADR-172) — this node's part of a cluster package: made and redacted here under the
+/// asking node's key, with labels that don't depend on the order names are met in, cut to fit one
+/// cluster answer. Nothing real leaves the node.
+pub(crate) fn part(
+    b: &ApiBackend,
+    req: &telltale_api::model::SupportCollectRequest,
+) -> Result<Vec<u8>, Problem> {
+    let Some(_busy) = BusyGuard::take() else {
+        return Err(busy());
     };
+    // The asking node is a cluster member we trust to ask, but its request is checked as an API one is.
+    telltale_api::support_api::validate(&SupportPackageRequest {
+        level: req.level.clone(),
+        reveal: req.reveal.clone(),
+        query_sample: req.query_sample,
+        keep_map: false,
+        cluster: false,
+    })?;
+    let key = unhex32(&req.key).ok_or_else(|| {
+        Problem::invalid("`key`: 64 hex digits").hint("It is made by the node that asks.")
+    })?;
+    let level = to_level(req.level.as_deref());
+    let basis = Basis {
+        key,
+        keyed: true,
+        max_bytes: req.max_bytes.clamp(64 * 1024, MAX_BYTES),
+    };
+    let Made {
+        mut pkg, node_name, ..
+    } = make(b, level, req.query_sample, &req.reveal, &basis)?;
+    let who = node_label(&mut pkg, level, &node_name);
+    let (_, wire) = pkg.finish_part_for_wire(&who, WIRE_LIMIT);
+    tracing::info!(level = %level, bytes = wire.len(), "a part of a cluster support package was made for another node");
+    Ok(wire)
+}
+
+/// The package: collect, redact, archive. A `dry_run` stops at the manifest.
+pub(crate) fn build(
+    b: &ApiBackend,
+    req: &SupportPackageRequest,
+    dry_run: bool,
+) -> Result<SupportPackageOutput, Problem> {
+    let Some(_busy) = BusyGuard::take() else {
+        return Err(busy());
+    };
+    let level = to_level(req.level.as_deref());
+    let basis = Basis {
+        key: rand::random::<[u8; 32]>(),
+        keyed: false,
+        max_bytes: MAX_BYTES,
+    };
+    let Made {
+        mut pkg,
+        node_name,
+        now_us,
+    } = make(b, level, req.query_sample, &req.reveal, &basis)?;
+
+    // Its name: the node's, as a pseudonym unless the package shows real values.
+    let who = node_label(&mut pkg, level, &node_name);
     let file_name = format!("telltale-support-{who}-{}.tar.gz", stamp(now_us));
     let done = pkg.finish();
     let manifest = serde_json::to_value(&done.manifest).unwrap_or(Value::Null);
@@ -465,6 +568,7 @@ pub(crate) fn offline(
         created_unix: now,
         created: telltale_api::time::format_us(now_us),
         max_bytes: MAX_BYTES,
+        keyed_labels: false,
     };
     let mut pkg = Package::new(opts, &known_from_config(&cfg_json))
         .map_err(|e| Problem::internal(format!("the package couldn't start: {e}")))?;

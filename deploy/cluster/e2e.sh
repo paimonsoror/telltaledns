@@ -19,6 +19,8 @@
 # replica's shipped rows, and one on the primary lists the stopped replica as missing; (T14.7,
 # OBS-033): a forwarded change is a marker on both nodes with one sequence, a note made on the
 # replica is in the primary's read, and the stopped replica is listed as missing there.
+# (OPS-011, ADR-172): a cluster support package from the primary holds both nodes' parts, redacted on their
+# own nodes, and refuses keepMap.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -388,6 +390,37 @@ for _ in $(seq 50); do [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] && break; sleep 
 [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record didn't come back to the replica"
 get '/api/v1/audit' | grep -q 'admin via r' || fail "the primary's audit log doesn't name the user and entry node"
 echo "ok"
+
+# REQ: OPS-011 (ADR-172) — one support package for the cluster: the primary makes a key and asks the
+# replica for its part over the cluster stream; each node redacts its own data; the package holds both,
+# under folders that are pseudonyms, never the nodes' real names ("p" and "r"). keepMap is refused.
+echo "== a support package for the whole cluster (OPS-011)"
+code=$(curl -s -o "$E/sup.tgz" -w '%{http_code}' -b "$E/jar" -H "x-csrf-token: $PCSRF" \
+  -H 'content-type: application/json' -d '{"cluster":true,"keepMap":true}' "$API/api/v1/system/support-package")
+[ "$code" = 400 ] || fail "a cluster package with keepMap wasn't refused ($code)"
+code=$(curl -s -o "$E/sup.tgz" -w '%{http_code}' -b "$E/jar" -H "x-csrf-token: $PCSRF" \
+  -H 'content-type: application/json' -d '{"cluster":true}' "$API/api/v1/system/support-package")
+[ "$code" = 200 ] || fail "the cluster support package wasn't made ($code: $(head -c 300 "$E/sup.tgz"))"
+tar -tzf "$E/sup.tgz" > "$E/sup.list" || fail "the cluster package isn't a tar.gz"
+[ "$(grep -c '^nodes/[^/]*/MANIFEST.json$' "$E/sup.list")" = 2 ] \
+  || fail "the cluster package doesn't hold both nodes: $(head -20 "$E/sup.list")"
+tar -xzOf "$E/sup.tgz" MANIFEST.json | python3 -c '
+import sys, json
+m = json.load(sys.stdin)
+assert m["kind"] == "cluster", m
+assert [n["status"] for n in m["nodes"]] == ["ok", "ok"], m["nodes"]
+names = [n["node"] for n in m["nodes"]]
+assert len(set(names)) == 2 and all(n.startswith("node-") for n in names), names
+' || fail "the cluster package's manifest isn't right: $(tar -xzOf "$E/sup.tgz" MANIFEST.json | head -c 600)"
+! grep -q '^nodes/\(p\|r\)/' "$E/sup.list" || fail "a node's real name is a folder in the cluster package"
+for f in $(grep '^nodes/[^/]*/config/effective.json$' "$E/sup.list"); do
+  tar -xzOf "$E/sup.tgz" "$f" | python3 -c '
+import sys, json
+c = json.load(sys.stdin)
+assert c["node"]["name"].startswith("node-"), c["node"]
+' || fail "$f names its node: $(tar -xzOf "$E/sup.tgz" "$f" | head -c 300)"
+done
+echo "ok (both nodes made their parts; one package; node names are pseudonyms)"
 
 # REQ: OBS-033 (T14.7) — the forwarded record is one config.applied marker on each node with the
 # same sequence: the primary's names who made it, the replica's says it came from the cluster.

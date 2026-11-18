@@ -72,8 +72,9 @@
       </label>
     {:else if !useRecovery}
       <p class="muted">Enter the 6-digit code from your authenticator app.</p>
+      <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
       <label class="field">Code
-        <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required bind:value={totp} />
+        <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern={'[0-9]{6}'} maxlength="6" required bind:value={totp} />
       </label>
       <button type="button" class="link" onclick={() => (useRecovery = true)}>Use a recovery code instead</button>
     {:else}

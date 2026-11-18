@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Size and performance budgets — TelltaleDNS</title>
+<meta name="description" content="The limits a change to TelltaleDNS must stay within: the 15 MiB image, the 400 KiB web UI, and the DNS path's speed. What we cut, what we measured and refused, and how to measure without fooling yourself.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="dev-budgets">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Developers</p>
+  <h1>Size and performance budgets</h1>
+  <p class="lede">TelltaleDNS runs on a Raspberry Pi next to other things, so footprint and speed are features with hard limits. This page lists the limits, where the bytes and the microseconds are, what we have already cut, what we measured and refused (so nobody has to measure it again), and how to measure your own change.</p>
+  <ul class="onpage">
+    <li><a href="#rules">The rules</a></li>
+    <li><a href="#image">The image: 15 MiB</a></li>
+    <li><a href="#cut">What we cut</a></li>
+    <li><a href="#refused">What we measured and refused</a></li>
+    <li><a href="#ui">The web UI: 400 KiB</a></li>
+    <li><a href="#speed">The DNS path's speed</a></li>
+    <li><a href="#more">When you need more</a></li>
+  </ul>
+</section>
+
+<section id="rules">
+  <h2>The rules</h2>
+  <ul>
+    <li><b>Performance ranks above footprint, and footprint above everything else but speed.</b> If a size saving costs speed on the DNS path, the speed wins. We have refused savings of 0.3 MiB for that reason (below).</li>
+    <li><b>Never add allocation, locking, or I/O to the hot path</b> without a benchmark that shows it is within budget. The steady-state cache-hit and blocked-answer paths allocate nothing (NFR-002, checked by an allocation-counting test).</li>
+    <li><b>A new runtime dependency</b> needs a one-line justification and must not push the image past 15 MiB (<a href="https://github.com/paimonsoror/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>, rule 8).</li>
+    <li><b>Measure, don't assume.</b> Every number in an ADR came from a real build. If you cannot say how you measured it, it is a guess.</li>
+  </ul>
+</section>
+
+<section id="image">
+  <h2>The image: 15 MiB per architecture</h2>
+  <ul>
+    <li><b>The gate.</b> The <code>image</code> workflow builds every platform, then <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/image/size.py"><code>deploy/image/size.py</code></a> adds up the <i>compressed</i> layer sizes per platform and fails over 15 MiB. Compressed is what a Pi downloads, so how well something compresses matters: the same bytes stored twice cost twice.</li>
+    <li><b>Where the bytes are.</b> About 97% of the image is the one static binary. Its largest parts are the DNS and TLS code, SQLite, and the embedded web UI.</li>
+    <li><b>Where we are.</b> About 13.0 MiB on amd64, 12.3 on arm64, and 12.8 on armv7 after the cuts below (it was 14.84, 14.16, and 14.82 when the margin ran out). The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
+    <li><b>Measure it like CI does.</b> Build the image with BuildKit and OCI output as the <a href="https://github.com/paimonsoror/telltaledns/blob/main/.github/workflows/image.yml"><code>image</code> workflow</a> does, then run <code>python3 deploy/image/size.py --oci image.tar</code>. A debug build says nothing: the release profile uses fat LTO, one codegen unit, and abort on panic.</li>
+  </ul>
+</section>
+
+<section id="cut">
+  <h2>What we cut</h2>
+  <p>Each is an ADR with the numbers (<a href="decisions.html">Decisions</a>). Sizes are amd64, compressed.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Cut</th><th>Saved</th><th>How, and the catch</th></tr></thead>
+    <tbody>
+      <tr><td>The OpenAPI document compiled in</td><td>0.60 MiB</td><td>Served from the committed <code>docs/api/openapi.json</code> instead of being built from the annotations on every request. A test keeps the file equal to the code. (ADR-168)</td></tr>
+      <tr><td>The web UI stored gzip-only</td><td>0.29 MiB</td><td>The embedded UI used to carry each file raw and as <code>.gz</code>; the layer's compression can only shrink the raw one, so every asset cost twice its gzip size. Clients without gzip get an inflated copy. (ADR-168)</td></tr>
+      <tr><td>No CA bundle in the image</td><td>0.12 MiB</td><td>Nothing reads the system trust store: every TLS client uses the Mozilla roots compiled in. A private CA is set with <code>tls_ca</code>. (ADR-168)</td></tr>
+      <tr><td>A compact zoneinfo</td><td>about 0.2 MiB</td><td>Built once with <code>zic -b fat</code> instead of copying Debian's three copies. The build fails if a zone name goes missing, and a test checks every file against the host's. (ADR-169)</td></tr>
+      <tr><td>SQLite without full-text search, R-tree, and dbstat</td><td>about 0.2 MiB</td><td><code>LIBSQLITE3_FLAGS</code> in <code>.cargo/config.toml</code> (so the tests run against the SQLite we ship), with a test that the four modules are gone and the ones we use are not. (ADR-169)</td></tr>
+      <tr><td>25 crates off the DNS path built for size</td><td>0.36 MiB</td><td><code>opt-level = "s"</code> in <code>[profile.release.package.*]</code>. A guard test keeps hot-path crates off the list. (ADR-170)</td></tr>
+      <tr><td>Icon glyphs minified</td><td>about 15 KiB, with eleven more glyphs</td><td>Path data to two decimals. See <a href="dev-icons.html">Extend the domain icons</a>.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="refused">
+  <h2>What we measured and refused</h2>
+  <p>Do not spend time on these again unless the situation has changed. The reason is the part to read.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Idea</th><th>What it would save</th><th>Why not</th></tr></thead>
+    <tbody>
+      <tr><td><code>opt-level = "s"</code> for <code>telltale-config</code></td><td>0.6 MiB</td><td>Its per-query client lookup grew and cache-hot throughput fell about 10%. Speed wins.</td></tr>
+      <tr><td>SQLite's C code at <code>-Os</code></td><td>0.31 MiB</td><td>On the rollup store's real queries the dashboard's week-wide top list was 10.5% slower, minute reads 11%, point reads 22%, bulk inserts 38%.</td></tr>
+      <tr><td><code>opt-level = "s"</code> for <code>rusqlite</code></td><td>tiny</td><td>On the same query path, with no measurable gain to pay for it.</td></tr>
+      <tr><td>zstd image layers</td><td>about 2.1 MiB</td><td>Docker before 23.0 and containerd before 1.5 cannot pull them, and Debian 12's <code>docker.io</code> is 20.10.</td></tr>
+      <tr><td>Stripping <code>.eh_frame</code></td><td>part of the binary</td><td>The watchdog's stack capture unwinds with it (ADR-163).</td></tr>
+      <tr><td>Linker identical-code-folding</td><td>a little</td><td>The cross compiler rejects the flag.</td></tr>
+      <tr><td>A slim zoneinfo (<code>zic -b slim</code>)</td><td>0.06 MiB more</td><td><code>jiff</code> refuses one of its files (<code>America/Ojinaga</code>), so a schedule in that zone would be rejected as unknown. The zoneinfo test is the check if a later <code>jiff</code> accepts it.</td></tr>
+      <tr><td>Re-compressing the layer with zopfli</td><td>about 0.95 MiB</td><td>A new build step and a provenance question for a one-time gain.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><p><b>A guard test keeps the profile honest.</b> <code>crates/telltale-config/tests/profile.rs</code> fails if a crate known to be on the DNS path is added to the size-optimized list, if an entry is not exactly <code>"s"</code>, or if an entry no longer matches <code>Cargo.lock</code>. The last one matters: a <code>name@version</code> entry that a dependency update makes stale is only a cargo warning, and the saving would vanish unseen. A crate present in two versions must be written <code>name@version</code>.</p></div>
+</section>
+
+<section id="ui">
+  <h2>The web UI: 400 KiB</h2>
+  <ul>
+    <li><b>The budget</b> is 400 KiB gzipped for the whole of <code>ui/dist</code>, lazy chunks included. <code>npm run build</code> prints the total and fails over the limit (<code>ui/scripts/postbuild.mjs</code>). It is about 296 KiB now.</li>
+    <li><b>Big data goes in a lazy chunk</b> that loads when something needs it (the icon glyphs are one), so a page that never shows it never pays for it.</li>
+    <li><b>The UI is embedded in the binary</b> as gzip only, so every KiB of UI is close to a KiB in the image.</li>
+    <li><b>A chart or a font library is a dependency.</b> Justify it against the budget before you add it.</li>
+  </ul>
+</section>
+
+<section id="speed">
+  <h2>The DNS path's speed</h2>
+  <ul>
+    <li><b>The path.</b> Receive, parse, policy, cache or forward, answer. Everything else (telemetry, storage, the API, the cluster) runs off it and may fail without a query going unanswered. The crates on the path: <code>telltale-proto</code>, <code>-net</code>, <code>-cache</code>, <code>-filter</code>, <code>-policy</code>, <code>-telemetry</code>, <code>-upstream</code>, and the per-query lookups in <code>telltale-config</code>. Run <code>make bench-smoke</code> after a change to any of them.</li>
+    <li><b>CI cannot judge speed.</b> Hosted runners are too noisy for a regression gate, so the <code>bench-smoke</code> job fails only on lost queries or errors. You compare before and after yourself.</li>
+    <li><b>Benchmark with a control.</b> On a shared build machine two runs of the same binary differed by up to about 15% for the DNS benchmark (about 0.5 to 4% for a single-thread SQLite workload). So build the baseline, the change, and a second copy of the baseline (the control), run them in rotation five or more times, and compare medians: a difference inside the control's spread is noise.</li>
+    <li><b>Benchmark the build you ship.</b> <code>make bench-smoke</code> uses the <code>bench-fast</code> profile (thin LTO, 16 codegen units). The release build is fat LTO with one codegen unit and per-crate overrides, so a change to the release profile needs a release build of each variant (<code>cargo build --release --config 'profile.release.package.X.opt-level="s"'</code> sets an override without editing the manifest).</li>
+    <li><b>Look at the code, not only the number.</b> For a compiler-setting change, list the sizes of the DNS-path functions in each binary with <code>nm</code>. Of 1,737 functions, 1,724 were identical for the size-optimized list: that is the evidence the hot path was not touched. A per-query function that changed size is the one to benchmark.</li>
+    <li><b>The latency budget</b> (spec 00 §5): a cache hit or a blocked answer adds at most 250 µs at p99, at half the maximum load. A change that wakes an idle runtime worker before the answer is sent shows up only at low load, so measure at low and at high rates.</li>
+  </ul>
+</section>
+
+<section id="more">
+  <h2>When you need more</h2>
+  <ol class="steps">
+    <li class="step"><b>Find the offset first.</b> Look for a cut of the same size that costs nothing (the table above shows several). A feature that adds 0.1 MiB and a cut that removes 0.3 is a good week.</li>
+    <li class="step"><b>Write it down.</b> An ADR with the before and after numbers from real builds, and what you measured and did not take.</li>
+    <li class="step"><b>Let CI confirm.</b> The size gate on your commit is the number that counts, not your estimate.</li>
+    <li class="step"><b>Add a guard</b> if the cut can be undone by accident, like the profile test.</li>
+  </ol>
+  <div class="guide-nav">
+    <a class="btn" href="dev-gates.html">← How we work: the gates</a>
+    <a class="btn primary" href="dev-api.html">Next: Add an API parameter →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

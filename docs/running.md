@@ -230,14 +230,22 @@ When something goes wrong, the most useful thing to attach to an issue is a **su
 - In the web UI: **Settings → System → Support package** (admins). **Preview what it holds** lists every file with its size and what would be replaced; **Make the package** downloads it.
 - From a shell: `telltale support-package` (it asks the running node, with an admin's API token in `TELLTALE_TOKEN` or `--token-file`). Add `--list` to see what it would hold and write nothing.
 - With no token, or with `--offline`, it is made from the configuration files and the log files instead, without asking a running node: use that when the node won't start. It has no live state (no cluster, health, upstreams, or metrics), and says so.
-- Over the API: `POST /api/v1/system/support-package` with `{"level": "strict"}` (admin; `?dryRun=true` answers with the manifest only). It isn't an MCP tool and no agent scope covers it.
+- Over the API: `POST /api/v1/system/support-package` with `{"level": "strict"}` (admin; `?dryRun=true` answers with the manifest only; `"cluster": true` for every node's part). It isn't an MCP tool and no agent scope covers it.
 
 ```sh
 telltale support-package                               # strict (the default): ./telltale-support-<node>-<time>.tar.gz
 telltale support-package --level standard --query-sample 200 --reveal pi
 telltale support-package --keep-map map.txt            # also write what each pseudonym stands for (keep it private)
 telltale support-package --offline -c /etc/telltale/telltale.toml
+telltale support-package --cluster                     # every node's part, in one package
 ```
+
+**A package for the whole cluster** (`--cluster`, or "Every node in the cluster" on the page)
+- The node you ask makes a key for this one package and sends it to every reachable node over the cluster's own authenticated connection (it is never stored). **Each node makes and redacts its own part**, so no real name or address crosses the network, and sends it back compressed. The package holds `nodes/<node>/` for each, laid out like a package from that one node, and a `MANIFEST.json` that lists every node and whether it answered.
+- A device, group, or host has **the same pseudonym on every node** (`device-a3f9c2e1`: a few bytes of a keyed hash, so the nodes agree without comparing notes), and addresses are permuted the same way everywhere. A single-node package numbers its names instead (`device-3`).
+- A node that doesn't answer in 45 seconds, is older than this feature, is busy making another package, or has no open connection is listed as missing, with a fixed reason; the rest of the package is complete. Ephemeral members (pods that come and go) are asked like the others but can't ask.
+- The 20 MiB cap is shared: each node's part gets an equal share, the largest files are cut first, and a part is also cut to fit what the cluster connection carries (about a mebibyte compressed). The manifest says what was cut.
+- Not with `--keep-map` (there is no map: the names never leave their nodes), and not with `--offline`.
 
 **Levels** (`--level`, or the choice on the page)
 | Level | What it does |
@@ -2707,8 +2715,11 @@ fsync = false                # true: sync every write (slower on SD cards)
   telltale qlog search --client 192.168.1.50 --status blocked --since 3600
   telltale qlog search '*.example.org' --match glob -t AAAA --json    # JSON lines
   telltale qlog search --min-ms 500 --limit 20                      # slow queries
+  telltale qlog search doubleclick --not-name --since 3600          # the last hour, except names containing "doubleclick"
+  telltale qlog search --status blocked --not-status --since 600    # everything that was not blocked
   ```
   Results come newest first; the last line prints a `--cursor` for the next page. `--match` is `substring` (default), `exact`, `suffix` (the name or anything below it), `glob`, or `regex`.
+- **"Everything except":** each filter can be turned around to keep the queries that do *not* match it: `--not-name`, `--not-client`, `--not-status`, `--not-qtype` on the command line; `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, `rcodeNot` (`=true`) on `GET /api/v1/queries` (the Live stream takes all but `rcodeNot`); and on the Query log page the **Match** menu's "does not contain", "is not", "is not, or under", "does not match wildcard", "does not match regex", the **not** boxes beside Client, Type, and Rcode, and the **not** chip before the statuses. A flag needs its filter (`nameNot` needs `name`). A negated `rcode` also keeps the queries that got no response code. A negated search can't use the per-block name index (that only says "maybe here", never "not here"), so it reads every block the time range and the other filters leave, like a "contains" search does: on a long log, add a time range or another filter. In a cluster, nodes older than this version don't answer a negated search or Live view and are listed as not reached, rather than answering rows that weren't negated.
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
 - Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
 
@@ -2960,7 +2971,7 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Page | What it shows |
 |---|---|
 | Dashboard | queries, blocked %, cache hits, upstream latency, active clients, each with its change against the previous period; one chart whose hover gives the exact figures for each moment (totals and blocked, or the split by status; the Advanced view adds traffic by group and upstream exchanges), with a **Table** view and the change markers; the [service level](#service-level-objectives) (each objective's last 30 days, error budget left, and burn rates); where time goes; top domains, blocked names, and clients with their groups, one line each (click a name to open the query log, tap a count for the full name); upstream share and health. In a cluster, **Showing** switches between every node together, one node, or one site's nodes (remembered in your browser) |
-| Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
+| Query log | search by name (contains, exact, subdomains, wildcard, regex, or none of these), client, status, type, response code (each can be turned around: "not"), slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (Healthy, Benched, or Probing: the circuit breaker's closed, open, and half-open), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |
 | Settings | your password and two-factor sign-in, how domain names are drawn ([Domain icons](#domain-icons)), API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
@@ -2971,7 +2982,7 @@ The menu ends with the health icon ([Health](#health)), links to the project on 
 
 ### Domain icons
 A small mark sits left of each name in the dashboard's **Top domains** and **Top blocked** lists and in the query log. The page draws it from data it already has, so nothing is fetched and nothing about your queries is sent to anyone: no favicon service is involved, and the page's content security policy still allows images only from itself.
-- A **brand** TelltaleDNS knows gets its colour and logo mark: `netflix.com`, `www.youtube.com`, and a CDN name such as `nflxso.net` (Netflix). About a hundred brands are known, from [Simple Icons](https://simpleicons.org) (CC0; see the [third-party notices](third-party-notices.md)). Some large companies' marks aren't in that set (Microsoft, Amazon and AWS, LinkedIn, Slack, Disney+, Hulu, OpenAI, and a few more): their names get a monogram.
+- A **brand** TelltaleDNS knows gets its colour and logo mark: `netflix.com`, `www.youtube.com`, and a CDN name such as `nflxso.net` (Netflix). About a hundred and twenty brands are known, from two packs: [Simple Icons](https://simpleicons.org) (CC0) first, and [Bootstrap Icons](https://icons.getbootstrap.com) (MIT) for the marks Simple Icons has dropped (Microsoft and Teams, Amazon, LinkedIn, Slack, OpenAI, Xbox, Bing, Skype, Windows, Nintendo); see the [third-party notices](third-party-notices.md). A few large companies' marks are in neither (Disney+, Hulu, Minecraft, Adobe, the BBC, Walmart, AWS): their names get a monogram.
 - Every other name gets a **monogram**: its owner's first letter, in a colour that is always the same for that owner. A name of your own network (`.arpa`, `.lan`, `.local`, Kubernetes) gets a small house. A blocked name's mark is drained of most of its colour. When a privacy level hides names, there are no icons.
 - **Settings → Account → Domain icons** picks the style (**Brand and monogram**, **Monogram only**, or **Off**) and the size (**Default**, 20 px, or **Small**, 16 px). The choice is kept for you in this browser. With **Monogram only** or **Off**, the brand marks aren't even downloaded.
 
@@ -3027,9 +3038,9 @@ listen = "0.0.0.0:8053"
 | `GET /api/v1/stats/timeseries?step=minute&from=-1h` | counts per second or minute by status, type, and response code |
 | `GET /api/v1/stats/top?kind=blocked&limit=10` | top `domains`, `blocked`, `nxdomain`, or `clients` (add `client=IP` for one device's domains; `hour=previous` for the last complete hour, and for clients `hour=rolling` for the last hour whatever the clock hour) |
 | `GET /api/v1/stats/latency?by=upstream` | percentiles by `path`, `qtype`, `upstream`, or `stage` |
-| `GET /api/v1/queries?name=ads&status=blocked&from=-1h` | the query log, newest first (filters: `name` + `match`, `client`, `status`, `qtype`, `rcode`, `upstream`, `minLatencyMs`, `from`, `to`) |
+| `GET /api/v1/queries?name=ads&status=blocked&from=-1h` | the query log, newest first (filters: `name` + `match`, `client`, `status`, `qtype`, `rcode`, `upstream`, `minLatencyMs`, `from`, `to`; `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, `rcodeNot` keep what a filter does not match) |
 | `GET /api/v1/audit?action=user.`, `GET /api/v1/audit/verify` | the audit log, newest first, and a check of its hash chain (admins) |
-| `GET /api/v1/queries/stream?status=blocked` | live queries as Server-Sent Events (`event: query` with a query-log row, `event: dropped` with how many matching queries were skipped). Filters: `name` + `match` (not regex), `client`, `group`, `status`, `qtype`, `upstream`, `minLatencyMs`; `rate` caps events per second (default 500, at most 2000). At most 16 streams per node; follows the query-log privacy level (level 3: off) |
+| `GET /api/v1/queries/stream?status=blocked` | live queries as Server-Sent Events (`event: query` with a query-log row, `event: dropped` with how many matching queries were skipped). Filters: `name` + `match` (not regex), `client`, `group`, `status`, `qtype`, `upstream`, `minLatencyMs`, and `nameNot`, `clientNot`, `statusNot`, `qtypeNot` to keep what a filter does not match; `rate` caps events per second (default 500, at most 2000). At most 16 streams per node; follows the query-log privacy level (level 3: off) |
 | `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20` | why a name is or isn't blocked for a device ([explain](#why-was-it-blocked-explain)) |
 | `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health (each upstream's `failuresByKind` says whether its failures were timeouts, connection errors, bad replies, unresolved names, SERVFAIL, REFUSED, or other errors) |
 
@@ -3287,7 +3298,7 @@ At the provider, create a confidential client with the redirect URI `<public_url
 - The username comes from `preferred_username` (or `username_claim`). TelltaleDNS never attaches a provider account to an existing local user: if the name is taken, the new account is called `name@provider`.
 - Signing out also signs out at the provider (Keycloak asks "Do you want to log out?"; Authentik shows its own "logged out" page).
 - Provider accounts have no TelltaleDNS password; they can still create API tokens.
-- `disable_local_login = true` turns off password sign-in and HTTP Basic, except for admins from `allowed_admin_networks` (private networks by default): a break-glass way in when the provider is down.
+- `disable_local_login = true` turns off password sign-in and HTTP Basic, except for admins from `allowed_admin_networks`: a break-glass way in when the provider is down. **That list is private networks and loopback by default**, so on a home or office network, or from a Docker or Kubernetes network, the sign-in form is still shown and the local admin can still sign in; it is not a switch that hides the form. To keep it for one machine, narrow the list (`allowed_admin_networks = ["127.0.0.0/8", "::1/128"]` for the host itself; inside a container the server may see the Docker bridge's address instead, such as `172.17.0.1/32`). `allowed_admin_networks = []` turns password sign-in off for everyone, and then nobody can sign in with a password while the provider is down. Behind a reverse proxy, set `[api] trusted_proxies` as well: without it every browser appears to come from the proxy's address, which is usually a private one. The start-up log says which networks are open. Turn on two-factor sign-in for the break-glass admin (Settings, Account).
 - The provider is only contacted while signing in; sessions are local afterwards. Changes to `[auth.oidc]` need a restart. If a provider can't be set up (for example its secret file is missing), it's logged and password sign-in keeps working.
 
 **HTTPS without a proxy.** Out of the box the UI and API on port 8053 are plain HTTP, so on a home network the sign-in form's password crosses the LAN in the clear. TelltaleDNS can serve them over HTTPS itself:

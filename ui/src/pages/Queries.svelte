@@ -27,11 +27,17 @@
 
   // The form mirrors the URL; "Search" writes it, and the URL drives loading.
   let name = $state('');
+  // REQ: OBS-003 (ADR-171) — `match` holds the Match select's value: a match, or `!` and a match
+  // for "does not ..." (the URL keeps them apart: `match=substring&nameNot=true`).
   let match = $state('substring');
   let client = $state('');
   let statuses = $state(new Set<string>());
   let qtype = $state('');
   let rcode = $state('');
+  let clientNot = $state(false);
+  let statusNot = $state(false);
+  let qtypeNot = $state(false);
+  let rcodeNot = $state(false);
   let from = $state('-24h');
   let minLatency = $state('');
   let group = $state('');
@@ -48,11 +54,15 @@
   $effect(() => {
     const p = route.params;
     name = p.get('name') ?? '';
-    match = p.get('match') ?? 'substring';
+    match = `${p.get('nameNot') === 'true' ? '!' : ''}${p.get('match') ?? 'substring'}`;
     client = p.get('client') ?? '';
     statuses = new Set((p.get('status') ?? '').split(',').filter(Boolean));
     qtype = p.get('qtype') ?? '';
     rcode = p.get('rcode') ?? '';
+    clientNot = p.get('clientNot') === 'true';
+    statusNot = p.get('statusNot') === 'true';
+    qtypeNot = p.get('qtypeNot') === 'true';
+    rcodeNot = p.get('rcodeNot') === 'true';
     from = p.get('from') === 'all' ? '' : (p.get('from') ?? '-24h');
     minLatency = p.get('minLatencyMs') ?? '';
     group = p.get('group') ?? '';
@@ -72,7 +82,7 @@
   function query(): Record<string, string> {
     const q = route.params;
     const o: Record<string, string> = {};
-    for (const k of ['name', 'match', 'client', 'status', 'qtype', 'rcode', 'from', 'minLatencyMs', 'group', 'trace']) {
+    for (const k of ['name', 'match', 'nameNot', 'client', 'clientNot', 'status', 'statusNot', 'qtype', 'qtypeNot', 'rcode', 'rcodeNot', 'from', 'minLatencyMs', 'group', 'trace']) {
       const v = q.get(k);
       if (v) o[k] = v;
     }
@@ -80,6 +90,10 @@
     // REQ: OBS-017 — a trace ID names its own time.
     if (o.from === 'all' || o.trace) delete o.from;
     if (o.name === undefined) delete o.match;
+    // REQ: OBS-003 — a negation without its filter (an old link) is dropped, not sent: the API refuses it.
+    for (const [flag, field] of [['nameNot', 'name'], ['clientNot', 'client'], ['statusNot', 'status'], ['qtypeNot', 'qtype'], ['rcodeNot', 'rcode']]) {
+      if (!o[field]) delete o[flag];
+    }
     return o;
   }
 
@@ -113,7 +127,7 @@
   function streamParams(): string {
     const q = query();
     const p = new URLSearchParams();
-    for (const k of ['name', 'match', 'client', 'status', 'qtype', 'minLatencyMs']) if (q[k]) p.set(k, q[k]);
+    for (const k of ['name', 'match', 'nameNot', 'client', 'clientNot', 'status', 'statusNot', 'qtype', 'qtypeNot', 'minLatencyMs']) if (q[k]) p.set(k, q[k]);
     return p.toString();
   }
 
@@ -159,11 +173,16 @@
     e?.preventDefault();
     navigate('/queries', {
       name: name.trim() || undefined,
-      match: name.trim() && match !== 'substring' ? match : undefined,
+      match: name.trim() && match.replace(/^!/, '') !== 'substring' ? match.replace(/^!/, '') : undefined,
+      nameNot: name.trim() && match.startsWith('!') ? 'true' : undefined,
       client: client.trim() || undefined,
+      clientNot: client.trim() && clientNot ? 'true' : undefined,
       status: [...statuses].join(',') || undefined,
+      statusNot: statuses.size && statusNot ? 'true' : undefined,
       qtype: qtype.trim().toUpperCase() || undefined,
+      qtypeNot: qtype.trim() && qtypeNot ? 'true' : undefined,
       rcode: rcode.trim().toUpperCase() || undefined,
+      rcodeNot: rcode.trim() && rcodeNot ? 'true' : undefined,
       from: from === '-24h' ? undefined : from || 'all',
       minLatencyMs: minLatency || undefined,
       group: group || undefined,
@@ -185,6 +204,7 @@
     statuses = new Set();
     qtype = '';
     rcode = '';
+    clientNot = statusNot = qtypeNot = rcodeNot = false;
     from = '-24h';
     minLatency = '';
     group = '';
@@ -243,17 +263,32 @@
           <option value="suffix">and subdomains</option>
           <option value="glob">wildcard (*)</option>
           <option value="regex">regex</option>
+          <!-- REQ: OBS-003 (ADR-171) — the same five, negated: every query whose name does not match. -->
+          <option value="!substring">does not contain</option>
+          <option value="!exact">is not</option>
+          <option value="!suffix">is not, or under</option>
+          <option value="!glob">does not match wildcard</option>
+          <option value="!regex">does not match regex</option>
         </select>
       </label>
-      <label class="field">Client
-        <input name="client" placeholder="192.168.1.20" bind:value={client} />
-      </label>
-      <label class="field narrow">Type
-        <input name="qtype" placeholder="A,AAAA" bind:value={qtype} />
-      </label>
-      <label class="field narrow">Rcode
-        <input name="rcode" placeholder="NXDOMAIN" bind:value={rcode} />
-      </label>
+      <div class="pair">
+        <label class="field">Client
+          <input name="client" placeholder="192.168.1.20" bind:value={client} />
+        </label>
+        <label class="not" title="Every client except this one"><input type="checkbox" name="clientNot" bind:checked={clientNot} />not</label>
+      </div>
+      <div class="pair narrow">
+        <label class="field">Type
+          <input name="qtype" placeholder="A,AAAA" bind:value={qtype} />
+        </label>
+        <label class="not" title="Every type except these"><input type="checkbox" name="qtypeNot" bind:checked={qtypeNot} />not</label>
+      </div>
+      <div class="pair narrow">
+        <label class="field">Rcode
+          <input name="rcode" placeholder="NXDOMAIN" bind:value={rcode} />
+        </label>
+        <label class="not" title="Every response code except these"><input type="checkbox" name="rcodeNot" bind:checked={rcodeNot} />not</label>
+      </div>
       <label class="field narrow">Slower than (ms)
         <input name="minLatency" type="number" min="0" bind:value={minLatency} />
       </label>
@@ -272,6 +307,7 @@
       </label>
     </div>
     <div class="row">
+      <button type="button" class="chip" data-testid="status-not" aria-pressed={statusNot} title="Every status except the ones chosen" onclick={() => { statusNot = !statusNot; if (statuses.size) search(); }}>not</button>
       {#each STATUSES as s (s)}
         <button type="button" class="chip" aria-pressed={statuses.has(s)} onclick={() => toggleStatus(s)}>{s}</button>
       {/each}
@@ -396,6 +432,29 @@
   }
   .fields .narrow {
     flex: 1 1 90px;
+  }
+  /* A filter and its "not" box stay together when the row wraps. */
+  .pair {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    flex: 1 1 150px;
+  }
+  .pair.narrow {
+    flex-basis: 110px;
+  }
+  .pair .field {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .not {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding-bottom: 8px;
+    font-size: 12.5px;
+    color: var(--muted);
+    white-space: nowrap;
   }
   .chip {
     min-height: 28px;

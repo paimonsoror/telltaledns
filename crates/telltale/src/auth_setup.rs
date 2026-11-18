@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use telltale_api::auth::{Auth, Role, Settings, crypto};
-use telltale_config::{Config, UserRole};
+use telltale_config::{Cidr, Config, UserRole};
 use telltale_store::state::State;
 use tracing::{error, info, warn};
 
@@ -46,6 +46,30 @@ fn settings(cfg: &Config) -> Settings {
             .map(|c| (c.addr, c.prefix))
             .collect(),
     }
+}
+
+/// REQ: API-004 (issue #63) — what start-up says when `disable_local_login` is on: password
+/// sign-in is still open to the break-glass networks (private ranges and loopback unless the list
+/// was changed), so the form is still offered there; an empty list means nobody can use a
+/// password. Returns whether it is a warning, and the line.
+fn break_glass_notice(networks: &[Cidr]) -> (bool, String) {
+    if networks.is_empty() {
+        return (
+            true,
+            "password sign-in is off for everyone (allowed_admin_networks is empty): if the sign-in provider is down, nobody can sign in with a password".to_owned(),
+        );
+    }
+    let list = networks
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    (
+        false,
+        format!(
+            "password sign-in is off, except for admins from {list} (allowed_admin_networks): the sign-in form is still offered there; narrow the list to hide it from the rest of your network, or set it to [] to turn password sign-in off"
+        ),
+    )
 }
 
 fn role(r: UserRole) -> Role {
@@ -113,6 +137,14 @@ fn oidc(cfg: &Config) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
         })
     });
     info!(providers = providers.len(), "OIDC sign-in enabled");
+    if o.disable_local_login {
+        let (is_warning, line) = break_glass_notice(&o.allowed_admin_networks);
+        if is_warning {
+            warn!("{line}");
+        } else {
+            info!("{line}");
+        }
+    }
     // REQ: AGT-008 (T7.4) — MCP clients sign in through one provider.
     let mcp = (!o.mcp_provider.is_empty()).then(|| telltale_api::auth::oidc::McpOAuth {
         provider: o.mcp_provider.to_string(),
