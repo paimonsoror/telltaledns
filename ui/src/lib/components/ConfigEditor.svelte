@@ -5,7 +5,7 @@
   export type Field = {
     key: string;
     label: string;
-    /** `secret`: typed, never shown back (T8.2, ADR-171: a router's key or password). */
+    /** `secret`: typed, never shown back (T8.2, ADR-173: a router's key or password). */
     type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool' | 'secret';
     options?: string[];
     /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
@@ -304,7 +304,7 @@
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
               <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
             {:else if f.type === 'secret'}
-              <!-- T8.2 (ADR-171): sent once, saved to a file by the server, never read back. -->
+              <!-- T8.2 (ADR-173): sent once, saved to a file by the server, never read back. -->
               <input
                 type="password"
                 autocomplete="new-password"

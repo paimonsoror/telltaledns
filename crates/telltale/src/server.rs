@@ -1096,7 +1096,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&sources),
         http_stopped.clone(),
     ));
-    // REQ: T8.2 — device names from the routers' DHCP (ADR-171: the routers in effect, so
+    // REQ: T8.2 — device names from the routers' DHCP (ADR-173: the routers in effect, so
     // ones added or changed in the UI are read without a restart).
     tokio::spawn(crate::routers::run(
         Arc::clone(&sources),

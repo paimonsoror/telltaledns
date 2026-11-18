@@ -32,7 +32,7 @@
   // REQ: T8.2, T8.3 (T8.6) — devices found by the routers' DHCP or mDNS.
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
-  // REQ: T8.2, API-002 (ADR-171) — the routers, added and changed here (admins). A key or
+  // REQ: T8.2, API-002 (ADR-173) — the routers, added and changed here (admins). A key or
   // password is typed once: the server saves it to a new file under secrets/ in the data
   // folder and never shows it again. Changing the address, type, or TLS settings needs it
   // typed again.

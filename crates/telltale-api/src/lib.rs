@@ -814,7 +814,7 @@ pub enum ManagedKind {
     KubernetesMap,
     /// REQ: T8.2, API-002 — a router integration (`/routers/{name}`): a UniFi console, an
     /// OPNsense box, or a MikroTik router whose clients name devices. Its key, secret, or password may come in the
-    /// body; they're written to files in the data directory, never stored or returned (ADR-171).
+    /// body; they're written to files in the data directory, never stored or returned (ADR-173).
     Router,
 }
 
@@ -1021,7 +1021,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             blocking_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
-        // REQ: T8.2 (ADR-171) — routers hold credentials and say where they're sent: admin.
+        // REQ: T8.2 (ADR-173) — routers hold credentials and say where they're sent: admin.
         .merge(
             config_api::router_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),

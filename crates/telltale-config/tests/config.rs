@@ -1159,7 +1159,7 @@ fn t8_2_routers_are_validated() {
     );
 }
 
-/// REQ: T8.2 (ADR-172) — a MikroTik router needs a username and a password file; over plain
+/// REQ: T8.2 (ADR-174) — a MikroTik router needs a username and a password file; over plain
 /// http it loads, with a warning that the password travels unencrypted.
 #[test]
 fn t8_2_mikrotik_router_is_validated() {

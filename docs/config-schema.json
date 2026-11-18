@@ -3276,7 +3276,7 @@
           ]
         },
         {
-          "description": "REQ: T8.2 (ADR-172) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.",
+          "description": "REQ: T8.2 (ADR-174) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.",
           "type": "string",
           "const": "mikrotik"
         }

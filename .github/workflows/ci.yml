@@ -358,7 +358,7 @@ jobs:
       # REQ: T8.2 — router integrations against fake UniFi, OPNsense, and MikroTik APIs.
       - name: Router integrations
         run: bash deploy/routers-e2e.sh target/bench-fast/telltale
-      # REQ: T8.2, API-002 (ADR-171) — a router added through the API, its key saved as a file.
+      # REQ: T8.2, API-002 (ADR-173) — a router added through the API, its key saved as a file.
       - name: Routers from the UI
         run: bash deploy/routers-ui-e2e.sh target/bench-fast/telltale
       # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
