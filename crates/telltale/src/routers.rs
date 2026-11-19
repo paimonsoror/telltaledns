@@ -7,7 +7,7 @@
 //!   An API key (`X-API-KEY`), or a local username and password.
 //! - **OPNsense**: the DHCP leases (Dnsmasq, Kea, or ISC, whichever the box runs), with an
 //!   API key and secret.
-//! - **MikroTik** (RouterOS v7, ADR-174): the DHCP server's leases over the REST API
+//! - **MikroTik** (RouterOS v7, ADR-177): the DHCP server's leases over the REST API
 //!   (`/rest/ip/dhcp-server/lease`), with a (read-only) RouterOS user. The bound leases are the
 //!   connected devices; a static lease that isn't bound now is an offline one, named by its
 //!   comment, else the host name the device last sent.
@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 
 use crate::devices::{Lease, Leases};
 
-/// How often the routers in effect are compared with the ones last read (ADR-173).
+/// How often the routers in effect are compared with the ones last read (ADR-176).
 const CHANGE_CHECK: Duration = Duration::from_secs(5);
 
 /// Most bytes one answer may have.
@@ -442,7 +442,7 @@ fn ros<'a>(l: &'a Value, k: &str) -> Option<&'a str> {
     l.get(k).and_then(Value::as_str)
 }
 
-/// REQ: T8.2 (ADR-174) — MikroTik's DHCP leases (`GET /rest/ip/dhcp-server/lease`, a bare array):
+/// REQ: T8.2 (ADR-177) — MikroTik's DHCP leases (`GET /rest/ip/dhcp-server/lease`, a bare array):
 /// the bound ones are connected; the static ones that aren't bound, with a name, last seen within
 /// `max_age` seconds (`None`: none of them), are the offline devices it knows, most recently seen
 /// first, at most [`OFFLINE_MAX`]. Disabled leases are skipped. A lease is named by its comment
@@ -589,7 +589,7 @@ pub(crate) async fn run(
     let mut parts: HashMap<String, Polled> = HashMap::new();
     let mut failing: HashMap<String, bool> = HashMap::new();
     // The routers last read: one removed, or now pointing at another device (type, address,
-    // site), drops its answer, so no names linger from a router that's gone (ADR-173). Other
+    // site), drops its answer, so no names linger from a router that's gone (ADR-176). Other
     // changes (credentials, TLS, timing) keep it until the next answer replaces it.
     let mut read_with: Vec<RouterConfig> = Vec::new();
     loop {
@@ -673,7 +673,7 @@ pub(crate) async fn run(
         } else {
             interval
         };
-        // REQ: T8.2 (ADR-173) — until the next read, or sooner when the routers change.
+        // REQ: T8.2 (ADR-176) — until the next read, or sooner when the routers change.
         let until = tokio::time::Instant::now() + Duration::from_secs(u64::from(wait));
         while tokio::time::Instant::now() < until {
             tokio::select! {
@@ -878,7 +878,7 @@ mod tests {
         );
     }
 
-    /// REQ: T8.2 (ADR-174) — RouterOS durations, both spellings; `never` is no date.
+    /// REQ: T8.2 (ADR-177) — RouterOS durations, both spellings; `never` is no date.
     #[test]
     fn routeros_durations() {
         assert_eq!(
@@ -893,7 +893,7 @@ mod tests {
         assert_eq!(routeros_secs("5"), None);
     }
 
-    /// REQ: T8.2 (ADR-174) — MikroTik leases: bound ones are connected (their active address and
+    /// REQ: T8.2 (ADR-177) — MikroTik leases: bound ones are connected (their active address and
     /// MAC), named by the comment over the host name; a static lease not bound now is offline,
     /// kept when named and seen within the window (or never seen), never over a connected
     /// device's address; dynamic leases that aren't bound, and disabled ones, are skipped.

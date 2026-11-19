@@ -1781,7 +1781,7 @@ test('t8_6 discovered devices, group settings, and zones', async () => {
   await expect(zones.locator('tbody tr', { hasText: 'zone.e2e.test' })).toContainText('ipv6only');
 });
 
-// REQ: T8.2, API-002 (ADR-173) — a UniFi router added under Discovered: its key is typed once,
+// REQ: T8.2, API-002 (ADR-176) — a UniFi router added under Discovered: its key is typed once,
 // saved to a file (the default path is shown), never shown back, and kept when another field
 // changes; then it's removed.
 test('t8_2 routers are added and changed in the UI', async () => {
@@ -1821,7 +1821,7 @@ test('t8_2 routers are added and changed in the UI', async () => {
   await expect(row).toHaveCount(0);
 });
 
-// REQ: T8.2 (ADR-174) — a MikroTik router: a RouterOS user and its password, typed once and saved
+// REQ: T8.2 (ADR-177) — a MikroTik router: a RouterOS user and its password, typed once and saved
 // to a file like a key.
 test('t8_2 a MikroTik router is added in the UI', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });

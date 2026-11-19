@@ -49,7 +49,7 @@ pub(crate) const SIMULATE: &str = "simulate";
 pub(crate) const ROLLOUT: &str = "rollout";
 /// REQ: FLT-017 (T15.1) — `[[kubernetes.map]]` rules, by key (`namespace/kind/name`).
 pub(crate) const KUBERNETES_MAP: &str = "kubernetes_map";
-/// REQ: T8.2, API-002 (ADR-173) — router integrations (they override the files' too).
+/// REQ: T8.2, API-002 (ADR-176) — router integrations (they override the files' too).
 pub(crate) const ROUTER: &str = "router";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
@@ -161,7 +161,7 @@ pub(crate) struct Entries {
     pub(crate) rollout: Option<telltale_config::RolloutConfig>,
     /// REQ: FLT-017 — `[[kubernetes.map]]` rules by key; they come before the files' rules.
     pub(crate) kubernetes_map: Vec<(String, Ovr<telltale_config::KubernetesMapRule>)>,
-    /// REQ: T8.2 (ADR-173) — router integrations.
+    /// REQ: T8.2 (ADR-176) — router integrations.
     pub(crate) routers: Vec<(String, Ovr<telltale_config::RouterConfig>)>,
 }
 
