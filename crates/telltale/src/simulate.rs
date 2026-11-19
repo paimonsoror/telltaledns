@@ -167,7 +167,8 @@ pub(crate) struct Window {
 }
 
 /// A window from `[simulate]` and a request: `window` (`24h`), ending at `until` (Unix
-/// seconds, default now). 422 past 7 days.
+/// seconds) or, by default, at the end of the request's own second (`now_s + 1`: the window
+/// is `[from, to)`, so what was logged a moment ago is in). 422 past 7 days.
 pub(crate) fn window(
     cfg: &telltale_config::SimulateConfig,
     window: Option<&str>,
@@ -189,7 +190,10 @@ pub(crate) fn window(
         )
         .hint("Simulations replay at most the last 7 days."));
     }
-    let to_s = until_s.unwrap_or(now_s);
+    // REQ: OBS-024 (T13.1) — `[from, to)`: the default end is the *end* of the request's second,
+    // as every analytics endpoint's default `to` is (`now + 1`). Ending at the start of that
+    // second left out every row logged in it (issue #69). An `until` the request names is exact.
+    let to_s = until_s.unwrap_or(now_s.saturating_add(1));
     Ok(Window {
         from_us: to_s.saturating_sub(secs).saturating_mul(1_000_000),
         to_us: to_s.saturating_mul(1_000_000),

@@ -125,7 +125,7 @@ telltale cluster set-failover auto</code></pre>
   <ul>
     <li><b>The Cluster page:</b> the summary on top, then <b>Nodes</b> (topology and every node's state), <b>Health</b> (checks with what to do when one fails), <b>Rollouts</b>, and <b>Events</b>. A tab with something wrong shows a count.</li>
     <li><b>The health icon</b> at the bottom of the menu turns amber when a node is unreachable or behind on configuration for a minute.</li>
-    <li><b>Metrics</b> on every node: <code>telltale_cluster_peer_up</code>, <code>telltale_cluster_peer_config_lag</code>, <code>telltale_cluster_behind_seconds</code>, and <code>telltale_cluster_cert_expiry_timestamp_seconds</code>. The Helm chart's alert rules cover a peer down, configuration behind, failing syncs, and expiring certificates.</li>
+    <li><b>Metrics</b> on every node: <code>telltale_cluster_peer_up</code>, <code>telltale_cluster_peer_config_lag</code>, <code>telltale_cluster_behind_seconds</code>, and <code>telltale_cluster_cert_expiry_timestamp_seconds</code>. A replica's <code>telltale_cluster_peer_up</code> lists the primary, the voters under automatic failover, and the peers it is connected to or heard from in the last 15 seconds; the primary lists every node, so scrape it to see a replica that is down. The Helm chart's alert rules cover a peer down, configuration behind, failing syncs, and expiring certificates.</li>
     <li><b>Certificates renew themselves:</b> each node's lasts 90 days and is renewed with 30 left. To replace the cluster's certificate authority, run <code>telltale cluster rotate-ca</code> on the primary; DNS keeps answering while it runs.</li>
   </ul>
 </section>

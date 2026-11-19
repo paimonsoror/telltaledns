@@ -4,7 +4,10 @@
 //! doesn't answer is listed in `missingNodes` instead of holding the read up. Everything else
 //! — configuration, explain, the live tail — is this node's own (the tail stays node-local).
 //!
-//! Nothing here touches DNS answering: reads run on API worker threads only (CLU-004).
+//! Nothing here touches DNS answering (CLU-004). A read never waits on a runtime worker: it
+//! starts its RPCs on the runtime and waits for them on its own thread (the blocking pool's, where
+//! the API runs its backend calls) with a deadline of the OS's, not the runtime's: see
+//! `federated_bridge.rs` (ADR-174).
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -26,6 +29,8 @@ use telltale_cluster::net::{Cluster, RpcHandler};
 const KIND: &str = "api.read";
 /// How long a read waits for peers (CLU-002: a dead node costs at most this).
 const DEADLINE: Duration = Duration::from_secs(2);
+#[path = "federated_bridge.rs"]
+mod bridge;
 #[path = "federated_support.rs"]
 mod support_cluster;
 
@@ -839,7 +844,30 @@ impl Federated {
         WriteRoute::Primary(self.cluster.reachable_primary())
     }
 
-    /// One RPC to one peer from synchronous code; `None` without a runtime.
+    /// REQ: CLU-002, CLU-004 (ADR-174) — starts one RPC per `(peer, body)` as a task on `rt` and
+    /// returns at once; the caller waits with [`bridge::Pending::wait`] on its own thread.
+    fn start_calls(
+        &self,
+        rt: &tokio::runtime::Handle,
+        calls: Vec<(String, Vec<u8>)>,
+        timeout: Duration,
+    ) -> bridge::Pending {
+        let calls = calls
+            .into_iter()
+            .map(|(peer, body)| {
+                let (cluster, to) = (Arc::clone(&self.cluster), peer.clone());
+                (
+                    peer,
+                    async move { cluster.call(&to, KIND, body, timeout).await },
+                )
+            })
+            .collect();
+        bridge::start(&bridge::WAITS, rt, calls, timeout)
+    }
+
+    /// One RPC to one peer from synchronous code; `None` without a runtime. REQ: CLU-004
+    /// (ADR-174) — the wait is `timeout` and a grace at most, whatever the runtime is doing, and
+    /// never needs a worker: a peer the runtime couldn't ask in time is "didn't answer".
     fn call_one(
         &self,
         peer: &str,
@@ -848,12 +876,10 @@ impl Federated {
     ) -> Option<Result<Vec<u8>, String>> {
         let body = serde_json::to_vec(read).ok()?;
         let rt = tokio::runtime::Handle::try_current().ok()?;
-        let cluster = Arc::clone(&self.cluster);
-        std::thread::scope(|s| {
-            s.spawn(|| rt.block_on(cluster.call(peer, KIND, body, timeout)))
-                .join()
-                .ok()
-        })
+        self.start_calls(&rt, vec![(peer.to_owned(), body)], timeout)
+            .wait()
+            .pop()
+            .map(|(_, answer)| answer)
     }
 
     fn own_label(&self) -> String {
@@ -870,8 +896,10 @@ impl Federated {
         }
     }
 
-    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Records
-    /// which known nodes didn't answer.
+    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`] and the bridge's
+    /// grace (REQ: CLU-004, ADR-174: on this thread, never on a worker). Records which known
+    /// nodes didn't answer: those not connected, and those the runtime didn't get an answer from
+    /// in time.
     fn gather(&self, reads: Vec<(String, Read)>) -> Vec<(String, Vec<u8>)> {
         let mut missing: Vec<String> = self
             .cluster
@@ -884,37 +912,11 @@ impl Federated {
             .into_iter()
             .filter_map(|(peer, r)| serde_json::to_vec(&r).ok().map(|b| (peer, b)))
             .collect();
+        // The calls run as tasks on the runtime and this thread waits on a `std` channel, so it
+        // works from any caller: a blocking-pool thread, a worker (the wait then costs its
+        // deadline: nothing else runs on it), or a current-thread runtime.
         let answers = match tokio::runtime::Handle::try_current() {
-            Ok(rt) if !calls.is_empty() => {
-                let cluster = Arc::clone(&self.cluster);
-                // A plain thread blocks on the runtime, so this works whether the caller is a
-                // blocking worker or not.
-                std::thread::scope(|s| {
-                    s.spawn(|| {
-                        rt.block_on(async {
-                            let tasks: Vec<_> = calls
-                                .into_iter()
-                                .map(|(peer, body)| {
-                                    let c = Arc::clone(&cluster);
-                                    tokio::spawn(async move {
-                                        let r = c.call(&peer, KIND, body, DEADLINE).await;
-                                        (peer, r)
-                                    })
-                                })
-                                .collect();
-                            let mut out = Vec::new();
-                            for t in tasks {
-                                if let Ok(r) = t.await {
-                                    out.push(r);
-                                }
-                            }
-                            out
-                        })
-                    })
-                    .join()
-                    .unwrap_or_default()
-                })
-            }
+            Ok(rt) if !calls.is_empty() => self.start_calls(&rt, calls, DEADLINE).wait(),
             _ => Vec::new(),
         };
         let mut ok = Vec::new();
@@ -931,6 +933,16 @@ impl Federated {
         missing.dedup();
         *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing;
         ok
+    }
+
+    /// REQ: CLU-004 (ADR-174) — lists `peers` among the nodes that didn't answer, for a read that
+    /// was not sent to them (it asked for too much), as one that failed would be.
+    fn not_asked(&self, peers: &[String]) {
+        let labels: Vec<String> = peers.iter().map(|p| self.label_of(p)).collect();
+        let mut missing = self.missing.lock().unwrap_or_else(PoisonError::into_inner);
+        missing.extend(labels);
+        missing.sort();
+        missing.dedup();
     }
 
     /// Asks every reachable peer the same read; decoded answers with each peer's label.
@@ -1050,6 +1062,11 @@ impl Federated {
     /// of minutes is over the cluster channel's 1 MiB frame, and was dropped whole. Returns
     /// each answered window's buckets, and each peer that answered any window (`true` when it
     /// answered every one). Windows that fail list the peer in `missingNodes`.
+    ///
+    /// REQ: CLU-004, CLU-002 (ADR-174, final review F1) — a range of more than
+    /// [`federation::TIMESERIES_MAX_WINDOWS`] windows is asked of no peer: they are listed in
+    /// `missingNodes` (this node's own data and shipped minutes still answer), and the log says
+    /// so. The longest range any step documents is under half that.
     fn peer_timeseries(
         &self,
         peers: Vec<String>,
@@ -1057,7 +1074,18 @@ impl Federated {
         from_s: u64,
         to_s: u64,
     ) -> (Vec<Vec<TimeBucket>>, Vec<(String, bool)>) {
-        let windows = federation::timeseries_chunks(step, from_s, to_s);
+        // With nobody to ask there is nothing to chunk.
+        let windows = if peers.is_empty() {
+            Vec::new()
+        } else if let Some(w) = federation::timeseries_chunks(step, from_s, to_s) {
+            w
+        } else {
+            bridge::WAITS.refused(bridge::Refused::TooBig);
+            // Records who isn't connected, as a read does, and adds the peers that weren't asked.
+            let _ = self.gather(Vec::new());
+            self.not_asked(&peers);
+            return (Vec::new(), Vec::new());
+        };
         let reads = peers
             .iter()
             .flat_map(|p| {
@@ -2814,5 +2842,413 @@ mod name_tests {
             2,
             "each address is looked up once; text that isn't one, never"
         );
+    }
+}
+
+/// REQ: CLU-002, CLU-004 (ADR-174, GitHub issue #7) — what a federated read costs when the runtime
+/// can't help it: at most its deadline, never for ever. Two real nodes, joined over a real
+/// stream, on one runtime with a single worker.
+#[cfg(test)]
+mod bridge_tests {
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    use telltale_cluster::node::{Identity, JoinRequest, TokenGrants};
+    use telltale_cluster::pki;
+
+    use super::*;
+
+    /// The replica's own node: nothing but a configuration version no peer has.
+    struct Local;
+
+    impl Backend for Local {
+        fn system_info(&self) -> SystemInfo {
+            unreachable!("not read here")
+        }
+        fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<TimeBucket> {
+            Vec::new()
+        }
+        fn top(&self, _: TopKind, _: Hour, _: usize, _: Option<IpAddr>) -> Vec<TopItem> {
+            Vec::new()
+        }
+        fn latency(&self, _: LatencyBy, _: Hour) -> Vec<LatencyRow> {
+            Vec::new()
+        }
+        fn queries(&self, _: &QueryParams, _: u64, _: u64, _: usize) -> Result<QueryPage, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn explain(&self, _: &ExplainParams) -> Result<Explanation, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            Vec::new()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            Vec::new()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            Vec::new()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            Vec::new()
+        }
+        fn config_version(&self) -> u64 {
+            7
+        }
+    }
+
+    /// A replica's federated backend, and the primary it asks (which answers one read: its
+    /// configuration version, 4242).
+    struct Nodes {
+        rt: tokio::runtime::Runtime,
+        fed: Arc<Federated>,
+        primary: String,
+        _stop: tokio::sync::watch::Sender<bool>,
+        _dirs: (tempfile::TempDir, tempfile::TempDir),
+    }
+
+    fn two_nodes() -> Nodes {
+        let handler: RpcHandler = Arc::new(|_peer, _kind, body| {
+            Box::pin(async move {
+                match serde_json::from_slice::<Read>(&body) {
+                    Ok(Read::ConfigVersion) => {
+                        serde_json::to_vec(&4242_u64).map_err(|e| e.to_string())
+                    }
+                    _ => Err("a read these tests don't ask".to_owned()),
+                }
+            })
+        });
+        two_nodes_answering(handler)
+    }
+
+    /// As [`two_nodes`], with the primary answering with `handler`.
+    fn two_nodes_answering(handler: RpcHandler) -> Nodes {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(rt.metrics().num_workers(), 1, "the shape of the test");
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let primary_id =
+            Identity::init(a.path(), "home", vec![format!("https://{addr}")], "k8s").unwrap();
+        let token = primary_id
+            .create_token_for(
+                60,
+                None,
+                TokenGrants {
+                    eligible: true,
+                    witness: false,
+                },
+            )
+            .unwrap();
+        let key = pki::new_node_key().unwrap();
+        let joined = primary_id
+            .accept_join(
+                &JoinRequest {
+                    witness: false,
+                    ephemeral: false,
+                    secret: token.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: "pi".into(),
+                    eligible: true,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
+            .unwrap();
+        let replica_id =
+            Identity::save_joined(b.path(), &key.key_pem, &joined, "pi", true, vec![]).unwrap();
+        let (primary, replica) = (
+            Cluster::new(primary_id, "0.1.0"),
+            Cluster::new(replica_id, "0.1.0"),
+        );
+        let primary_node = primary.identity.meta.node_id.clone();
+        primary.set_rpc_handler(handler);
+        // The nodes' tasks run until the runtime is dropped (the sender stays in `Nodes`).
+        let (stop_tx, stop) = tokio::sync::watch::channel(false);
+        drop(rt.spawn(telltale_cluster::net::serve(
+            Arc::clone(&primary),
+            addr,
+            stop.clone(),
+        )));
+        drop(rt.spawn(telltale_cluster::net::dial(Arc::clone(&replica), stop)));
+        let until = Instant::now() + Duration::from_secs(30);
+        while replica.reachable_primary().as_deref() != Some(primary_node.as_str()) {
+            assert!(
+                Instant::now() < until,
+                "the replica never reached the primary"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        Nodes {
+            rt,
+            fed: Arc::new(Federated::new(Arc::new(Local), replica)),
+            primary: primary_node,
+            _stop: stop_tx,
+            _dirs: (a, b),
+        }
+    }
+
+    /// Parks the runtime's only worker on a gate (a send on the returned sender opens it), and
+    /// returns once it is parked: the production wedge.
+    fn wedge(rt: &tokio::runtime::Runtime) -> mpsc::Sender<()> {
+        let (gate, shut) = mpsc::channel::<()>();
+        let (parked_tx, parked) = mpsc::channel::<()>();
+        drop(rt.spawn(async move {
+            let _ = parked_tx.send(());
+            // Blocking on purpose; it gives up after a minute so a failed test leaves nothing.
+            let _ = shut.recv_timeout(Duration::from_secs(60));
+        }));
+        parked.recv_timeout(Duration::from_secs(10)).unwrap();
+        gate
+    }
+
+    /// What `f` returns when run on a plain thread in the runtime's context (as a blocking-pool
+    /// thread is). The guard is a `std` timeout here, never a timer on the wedged runtime: a
+    /// read that never returns fails the test after 10 s instead of hanging it.
+    fn on_a_thread<T: Send + 'static>(
+        n: Nodes,
+        gate: &mpsc::Sender<()>,
+        f: impl FnOnce(&Federated) -> T + Send + 'static,
+    ) -> (T, Duration, Nodes) {
+        let (fed, handle) = (Arc::clone(&n.fed), n.rt.handle().clone());
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        drop(std::thread::spawn(move || {
+            let _in = handle.enter();
+            let _ = tx.send(f(&fed));
+        }));
+        let Ok(v) = rx.recv_timeout(Duration::from_secs(10)) else {
+            // A runtime with a parked worker would hang the test run when dropped.
+            let _ = gate.send(());
+            n.rt.shutdown_background();
+            panic!("the read never returned: it waits on a runtime that can't run");
+        };
+        (v, started.elapsed(), n)
+    }
+
+    // REQ: CLU-002, CLU-004 (ADR-174) — a read from a thread that waits for the runtime, while
+    // every worker is parked, comes back at its deadline (and the grace) with "didn't answer",
+    // and the peer isn't asked. Before: the wait had no bound, and nothing could time it out.
+    #[test]
+    fn clu_002_a_wedged_runtime_costs_a_federated_read_its_deadline() {
+        let n = two_nodes();
+        let gate = wedge(&n.rt);
+        let peer = n.primary.clone();
+        let (r, took, n) = on_a_thread(n, &gate, move |fed| {
+            fed.call_one(&peer, &Read::ConfigVersion, Duration::from_millis(100))
+        });
+        let _ = gate.send(());
+        // Only an upper bound, far above the deadline: no race.
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        let e = r
+            .expect("there is a runtime")
+            .expect_err("nothing could have answered it");
+        assert!(e.contains("didn't answer in time"), "{e}");
+        drop(n);
+    }
+
+    // REQ: CLU-002, CLU-004 (ADR-174) — the same for a read to every peer: the peer is listed
+    // as one that didn't answer, and the answer isn't held up.
+    #[test]
+    fn clu_002_a_wedged_runtime_costs_a_gathered_read_its_deadline() {
+        let n = two_nodes();
+        let gate = wedge(&n.rt);
+        let peer = n.primary.clone();
+        let ((answers, missing, label), took, n) = on_a_thread(n, &gate, move |fed| {
+            let answers = fed.gather(vec![(peer.clone(), Read::ConfigVersion)]);
+            (answers, fed.missing_nodes(), fed.label_of(&peer))
+        });
+        let _ = gate.send(());
+        // `DEADLINE` and the grace are about 2.25 s; the bound only has to be finite.
+        assert!(took < Duration::from_secs(8), "{took:?}");
+        assert!(answers.is_empty(), "{answers:?}");
+        assert_eq!(missing, [label]);
+        drop(n);
+    }
+
+    // REQ: CLU-004 (ADR-174, GitHub issue #7) — a federated read that is made on the runtime's
+    // only worker (a handler that was missed) gives up at its deadline, falls back to this
+    // node's own answer, and gives the worker back: the runtime goes on. Before: the worker
+    // waited for work only it could do, and the node stopped.
+    #[test]
+    fn clu_004_a_read_on_the_only_worker_gives_up_and_frees_it() {
+        let n = two_nodes();
+        let (tx, rx) = mpsc::channel();
+        let fed = Arc::clone(&n.fed);
+        drop(n.rt.spawn(async move {
+            let _ = tx.send(fed.config_version());
+        }));
+        let Ok(version) = rx.recv_timeout(Duration::from_secs(10)) else {
+            n.rt.shutdown_background();
+            panic!("the read parked the runtime's only worker for good");
+        };
+        assert_eq!(
+            version, 7,
+            "this node's own version: the primary couldn't be asked"
+        );
+        // The worker is free again: a task runs, and a timer fires.
+        let (tx, rx) = mpsc::channel();
+        drop(n.rt.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tx.send(());
+        }));
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the runtime is stuck"
+        );
+    }
+
+    // REQ: CLU-002 (ADR-174) — with a runtime that works, the answers are the peer's, whether
+    // asked of one peer, of all (the way a config version, an entry list, or a list is), or
+    // through `config_version`, and nobody is listed as missing.
+    #[test]
+    fn clu_002_a_healthy_runtime_answers_a_federated_read() {
+        let n = two_nodes();
+        let _in = n.rt.enter();
+        let body = n
+            .fed
+            .call_one(&n.primary, &Read::ConfigVersion, Duration::from_secs(5))
+            .expect("there is a runtime")
+            .expect("the primary answers");
+        assert_eq!(serde_json::from_slice::<u64>(&body).unwrap(), 4242);
+        assert_eq!(
+            n.fed.config_version(),
+            4242,
+            "the primary's, not this node's 7"
+        );
+        let answers = n.fed.gather(vec![(n.primary.clone(), Read::ConfigVersion)]);
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].0, n.primary);
+        assert_eq!(serde_json::from_slice::<u64>(&answers[0].1).unwrap(), 4242);
+        assert!(n.fed.missing_nodes().is_empty(), "nobody is missing");
+        // A peer that errors is listed, and its error isn't an answer.
+        let none = n.fed.gather(vec![(n.primary.clone(), Read::CacheStats)]);
+        assert!(none.is_empty(), "an error is no answer");
+        assert_eq!(n.fed.missing_nodes(), [n.fed.label_of(&n.primary)]);
+    }
+
+    /// A primary that answers the time-bucket reads (with no buckets) and the configuration
+    /// version, and keeps every read it was asked.
+    fn recording_peer() -> (RpcHandler, Arc<Mutex<Vec<Read>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&asked);
+        let handler: RpcHandler = Arc::new(move |_peer, _kind, body| {
+            let log = Arc::clone(&log);
+            Box::pin(async move {
+                let r = serde_json::from_slice::<Read>(&body).map_err(|e| e.to_string())?;
+                let answer = match &r {
+                    Read::Timeseries { .. } => serde_json::to_vec(&Vec::<TimeBucket>::new()),
+                    Read::ConfigVersion => serde_json::to_vec(&4242_u64),
+                    _ => return Err("a read these tests don't ask".to_owned()),
+                };
+                log.lock().unwrap_or_else(PoisonError::into_inner).push(r);
+                answer.map_err(|e| e.to_string())
+            })
+        });
+        (handler, asked)
+    }
+
+    /// The time-bucket windows a peer was asked for, oldest first.
+    fn windows_asked(asked: &Mutex<Vec<Read>>) -> Vec<(u64, u64)> {
+        let mut w: Vec<(u64, u64)> = asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(|r| match r {
+                Read::Timeseries { from_s, to_s, .. } => Some((*from_s, *to_s)),
+                _ => None,
+            })
+            .collect();
+        w.sort_unstable();
+        w
+    }
+
+    // REQ: CLU-004, CLU-002 (ADR-174, final review F1) — a time range of more windows than the
+    // cap (256 a peer) is asked of no peer: the peers are listed as not answering and the answer
+    // is this node's own, at once. Before: one read per window and peer, however long the range
+    // (from the epoch at one second a bucket, 7.5 million a peer; to the year 9999, a thousand
+    // million), all under one place of the cap on reads.
+    #[test]
+    fn clu_004_a_timeseries_over_the_window_cap_asks_no_peer() {
+        let (handler, asked) = recording_peer();
+        let n = two_nodes_answering(handler);
+        let _in = n.rt.enter();
+        let label = n.fed.label_of(&n.primary);
+        // 300 windows of 240 seconds: a little over the cap, so the test is small if it fails.
+        let from = 1_791_000_000;
+        let started = Instant::now();
+        let items = n.fed.timeseries(Step::Second, from, from + 300 * 240);
+        assert!(started.elapsed() < Duration::from_secs(5), "{items:?}");
+        assert!(
+            items.is_empty(),
+            "this node's own, which has none: {items:?}"
+        );
+        assert_eq!(windows_asked(&asked), [], "no peer was asked");
+        assert_eq!(n.fed.missing_nodes(), std::slice::from_ref(&label));
+        // The cases the report was about: from the epoch, and to the year 9999.
+        for (from, to) in [(0, 1_791_072_000), (1_791_072_000, 253_402_300_799)] {
+            let started = Instant::now();
+            let _ = n.fed.timeseries(Step::Second, from, to);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(windows_asked(&asked), [], "no peer was asked");
+            assert_eq!(n.fed.missing_nodes(), std::slice::from_ref(&label));
+        }
+    }
+
+    // REQ: CLU-002 (ADR-174, final review F1) — what the cap must not touch: the longest range
+    // each step documents is asked of a peer window by window, all of it, and nobody is listed
+    // as missing. `step=second` covers 15 minutes (4 windows), `minute` 7 days (43), `hour` 400
+    // days (41), `day` everything, here since 1970 (87).
+    #[test]
+    fn clu_002_the_documented_ranges_are_asked_of_a_peer_in_full() {
+        let (handler, asked) = recording_peer();
+        let n = two_nodes_answering(handler);
+        let _in = n.rt.enter();
+        let now = 1_791_072_000;
+        let cases = [
+            (Step::Second, now - 900, now + 1, 4),
+            (Step::Minute, now - 7 * 86_400, now + 1, 43),
+            (Step::Hour, now - 400 * 86_400, now + 1, 41),
+            (Step::Day, 0, now + 1, 87),
+        ];
+        for (step, from, to, count) in cases {
+            asked.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            let _ = n.fed.timeseries(step, from, to);
+            let w = windows_asked(&asked);
+            assert_eq!(w.len(), count, "{step:?}");
+            assert_eq!(w.first().map(|x| x.0), Some(from), "{step:?}");
+            assert_eq!(w.last().map(|x| x.1), Some(to), "{step:?}");
+            assert!(w.windows(2).all(|p| p[0].1 == p[1].0), "{step:?}: {w:?}");
+            assert_eq!(n.fed.missing_nodes(), Vec::<String>::new(), "{step:?}");
+        }
+    }
+
+    // REQ: CLU-004 (ADR-174, final review F1) — the bridge's own bound covers any other caller: a
+    // gathered read of over 1024 calls asks nobody and lists the peer as not answering.
+    #[test]
+    fn clu_004_a_gathered_read_over_the_call_cap_asks_no_peer() {
+        let (handler, asked) = recording_peer();
+        let n = two_nodes_answering(handler);
+        let _in = n.rt.enter();
+        let reads: Vec<(String, Read)> = (0..=bridge::MAX_CALLS)
+            .map(|_| (n.primary.clone(), Read::ConfigVersion))
+            .collect();
+        let answers = n.fed.gather(reads);
+        assert!(answers.is_empty(), "{} answers", answers.len());
+        assert!(
+            asked
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "no peer was asked"
+        );
+        assert_eq!(n.fed.missing_nodes(), [n.fed.label_of(&n.primary)]);
     }
 }

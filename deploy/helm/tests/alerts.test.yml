@@ -275,3 +275,105 @@ tests:
           - exp_labels: { severity: warning, job: telltale-metrics, instance: k3s, node: c3, site: lab }
             exp_annotations:
               summary: Cluster node c3 (lab) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
+
+  # REQ: FLT-004 — TelltaleDNSListStale means "the last success is over 48 hours ago AND the latest
+  # refresh failed" (not literally "failing for over 48 hours"). A list in that state fires; a list
+  # disabled at runtime (its last success frozen) and a weekly list between refreshes are just as
+  # old but not failing, and don't.
+  # promtool's clock starts at 0, so "a success 200000 s ago" is a negative sample value: the age
+  # at time t is t + 200000 s, over the 172800 s limit from the first minute. The alert is
+  # therefore pending from minute 0 and fires 30 minutes later (`for: 30m`). The 10m assertion
+  # covers only that `for:` (the old rule passes it too); the 45m one tells the lists apart.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="broken"}'
+        values: "-200000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="broken"}'
+        values: "40x60"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="disabled"}'
+        values: "-200000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="disabled"}'
+        values: "0x60"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="weekly"}'
+        values: "-500000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="weekly"}'
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TelltaleDNSListStale
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: TelltaleDNSListStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: broken }
+            exp_annotations:
+              summary: Filter list broken hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
+
+  # REQ: FLT-004 — failing, but the last good copy is under 48 hours old ("recent": 100000 s):
+  # not yet. A list that never succeeded ("never") has no last-success series at all, so the rule
+  # can't match it: a known gap, pinned on purpose (the in-app `list_failing` rule reports it; if
+  # the chart ever covers it, change this case). "broken" is the control: it proves the series
+  # are wired, so an empty result for the others isn't a typo.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="broken"}'
+        values: "-200000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="broken"}'
+        values: "40x60"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="recent"}'
+        values: "-100000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="recent"}'
+        values: "3x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="never"}'
+        values: "40x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: TelltaleDNSListStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: broken }
+            exp_annotations:
+              summary: Filter list broken hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
+
+  # REQ: FLT-004, ADR-147 — a list held by `max_shrink_percent` keeps its old last success and
+  # isn't a failure (its failure count stays 0): the same series as the healthy old lists above,
+  # pinned on its own because it is a different situation. The chart alert stays silent for it
+  # (the old rule fired); the in-app `list_failing` rule reports a held list.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="broken"}'
+        values: "-200000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="broken"}'
+        values: "40x60"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="held"}'
+        values: "-300000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="held"}'
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: TelltaleDNSListStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: broken }
+            exp_annotations:
+              summary: Filter list broken hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
+
+  # REQ: FLT-004 — the join is on (instance, list): the same list name on two instances, only
+  # one of them failing, fires only that instance. Joining on `list` alone would let the failing
+  # instance's series make the healthy one fire too; joining on `instance` alone would make every
+  # old list on a node with one failing list fire.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="ads"}'
+        values: "-200000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="ads"}'
+        values: "40x60"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="k3s",list="ads"}'
+        values: "-200000x60"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="k3s",list="ads"}'
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: TelltaleDNSListStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: ads }
+            exp_annotations:
+              summary: Filter list ads hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).

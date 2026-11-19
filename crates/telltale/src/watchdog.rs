@@ -551,8 +551,8 @@ pub(crate) fn parse_stat(stat: &str) -> Option<(char, u64, u64)> {
     ))
 }
 
-/// A few lines of `/proc/self/status` and the load average.
-fn process_lines() -> Vec<String> {
+/// A few lines of `/proc/self/status`, the load average, and what the runtime says of itself.
+fn process_lines(runtime: Option<&tokio::runtime::Handle>) -> Vec<String> {
     let mut v = Vec::new();
     if let Ok(t) = fs::read_to_string("/proc/self/status") {
         for l in t.lines() {
@@ -573,7 +573,25 @@ fn process_lines() -> Vec<String> {
     if let Ok(t) = fs::read_to_string("/proc/loadavg") {
         v.push(format!("load average: {}", t.trim()));
     }
+    if let Some(rt) = runtime {
+        v.push(runtime_line(rt));
+    }
     v
+}
+
+/// REQ: OPS-012 (ADR-174) — what the runtime says of itself: its workers, the tasks alive, and
+/// the tasks waiting in its global queue (where a task started from outside waits for a worker).
+/// They are atomic reads that spawn nothing and need no worker, so they answer for a stuck
+/// runtime: workers, tasks waiting and nothing running is a wedge at a glance, with the thread
+/// table showing where each worker is.
+pub(crate) fn runtime_line(rt: &tokio::runtime::Handle) -> String {
+    let m = rt.metrics();
+    format!(
+        "runtime workers: {}, tasks alive: {}, waiting in the global queue: {}",
+        m.num_workers(),
+        m.num_alive_tasks(),
+        m.global_queue_depth()
+    )
 }
 
 /// The mappings of the running executable (to turn an address into an offset in the file).
@@ -594,6 +612,8 @@ fn exe_maps() -> Vec<String> {
 pub(crate) struct Writer {
     dir: PathBuf,
     started: Instant,
+    /// The runtime the node serves on (its numbers go in the dump).
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 impl Evidence for Writer {
@@ -641,7 +661,7 @@ impl Writer {
                 crate::build_info::CHANNEL
             ),
             uptime_secs: self.started.elapsed().as_secs(),
-            process: process_lines(),
+            process: process_lines(self.runtime.as_ref()),
             threads: thread_rows(),
             stacks: stacks(),
             maps: exe_maps(),
@@ -755,6 +775,7 @@ pub(crate) fn spawn(
         return;
     }
     note_previous_restart(&settings.dir, unix_now());
+    let runtime = handle.clone();
     let live = Live {
         handle,
         udp: udp_listener(cfg),
@@ -764,6 +785,7 @@ pub(crate) fn spawn(
     let mut writer = Writer {
         dir: settings.dir.clone(),
         started,
+        runtime: Some(runtime),
     };
     let mut watchdog = Watchdog::new(live, settings, started);
     let thread = std::thread::Builder::new()

@@ -7,7 +7,8 @@
 #   5. failover (ADR-051): the eligible replica got the cluster key, is promoted while the
 #      primary is down, and serves the last version it had; the old primary comes back, steps
 #      down, follows the new primary, and keeps its unseen edit under Conflicts.
-# Plus CLU-002 (T5.6): the primary's stats and query log include the replica's queries;
+# Plus CLU-002 (T5.6): the primary's stats and query log include the replica's queries (and a
+# range of time over the window cap is not fanned out to it: CLU-004, ADR-174);
 # (T5.7): a change made on the replica's API is forwarded to the primary, reaches both
 # nodes, and the primary's audit log names the user and the entry node; (T9.1): users and
 # tokens made on the primary work on the replica, and changing them there is refused; (T5.8): the
@@ -264,6 +265,27 @@ both=$(get '/api/v1/stats/summary' | field 'd["queries"]')
 own=$(get '/api/v1/stats/summary?scope=node:local' | field 'd["queries"]')
 [ "$both" -gt "$own" ] || fail "cluster totals ($both) don't exceed this node's ($own)"
 echo "ok (cluster $both queries, primary alone $own)"
+
+# REQ: CLU-004, CLU-002 (ADR-174, final review F1) — a range of time over the window cap (256
+# windows of 240 buckets a peer) is asked of no peer: the answer is this node's own, quick, with
+# the replica in `missingNodes`; the longest range the API documents for each step still is
+# asked, and nobody is missing. Before, a range from the epoch made one read per window and peer.
+echo "== a long range of time isn't fanned out to the peers (CLU-004)"
+t0=$(date +%s)
+for r in 'step=second&from=-20h' 'step=second&from=-99999999d' 'step=second&to=9999-12-31T00:00:00Z' \
+  'step=minute&from=-99999999d' 'step=hour&from=-99999999d'; do
+  m=$(get "/api/v1/stats/timeseries?$r" | field '",".join(d.get("missingNodes", []))') \
+    || fail "the timeseries read '$r' failed"
+  [ "$m" = r ] || fail "the timeseries read '$r' listed '$m' as missing, not the replica"
+done
+took=$(($(date +%s) - t0))
+[ "$took" -lt 20 ] || fail "the refused ranges took $took s"
+for r in 'step=second&from=-15m' 'step=minute&from=-7d' 'step=hour&from=-400d' 'step=day&from=-99999999d'; do
+  m=$(get "/api/v1/stats/timeseries?$r" | field '",".join(d.get("missingNodes", []))') \
+    || fail "the timeseries read '$r' failed"
+  [ -z "$m" ] || fail "the documented range '$r' listed '$m' as missing"
+done
+echo "ok (long ranges not asked of the peer, in $took s; the documented ones asked in full)"
 
 # REQ: FLT-017 (T15.1, AC 4) — the primary's workload table reaches the replica: a change within
 # 5 s (pushed), a replica started afterwards within 60 s (pulled); a stopped replica is listed as

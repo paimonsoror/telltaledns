@@ -5926,7 +5926,7 @@
           "config"
         ],
         "summary": "Add or change a router integration (T8.2, API-002).",
-        "description": "The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi\nconsole: `{\"type\": \"unifi\", \"url\": \"https://192.168.1.1\", \"api_key\": \"…\",\n\"tls_insecure_skip_verify\": true}`. The UniFi API key, the OPNsense key and secret, or a\nUniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:\nTelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and\nstores that file's path; the value is never stored, logged, or returned (ADR-176).\nCredential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too. Leave a credential out to\nkeep the current one, unless the type, address, site, or TLS settings change: then it must\nbe entered again. Admins only (agents: `config:write:routers`, which `config:write:*`\ndoesn't include). The routers are read again within seconds; a router the config files\ndefine is overridden until this one is deleted.",
+        "description": "The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi\nconsole: `{\"type\": \"unifi\", \"url\": \"https://192.168.1.1\", \"api_key\": \"…\",\n\"tls_insecure_skip_verify\": true}`. The UniFi API key, the OPNsense key and secret, or a\nUniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:\nTelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and\nstores that file's path; the value is never stored, logged, or returned (ADR-176).\nCredential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too.\nLeave a credential out to keep the current one, unless the type, address, site, or TLS settings change: then it must\nbe entered again. Admins only (agents: `config:write:routers`, which `config:write:*`\ndoesn't include). The routers are read again within seconds; a router the config files\ndefine is overridden until this one is deleted.",
         "operationId": "put_router",
         "parameters": [
           {
@@ -8155,7 +8155,7 @@
           "auth"
         ],
         "summary": "Users (admin).",
-        "description": "Every user with role, status, and two-factor state.",
+        "description": "Every user with role, status, and two-factor state, and `passwordLogin`: whether password\nsign-in is limited to admins on trusted networks (`[auth.oidc] disable_local_login`) and which\nnetworks (`allowed_admin_networks`) on the node that answers. The public `GET /auth/status`\ncarries only the yes or no.",
         "operationId": "list_users",
         "responses": {
           "200": {
@@ -8163,7 +8163,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Listed_UserInfo"
+                  "$ref": "#/components/schemas/UserList"
                 }
               }
             }
@@ -9388,6 +9388,7 @@
           "setupRequired",
           "authenticated",
           "localLogin",
+          "passwordLoginRestricted",
           "oidc"
         ],
         "properties": {
@@ -9411,6 +9412,10 @@
               "$ref": "#/components/schemas/OidcButton"
             },
             "description": "OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`."
+          },
+          "passwordLoginRestricted": {
+            "type": "boolean",
+            "description": "Password sign-in is limited to admins on trusted networks (`[auth.oidc]\ndisable_local_login` is on). The same for every client: `localLogin` says whether the form\nis offered to this one. The networks are not listed here; admins read them in\n`GET /api/v1/users` (`passwordLogin`)."
           },
           "setupRequired": {
             "type": "boolean",
@@ -16696,63 +16701,6 @@
           }
         }
       },
-      "Listed_UserInfo": {
-        "type": "object",
-        "description": "List wrapper.",
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": [
-                "id",
-                "username",
-                "role",
-                "disabled",
-                "totpEnabled",
-                "allowBasicApi",
-                "createdUnixSeconds"
-              ],
-              "properties": {
-                "allowBasicApi": {
-                  "type": "boolean"
-                },
-                "createdUnixSeconds": {
-                  "type": "integer",
-                  "format": "int64",
-                  "minimum": 0
-                },
-                "disabled": {
-                  "type": "boolean"
-                },
-                "id": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "oidcProvider": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "The sign-in provider for users created by OIDC sign-in (they have no password here)."
-                },
-                "role": {
-                  "$ref": "#/components/schemas/Role"
-                },
-                "totpEnabled": {
-                  "type": "boolean"
-                },
-                "username": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      },
       "LocalName": {
         "type": "object",
         "description": "A name TelltaleDNS answers itself.",
@@ -17669,6 +17617,42 @@
         "properties": {
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "PasswordLogin": {
+        "type": "object",
+        "description": "How password sign-in is restricted on this node: what an admin is shown under Settings, Users\n(`passwordLogin` in `GET /users`). It carries the networks, so it is never in a public answer.",
+        "required": [
+          "restricted",
+          "networks",
+          "coversWholeNetworks",
+          "includesLoopback",
+          "loopbackIsTrustedProxy"
+        ],
+        "properties": {
+          "coversWholeNetworks": {
+            "type": "boolean",
+            "description": "While `restricted`: some network is a range of more than one address that is not this\nmachine (not a single host such as `192.168.1.10/32`, not loopback), so everyone in it is\nshown the password form, not only the machines you name. False for a list of single hosts\nand loopback, and when not restricted."
+          },
+          "includesLoopback": {
+            "type": "boolean",
+            "description": "While `restricted`: some network is this machine (`127.0.0.0/8` or a part of it, or\n`::1`). With a proxy on this machine in front of the UI, everyone it serves arrives from\nthere unless `loopbackIsTrustedProxy` is true. False when not restricted."
+          },
+          "loopbackIsTrustedProxy": {
+            "type": "boolean",
+            "description": "While `restricted`: `127.0.0.1` is inside a network of `[api] trusted_proxies`, so a proxy\non this machine is believed about its clients' addresses (`X-Forwarded-For`). False\notherwise: a proxy there hides its clients behind its own address. (This node can't tell\nwhether such a proxy exists; one that connects over `::1` is not looked for.)"
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "While `restricted`: the networks (`address/prefix`, in the order of\n`allowed_admin_networks`) admins may use a password from. Empty means nobody can: if the\nsign-in provider is down, nobody can sign in with a password. Empty when not restricted."
+          },
+          "restricted": {
+            "type": "boolean",
+            "description": "`[auth.oidc] disable_local_login` is on: password sign-in and HTTP Basic work only for\nadmins from `networks`."
           }
         }
       },
@@ -20591,6 +20575,26 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "UserList": {
+        "type": "object",
+        "description": "The users, and how this node limits password sign-in (admins only).",
+        "required": [
+          "items",
+          "passwordLogin"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserInfo"
+            }
+          },
+          "passwordLogin": {
+            "$ref": "#/components/schemas/PasswordLogin",
+            "description": "Whether `disable_local_login` is on and which networks admins may use a password from, on\nthe node that answers. The networks are why this is here and not in the public\n`GET /auth/status`."
           }
         }
       },

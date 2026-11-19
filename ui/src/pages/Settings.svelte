@@ -235,9 +235,14 @@
   let users = $state<S['UserInfo'][]>([]);
   let nu = $state({ username: '', password: '', role: 'viewer' as S['Role'], allowBasicApi: false });
   let userError = $state<unknown>(null);
+  // REQ: API-004 (ADR-175) — where password sign-in is allowed, for an admin. An older server
+  // doesn't send it: then there is nothing to show.
+  let passwordLogin = $state<S['PasswordLogin'] | null>(null);
   async function loadUsers() {
     try {
-      users = (await api.users()).items;
+      const list = await api.users();
+      users = list.items;
+      passwordLogin = list.passwordLogin ?? null;
     } catch (err) {
       userError = err;
     }
@@ -469,7 +474,7 @@
           </ol>
           <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
           <form class="row" onsubmit={enableTotp}>
-            <input inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={'[0-9]{6}'} required placeholder="123456" bind:value={totpCode} />
+            <input aria-label="6-digit code" title="6 digits" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={'[0-9]{6}'} required placeholder="123456" bind:value={totpCode} />
             <button class="primary" type="submit">Turn on</button>
             <button type="button" onclick={() => (totp = null)}>Cancel</button>
           </form>
@@ -589,6 +594,30 @@
       {/if}
     </section>
   {:else if tab === 'users' && can('admin')}
+    <!-- REQ: API-004 (ADR-175) — where password sign-in is allowed, when `disable_local_login` limits it. -->
+    {#if passwordLogin?.restricted}
+      <section class="card" data-testid="password-sign-in">
+        <h2>Password sign-in</h2>
+        {#if passwordLogin.networks.length}
+          <p>Password sign-in is limited to admins on these networks:</p>
+          <ul class="nets mono">
+            <!-- Not keyed on `n`: allowed_admin_networks may repeat an entry, and Svelte throws on a duplicate key. -->
+            {#each passwordLogin.networks as n}<li>{n}</li>{/each}
+          </ul>
+          {#if passwordLogin.coversWholeNetworks}
+            <p class="small"><span class="badge warn">Includes whole networks</span> Anyone on these networks is still shown the sign-in form, not just the machines you name. To limit it to the machines you manage from, list each as a single address, such as <code>192.168.1.10/32</code>.</p>
+          {:else}
+            <p class="muted small">Only the machines listed are shown the sign-in form.</p>
+            {#if passwordLogin.includesLoopback && !passwordLogin.loopbackIsTrustedProxy}
+              <p class="muted small">If a reverse proxy on this machine serves this page, add <code>127.0.0.1/32</code> to <code>trusted_proxies</code> under <code>[api]</code>. Until then everyone it serves looks like this machine and can use a password.</p>
+            {/if}
+          {/if}
+        {:else}
+          <p>Password sign-in is limited to admins on no network, so if your sign-in provider is down, nobody can sign in with a password.</p>
+        {/if}
+        <p class="muted small">Change it with <code>allowed_admin_networks</code> under <code>[auth.oidc]</code> in the configuration file, then restart. See <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#users-and-sign-in" target="_blank" rel="noreferrer">Users and sign-in</a> in the guide.</p>
+      </section>
+    {/if}
     <section class="card">
       <h2>Users<HelpButton id="users" /></h2>
       <ErrorNote error={userError} />
@@ -940,6 +969,10 @@
 </div>
 
 <style>
+  .nets {
+    margin: 6px 0 10px;
+    padding-left: 22px;
+  }
   .icon-row {
     display: flex;
     flex-wrap: wrap;

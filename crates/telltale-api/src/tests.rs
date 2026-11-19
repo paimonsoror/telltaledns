@@ -559,6 +559,11 @@ async fn get(app: &TestApp, uri: &str) -> (StatusCode, String, serde_json::Value
 
 fn app() -> (TestApp, Arc<Fake>) {
     let fake = Arc::new(Fake::default());
+    (app_over(Arc::clone(&fake) as Shared), fake)
+}
+
+/// [`app`] over another backend.
+fn app_over(backend: Shared) -> TestApp {
     let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
     let auth = Arc::new(auth::Auth::new(state, auth::Settings::default()));
     let admin = auth
@@ -585,17 +590,14 @@ fn app() -> (TestApp, Arc<Fake>) {
     let sess = auth
         .start_session(&admin, "127.0.0.1".parse().unwrap(), auth_now())
         .unwrap();
-    let router = router(Arc::clone(&fake) as Shared, Arc::clone(&auth));
-    (
-        TestApp {
-            router,
-            bearer: format!("tt_{id}_{secret}"),
-            cookie: format!("{}={}", auth::routes::COOKIE, sess.cookie),
-            csrf: sess.csrf,
-            auth,
-        },
-        fake,
-    )
+    let router = router(backend, Arc::clone(&auth));
+    TestApp {
+        router,
+        bearer: format!("tt_{id}_{secret}"),
+        cookie: format!("{}={}", auth::routes::COOKIE, sess.cookie),
+        csrf: sess.csrf,
+        auth,
+    }
 }
 // REQ: OBS-014, OBS-015 — acknowledging anomalies over HTTP: an operator's change, audited,
 // reflected in the list and its filter; a viewer can't; health is a plain read.
@@ -2448,6 +2450,37 @@ fn obs_024_simulate_parameters() {
     assert!(simulate_opts(&opts(true, Some("24h"), Some("soon")), NOW).is_err());
 }
 
+// REQ: OBS-024 (T13.1) — issue #69: an end of `now` (or an empty one) is no end at all, so the
+// backend's default applies: the end of the request's own second. Read as the whole second
+// `now`, it ended at the start of that second and left out what had just been logged. Any other
+// end stays exactly what it says.
+#[test]
+fn obs_024_until_now_is_the_default() {
+    use crate::config_api::{WriteOpts, simulate_opts};
+    let until_of = |until: Option<&str>| {
+        simulate_opts(
+            &WriteOpts {
+                dry_run: true,
+                simulate: Some("24h".to_owned()),
+                simulate_until: until.map(str::to_owned),
+            },
+            NOW,
+        )
+        .unwrap()
+        .unwrap()
+        .until_s
+    };
+    for given in [None, Some("now"), Some(" now "), Some("")] {
+        assert_eq!(until_of(given), None, "{given:?}");
+    }
+    assert_eq!(until_of(Some("-1h")), Some(NOW - 3600));
+    let at = "2026-10-03T12:00:00Z";
+    assert_eq!(
+        until_of(Some(at)),
+        Some(crate::time::parse_time(at, NOW).unwrap())
+    );
+}
+
 // REQ: AGT-005 — a change made through MCP is audited with the agent's address: the REST
 // call behind the tool runs in-process and has no peer address of its own.
 #[tokio::test]
@@ -3088,4 +3121,342 @@ async fn clu_014_drill_requests_over_http() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let (s, _, v) = send(&app, get("/api/v1/nodes/local/drill")).await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+}
+
+/// REQ: CLU-004, CLU-002 (ADR-174) — a backend whose federated reads wait on a gate, the way a
+/// replica's read waits for the primary's answer (which needs the runtime, as the gate's opening
+/// does here). Everything else is [`Fake`]'s.
+struct ParkingBackend {
+    inner: Fake,
+    /// Federated reads that started.
+    reads: std::sync::atomic::AtomicUsize,
+    /// Told whenever a federated read starts: the handler is inside the backend.
+    entered: Mutex<std::sync::mpsc::Sender<()>>,
+    /// True once the test's probe task has run on the runtime.
+    open: (Mutex<bool>, std::sync::Condvar),
+}
+
+impl ParkingBackend {
+    fn new() -> (Arc<Self>, std::sync::mpsc::Receiver<()>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let me = Self {
+            inner: Fake::default(),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            entered: Mutex::new(tx),
+            open: (Mutex::new(false), std::sync::Condvar::new()),
+        };
+        (Arc::new(me), rx)
+    }
+
+    fn open_gate(&self) {
+        *self.open.0.lock().unwrap() = true;
+        self.open.1.notify_all();
+    }
+
+    /// One federated read: true when the gate opened. It gives up after 30 s, so a failing test
+    /// doesn't leave a thread behind for long.
+    fn federated_read(&self) -> bool {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.entered.lock().unwrap().send(());
+        let guard = self.open.0.lock().unwrap();
+        let (guard, _) = self
+            .open
+            .1
+            .wait_timeout_while(guard, std::time::Duration::from_secs(30), |open| !*open)
+            .unwrap();
+        *guard
+    }
+}
+
+impl Backend for ParkingBackend {
+    fn now_unix_seconds(&self) -> u64 {
+        NOW
+    }
+    fn system_info(&self) -> SystemInfo {
+        self.inner.system_info()
+    }
+    fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
+        self.inner.timeseries(step, from_s, to_s)
+    }
+    fn top(&self, kind: TopKind, hour: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem> {
+        self.inner.top(kind, hour, limit, client)
+    }
+    fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
+        self.inner.latency(by, hour)
+    }
+    fn queries(
+        &self,
+        q: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> Result<QueryPage, Problem> {
+        self.inner.queries(q, from_us, to_us, limit)
+    }
+    fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
+        self.inner.explain(p)
+    }
+    fn lists(&self) -> Vec<ListInfo> {
+        self.inner.lists()
+    }
+    fn groups(&self) -> Vec<GroupInfo> {
+        self.inner.groups()
+    }
+    fn upstreams(&self) -> Vec<UpstreamInfo> {
+        self.inner.upstreams()
+    }
+    // The reads a replica federates (or forwards to the primary): each waits for the gate.
+    fn clients(&self) -> Vec<ClientInfo> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn local_names(&self) -> Vec<LocalName> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn forwards(&self) -> Vec<ForwardInfo> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn rules(&self) -> Vec<crate::model::RuleInfo> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn config_entries(&self, kind: Option<&str>) -> Vec<ConfigEntry> {
+        let _ = kind;
+        self.federated_read();
+        vec![ConfigEntry {
+            kind: "list".into(),
+            name: "from-the-gate".into(),
+            source: "added".into(),
+            definition: None,
+        }]
+    }
+    /// 4242 when the gate opened (the primary's version), 0 otherwise (a replica's own).
+    fn config_version(&self) -> u64 {
+        if self.federated_read() { 4242 } else { 0 }
+    }
+    fn write_client(
+        &self,
+        w: ClientWrite,
+    ) -> BoxFuture<Result<crate::model::ClientChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Ok(serde_json::from_value(serde_json::json!({
+                "applied": true, "configVersion": 1, "before": null, "after": null,
+                "recentQueries": 0, "impact": "", "warnings": []
+            }))
+            .unwrap())
+        })
+    }
+    fn write_managed(
+        &self,
+        w: ManagedWrite,
+    ) -> BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Ok(serde_json::from_value(serde_json::json!({
+                "applied": true, "configVersion": 1, "before": null, "after": null,
+                "warnings": []
+            }))
+            .unwrap())
+        })
+    }
+}
+
+/// One request of `clu_004_direct_handlers_never_park_a_runtime_worker`.
+struct Route {
+    name: &'static str,
+    method: &'static str,
+    uri: &'static str,
+    body: &'static str,
+    /// Made with a token restricted to the group `kids` (AGT-004), not the admin's.
+    agent: bool,
+    /// The federated reads the handler makes in all (the fake was reached the way a replica is).
+    reads: usize,
+    /// The answer carries the backend's version in the `ETag` (else: its one entry).
+    etag: bool,
+}
+
+/// Sends `route` through the router on a runtime with one worker, from a thread that is not a
+/// worker. The backend's reads wait for a gate that only a task on that runtime opens: a handler
+/// that waits on its own worker never lets the task run (the production wedge: a replica's wait
+/// for the primary needs a worker too). The guard is a `std` timeout on this thread; a timer on
+/// the wedged runtime could never fire.
+fn route_never_parks(route: &Route) -> Result<(), String> {
+    const GUARD: std::time::Duration = std::time::Duration::from_secs(10);
+    let fail = |what: &str| Err(format!("{}: {what}", route.name));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    assert_eq!(rt.metrics().num_workers(), 1, "the shape of the test");
+    let (backend, entered) = ParkingBackend::new();
+    let app = app_over(Arc::clone(&backend) as Shared);
+    let bearer = if route.agent {
+        let (s, _, v) = rt.block_on(send(
+            &app,
+            app.signed_in(
+                "POST",
+                "/api/v1/tokens",
+                serde_json::json!({"name": "kids-helper", "kind": "agent", "group": "kids",
+                    "scopes": ["querylog:read", "analytics:read", "config:read", "config:write:clients"]}),
+            ),
+        ));
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        v["token"].as_str().unwrap().to_owned()
+    } else {
+        app.bearer.clone()
+    };
+    let req = Request::builder()
+        .method(route.method)
+        .uri(route.uri)
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .header("x-telltale-reason", "test")
+        .body(Body::from(route.body))
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let router = app.router.clone();
+    drop(rt.spawn(async move {
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, headers) = (resp.status(), resp.headers().clone());
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let _ = tx.send((status, headers, bytes));
+    }));
+    // Only once the handler is inside the backend does the probe run: a handler that had not
+    // started yet could not tell the two cases apart.
+    if entered.recv_timeout(GUARD).is_err() {
+        backend.open_gate();
+        rt.shutdown_background();
+        return fail("never reached the backend");
+    }
+    let opener = Arc::clone(&backend);
+    drop(rt.spawn(async move { opener.open_gate() }));
+    let Ok((status, headers, bytes)) = rx.recv_timeout(GUARD) else {
+        // Dropping a runtime whose worker is parked would hang the test run.
+        backend.open_gate();
+        rt.shutdown_background();
+        return fail("the handler waited on the runtime's only worker (the probe task never ran)");
+    };
+    drop(rt);
+    let reads = backend.reads.load(std::sync::atomic::Ordering::SeqCst);
+    if reads != route.reads {
+        return fail(&format!(
+            "{reads} federated reads, expected {}",
+            route.reads
+        ));
+    }
+    if status != StatusCode::OK {
+        return fail(&format!(
+            "status {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ));
+    }
+    if route.etag {
+        if headers.get("etag").and_then(|v| v.to_str().ok()) != Some("\"4242\"") {
+            return fail(&format!(
+                "ETag {:?}, not the backend's version",
+                headers.get("etag")
+            ));
+        }
+    } else {
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        if v["items"][0]["name"] != "from-the-gate" {
+            return fail(&format!("the entries are {v}"));
+        }
+    }
+    Ok(())
+}
+
+// REQ: CLU-004, CLU-002 (ADR-174, GitHub issue #7) — a handler whose backend call federates (a
+// replica asks the primary, and the answer needs a runtime worker) must not run that call on a
+// worker: with every worker parked nothing can answer it, nothing can time it out, and the API,
+// the metrics and the cluster stream all stop. On a runtime of one worker a single request
+// shows it. The rows are the direct handlers' routes (the ones that read the config version for
+// the `ETag`, or federate their list), including a config write and a group-restricted agent's.
+#[test]
+fn clu_004_direct_handlers_never_park_a_runtime_worker() {
+    let client = r#"{"match": ["192.168.1.9"], "groups": ["default"]}"#;
+    let kids = r#"{"match": ["192.168.1.9"], "groups": ["kids"]}"#;
+    let route = |name, method, uri, body, agent, reads, etag| Route {
+        name,
+        method,
+        uri,
+        body,
+        agent,
+        reads,
+        etag,
+    };
+    let routes = [
+        route("GET clients", "GET", "/api/v1/clients", "", false, 2, true),
+        route(
+            "GET clients (agent)",
+            "GET",
+            "/api/v1/clients",
+            "",
+            true,
+            2,
+            true,
+        ),
+        route("GET records", "GET", "/api/v1/records", "", false, 2, true),
+        route(
+            "GET forwards",
+            "GET",
+            "/api/v1/forwards",
+            "",
+            false,
+            2,
+            true,
+        ),
+        route("GET rules", "GET", "/api/v1/rules", "", false, 2, true),
+        route(
+            "GET config/entries",
+            "GET",
+            "/api/v1/config/entries?kind=list",
+            "",
+            false,
+            1,
+            false,
+        ),
+        route(
+            "PUT clients",
+            "PUT",
+            "/api/v1/clients/tablet",
+            client,
+            false,
+            1,
+            true,
+        ),
+        route(
+            "PUT clients (agent)",
+            "PUT",
+            "/api/v1/clients/tablet",
+            kids,
+            true,
+            2,
+            true,
+        ),
+        route(
+            "DELETE records",
+            "DELETE",
+            "/api/v1/records/x.lan",
+            "",
+            false,
+            1,
+            true,
+        ),
+    ];
+    let failed: Vec<String> = routes
+        .iter()
+        .filter_map(|r| route_never_parks(r).err())
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "these requests did not complete on a runtime of one worker:\n{}",
+        failed.join("\n")
+    );
 }

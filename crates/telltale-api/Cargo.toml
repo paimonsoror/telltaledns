@@ -40,4 +40,5 @@ utoipa = { version = "6.0.0", features = ["macros"] }
 
 [dev-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-tokio = { version = "1.53.2", features = ["rt", "macros"] }
+# `rt-multi-thread`: the CLU-004 test runs the router on a one-worker runtime (already in the tree).
+tokio = { version = "1.53.2", features = ["rt", "rt-multi-thread", "macros"] }

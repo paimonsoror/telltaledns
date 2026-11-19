@@ -2148,8 +2148,8 @@ export interface paths {
          *     UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:
          *     TelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and
          *     stores that file's path; the value is never stored, logged, or returned (ADR-176).
-         *     Credential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too. Leave a credential out to
-         *     keep the current one, unless the type, address, site, or TLS settings change: then it must
+         *     Credential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too.
+         *     Leave a credential out to keep the current one, unless the type, address, site, or TLS settings change: then it must
          *     be entered again. Admins only (agents: `config:write:routers`, which `config:write:*`
          *     doesn't include). The routers are read again within seconds; a router the config files
          *     define is overridden until this one is deleted.
@@ -2886,7 +2886,10 @@ export interface paths {
         };
         /**
          * Users (admin).
-         * @description Every user with role, status, and two-factor state.
+         * @description Every user with role, status, and two-factor state, and `passwordLogin`: whether password
+         *     sign-in is limited to admins on trusted networks (`[auth.oidc] disable_local_login`) and which
+         *     networks (`allowed_admin_networks`) on the node that answers. The public `GET /auth/status`
+         *     carries only the yes or no.
          */
         get: operations["list_users"];
         put?: never;
@@ -3416,6 +3419,13 @@ export interface components {
             localLogin: boolean;
             /** @description OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`. */
             oidc: components["schemas"]["OidcButton"][];
+            /**
+             * @description Password sign-in is limited to admins on trusted networks (`[auth.oidc]
+             *     disable_local_login` is on). The same for every client: `localLogin` says whether the form
+             *     is offered to this one. The networks are not listed here; admins read them in
+             *     `GET /api/v1/users` (`passwordLogin`).
+             */
+            passwordLoginRestricted: boolean;
             /** @description No user exists yet: create the first admin with the setup token. */
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
@@ -6296,22 +6306,6 @@ export interface components {
                 scopes?: string[];
             }[];
         };
-        /** @description List wrapper. */
-        Listed_UserInfo: {
-            items: {
-                allowBasicApi: boolean;
-                /** Format: int64 */
-                createdUnixSeconds: number;
-                disabled: boolean;
-                /** Format: int64 */
-                id: number;
-                /** @description The sign-in provider for users created by OIDC sign-in (they have no password here). */
-                oidcProvider?: string | null;
-                role: components["schemas"]["Role"];
-                totpEnabled: boolean;
-                username: string;
-            }[];
-        };
         /** @description A name TelltaleDNS answers itself. */
         LocalName: {
             /** @example nas.home.arpa */
@@ -6706,6 +6700,43 @@ export interface components {
         };
         PasswordConfirm: {
             password: string;
+        };
+        /**
+         * @description How password sign-in is restricted on this node: what an admin is shown under Settings, Users
+         *     (`passwordLogin` in `GET /users`). It carries the networks, so it is never in a public answer.
+         */
+        PasswordLogin: {
+            /**
+             * @description While `restricted`: some network is a range of more than one address that is not this
+             *     machine (not a single host such as `192.168.1.10/32`, not loopback), so everyone in it is
+             *     shown the password form, not only the machines you name. False for a list of single hosts
+             *     and loopback, and when not restricted.
+             */
+            coversWholeNetworks: boolean;
+            /**
+             * @description While `restricted`: some network is this machine (`127.0.0.0/8` or a part of it, or
+             *     `::1`). With a proxy on this machine in front of the UI, everyone it serves arrives from
+             *     there unless `loopbackIsTrustedProxy` is true. False when not restricted.
+             */
+            includesLoopback: boolean;
+            /**
+             * @description While `restricted`: `127.0.0.1` is inside a network of `[api] trusted_proxies`, so a proxy
+             *     on this machine is believed about its clients' addresses (`X-Forwarded-For`). False
+             *     otherwise: a proxy there hides its clients behind its own address. (This node can't tell
+             *     whether such a proxy exists; one that connects over `::1` is not looked for.)
+             */
+            loopbackIsTrustedProxy: boolean;
+            /**
+             * @description While `restricted`: the networks (`address/prefix`, in the order of
+             *     `allowed_admin_networks`) admins may use a password from. Empty means nobody can: if the
+             *     sign-in provider is down, nobody can sign in with a password. Empty when not restricted.
+             */
+            networks: string[];
+            /**
+             * @description `[auth.oidc] disable_local_login` is on: password sign-in and HTTP Basic work only for
+             *     admins from `networks`.
+             */
+            restricted: boolean;
         };
         /** @description One active pause. */
         PauseInfo: {
@@ -7946,6 +7977,16 @@ export interface components {
             role: components["schemas"]["Role"];
             totpEnabled: boolean;
             username: string;
+        };
+        /** @description The users, and how this node limits password sign-in (admins only). */
+        UserList: {
+            items: components["schemas"]["UserInfo"][];
+            /**
+             * @description Whether `disable_local_login` is on and which networks admins may use a password from, on
+             *     the node that answers. The networks are why this is here and not in the public
+             *     `GET /auth/status`.
+             */
+            passwordLogin: components["schemas"]["PasswordLogin"];
         };
         /** @description What a `vqlog` query costs (REQ: AGT-012). */
         VqlogCost: {
@@ -13913,7 +13954,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Listed_UserInfo"];
+                    "application/json": components["schemas"]["UserList"];
                 };
             };
             /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */

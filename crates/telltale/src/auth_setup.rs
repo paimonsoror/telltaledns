@@ -3,12 +3,16 @@
 //! first-run setup token in `<data_dir>/setup-token`, and ends stale sessions.
 
 use std::io::{self, Write as _};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use telltale_api::auth::{Auth, Role, Settings, crypto};
-use telltale_config::{Cidr, Config, UserRole};
+use telltale_api::auth::{
+    Auth, Role, Settings, covers_whole_networks, crypto, includes_loopback, is_loopback_network,
+    loopback_is_trusted_proxy,
+};
+use telltale_config::{Cidr, Config, OidcConfig, UserRole};
 use telltale_store::state::State;
 use tracing::{error, info, warn};
 
@@ -48,15 +52,24 @@ fn settings(cfg: &Config) -> Settings {
     }
 }
 
-/// REQ: API-004 (issue #63) — what start-up says when `disable_local_login` is on: password
-/// sign-in is still open to the break-glass networks (private ranges and loopback unless the list
-/// was changed), so the form is still offered there; an empty list means nobody can use a
-/// password. Returns whether it is a warning, and the line.
-fn break_glass_notice(networks: &[Cidr]) -> (bool, String) {
+/// REQ: API-004 (issue #63) — what start-up says when `disable_local_login` is on, and how loudly.
+/// A list that covers whole networks (the default does: private networks and loopback) leaves
+/// password sign-in open to every admin there, and the form is still shown: that is a warning,
+/// because the flag's name says otherwise. A list of this machine and single hosts (`/32`,
+/// `/128`: the machines you manage from, as the guide recommends) is information. A list that
+/// names this machine gets a pointer to `trusted_proxies` unless loopback is already a trusted
+/// proxy (a proxy on this host makes every browser look like loopback). An empty list means
+/// nobody can use a password: a warning. Returns whether it is a warning, and the line.
+///
+/// REQ: API-004 (ADR-175) — "covers whole networks", "names this machine" and "loopback is a
+/// trusted proxy" are `telltale_api::auth::{covers_whole_networks, includes_loopback,
+/// loopback_is_trusted_proxy}`, the rules the Settings note (`GET /users`, `passwordLogin`) is
+/// built from too, so the log line and the page can't disagree.
+fn break_glass_notice(networks: &[Cidr], trusted_proxies: &[Cidr]) -> (bool, String) {
     if networks.is_empty() {
         return (
             true,
-            "password sign-in is off for everyone (allowed_admin_networks is empty): if the sign-in provider is down, nobody can sign in with a password".to_owned(),
+            "disable_local_login is on and allowed_admin_networks is empty, so password sign-in is off for everyone: if the sign-in provider is down, nobody can sign in with a password".to_owned(),
         );
     }
     let list = networks
@@ -64,12 +77,56 @@ fn break_glass_notice(networks: &[Cidr]) -> (bool, String) {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    let pairs: Vec<(IpAddr, u8)> = networks.iter().map(|n| (n.addr, n.prefix)).collect();
+    if !covers_whole_networks(&pairs) {
+        let proxies: Vec<(IpAddr, u8)> =
+            trusted_proxies.iter().map(|n| (n.addr, n.prefix)).collect();
+        let proxy = if includes_loopback(&pairs) && !loopback_is_trusted_proxy(&proxies) {
+            "; if a reverse proxy on this machine serves the UI, list it in [api] trusted_proxies (127.0.0.1/32): otherwise every browser it serves looks like loopback and may use a password"
+        } else {
+            ""
+        };
+        let only = if pairs.iter().all(|(n, p)| is_loopback_network(*n, *p)) {
+            "loopback".to_owned()
+        } else {
+            let n = pairs.len();
+            format!("{n} host{}", if n == 1 { "" } else { "s" })
+        };
+        return (
+            false,
+            format!(
+                "disable_local_login is on: password sign-in is restricted to {only} ({list}){proxy}"
+            ),
+        );
+    }
+    let which = if networks == OidcConfig::default().allowed_admin_networks {
+        "the default allowed_admin_networks"
+    } else {
+        "allowed_admin_networks"
+    };
     (
-        false,
+        true,
         format!(
-            "password sign-in is off, except for admins from {list} (allowed_admin_networks): the sign-in form is still offered there; narrow the list to hide it from the rest of your network, or set it to [] to turn password sign-in off"
+            "disable_local_login is on, but password sign-in is still open to admins from {list} ({which}), and the sign-in form is still shown there: narrow allowed_admin_networks to the machines you manage from (one address each, such as 192.168.1.10/32), or set it to [] to turn password sign-in off"
         ),
     )
+}
+
+/// REQ: API-004 (issue #63) — says the break-glass state at start-up, whether or not a provider
+/// could be set up (that is exactly when it matters). A resolver pod of a Helm cluster has no way
+/// to sign in (its API has no Service port), so it only gets information.
+fn log_break_glass(cfg: &Config) {
+    let o = &cfg.auth.oidc;
+    if !o.disable_local_login {
+        return;
+    }
+    let (is_warning, line) =
+        break_glass_notice(&o.allowed_admin_networks, &cfg.api.trusted_proxies);
+    if is_warning && !cfg.cluster.ephemeral {
+        warn!("{line}");
+    } else {
+        info!("{line}");
+    }
 }
 
 fn role(r: UserRole) -> Role {
@@ -137,14 +194,6 @@ fn oidc(cfg: &Config) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
         })
     });
     info!(providers = providers.len(), "OIDC sign-in enabled");
-    if o.disable_local_login {
-        let (is_warning, line) = break_glass_notice(&o.allowed_admin_networks);
-        if is_warning {
-            warn!("{line}");
-        } else {
-            info!("{line}");
-        }
-    }
     // REQ: AGT-008 (T7.4) — MCP clients sign in through one provider.
     let mcp = (!o.mcp_provider.is_empty()).then(|| telltale_api::auth::oidc::McpOAuth {
         provider: o.mcp_provider.to_string(),
@@ -187,7 +236,11 @@ fn write_secret(path: &Path, token: &str) -> io::Result<()> {
 /// Opens the auth service for the server. Blocking (Argon2 for a bootstrap password).
 pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
     let auth = Arc::new(Auth::new(Arc::new(open_state(cfg)?), settings(cfg)));
-    // A broken provider setup (say, a missing secret file) leaves password sign-in working.
+    // REQ: API-004 (issue #63) — before the providers, so it is said even when they fail.
+    log_break_glass(cfg);
+    // A broken provider setup (say, a missing secret file) changes nothing about password
+    // sign-in: with `disable_local_login` on, the break-glass networks still decide who may use
+    // one (`settings` above already applied them).
     match oidc(cfg) {
         Ok(Some(o)) => auth.set_oidc(o),
         Ok(None) => {}

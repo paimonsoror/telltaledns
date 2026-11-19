@@ -1443,3 +1443,49 @@ fn t8_2_router_offline_days() {
     let errs = load_str(&format!("{UNIFI}offline_days = 366\n")).unwrap_err();
     assert_eq!(paths(&errs), ["router[0].offline_days"]);
 }
+
+/// REQ: API-004 (issue #63) — `telltale config check` warns when `disable_local_login` is on and
+/// `allowed_admin_networks` is empty: no address may then use a password, so with the provider
+/// down nobody can sign in. A list that names networks, the default list, and the flag off are
+/// all quiet.
+#[test]
+fn api_004_config_check_warns_on_an_empty_break_glass_list() {
+    let toml = |oidc_keys: &str| {
+        format!(
+            "[auth.oidc]\npublic_url = \"https://dns.example.com\"\n{oidc_keys}\n\
+             [[auth.oidc.provider]]\nid = \"kc\"\nissuer = \"https://auth.example.com/realms/home\"\nclient_id = \"telltale\"\n"
+        )
+    };
+    let warns = |oidc_keys: &str| -> Vec<String> {
+        load_str(&toml(oidc_keys))
+            .unwrap()
+            .warnings
+            .into_iter()
+            .filter(|w| w.contains("allowed_admin_networks"))
+            .collect()
+    };
+    let w = warns("disable_local_login = true\nallowed_admin_networks = []");
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        w[0].starts_with("auth.oidc.allowed_admin_networks:"),
+        "names the setting first, like the other warnings: {}",
+        w[0]
+    );
+    assert!(
+        w[0].contains("nobody can sign in with a password"),
+        "{}",
+        w[0]
+    );
+    assert!(
+        warns("disable_local_login = true").is_empty(),
+        "the default list"
+    );
+    assert!(
+        warns("disable_local_login = true\nallowed_admin_networks = [\"127.0.0.0/8\"]").is_empty(),
+        "a list that names a network"
+    );
+    assert!(
+        warns("allowed_admin_networks = []").is_empty(),
+        "with the flag off the list is not used"
+    );
+}

@@ -148,6 +148,72 @@ fn ops_011_standard_adds_info_lines_the_top_lists_and_the_query_sample() {
     }
 }
 
+// REQ: OPS-011 — the query sample takes in the newest second: issue #69's slip, a range cut at
+// the start of the second the request arrived in. One query is logged half a second into the
+// wall-clock second the package is about to be made in. The package reads the real clock, so
+// if the second turns over in between, the row is inside either way: the test can only pass
+// when it should not (a rare tick), never fail when it should pass.
+#[test]
+fn ops_011_the_query_sample_includes_the_current_second() {
+    use telltale_store::qlog::{Builder, Settings};
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let mut src = crate::http::tests::sources_in(dir.path());
+    src.qlog = Some(Arc::new(telltale_store::qlog::Stats::default()));
+    let b = ApiBackend { src: Arc::new(src) };
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut w = Builder::spawn(Settings {
+        dir: dir.path().join("qlog"),
+        node: 1,
+        privacy: 0,
+        flush_interval: Duration::from_secs(3600),
+        fsync: false,
+        retention_days: 30,
+        retention_bytes: u64::MAX,
+        rotate_after: None,
+    })
+    .unwrap();
+    let event = telltale_telemetry::QueryEvent {
+        ts_us: now_s * 1_000_000 + 500_000,
+        client_ip: std::net::Ipv4Addr::new(10, 0, 0, 7)
+            .to_ipv6_mapped()
+            .octets(),
+        client_ref: 0,
+        group: 0,
+        qtype: 1,
+        qclass: 1,
+        rcode: Some(0),
+        status: telltale_telemetry::Status::Forwarded,
+        proto: telltale_telemetry::Proto::Udp,
+        flags: 0x8180,
+        rule: None,
+        upstream: 0,
+        attempts: 1,
+        t_total_us: 100,
+        t_upstream_us: 50,
+        resp_size: 64,
+        answers: 1,
+    };
+    w.push(&event, b"\x07example\x03com\x00");
+    drop(w);
+
+    let out = build(&b, &req("standard", 5, false), false).unwrap();
+    let sample = read_tar_gz(&out.archive)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path == "queries/sample.json")
+        .expect("a standard package with a sample asked for has one");
+    let page: Value = serde_json::from_slice(&sample.data).unwrap();
+    assert_eq!(
+        page["items"].as_array().map(Vec::len),
+        Some(1),
+        "the row of the current second is in the sample: {page}"
+    );
+}
+
 #[test]
 fn ops_011_none_keeps_real_values_but_never_secrets() {
     let _s = serial();

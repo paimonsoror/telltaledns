@@ -20,7 +20,7 @@ use crate::auth::Auth;
 use crate::auth::routes::{body, principal, reason, remote};
 use crate::model::{ClientChange, ClientInput, ConfigChange, ForwardInput, RecordsInput};
 use crate::problem::{Code, Problem};
-use crate::{Backend, ClientWrite, ManagedKind, ManagedWrite, SimulateOpts};
+use crate::{Backend, ClientWrite, ManagedKind, ManagedWrite, SimulateOpts, blocking};
 
 type Ctx = (Arc<dyn Backend>, Arc<Auth>);
 
@@ -617,9 +617,9 @@ pub(crate) async fn backup_download(
 
 /// REQ: AGT-004 — an agent restricted to a group changes only that group's devices, and
 /// only into that group (ADR-064).
-fn group_guard(
+async fn group_guard(
     p: &crate::auth::Principal,
-    backend: &dyn Backend,
+    backend: &Arc<dyn Backend>,
     name: &str,
     op: &Op,
 ) -> Result<(), Problem> {
@@ -630,7 +630,12 @@ fn group_guard(
         Err(Problem::new(Code::Forbidden, why)
             .hint(format!("This token is restricted to group `{g}`.")))
     };
-    let existing = backend.clients().into_iter().find(|c| c.name == name);
+    // REQ: CLU-004 (ADR-174) — the device list is a federated read (every node is asked): off the
+    // runtime's worker.
+    let existing = {
+        let (backend, name) = (Arc::clone(backend), name.to_owned());
+        blocking(move || Ok(backend.clients().into_iter().find(|c| c.name == name))).await?
+    };
     if let Some(c) = &existing
         && !c.groups.iter().any(|x| x == g)
     {
@@ -965,8 +970,8 @@ pub(crate) const ROUTER_SECRETS: [&str; 3] = ["api_key", "api_secret", "password
 /// UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:
 /// TelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and
 /// stores that file's path; the value is never stored, logged, or returned (ADR-176).
-/// Credential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too. Leave a credential out to
-/// keep the current one, unless the type, address, site, or TLS settings change: then it must
+/// Credential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too.
+/// Leave a credential out to keep the current one, unless the type, address, site, or TLS settings change: then it must
 /// be entered again. Admins only (agents: `config:write:routers`, which `config:write:*`
 /// doesn't include). The routers are read again within seconds; a router the config files
 /// define is overridden until this one is deleted.
@@ -1594,11 +1599,8 @@ pub(crate) fn simulate_opts(d: &WriteOpts, now_s: u64) -> Result<Option<Simulate
         return Err(Problem::invalid("`simulate` needs `dryRun=true`")
             .hint("A simulation previews a change: add dryRun=true."));
     }
-    let until_s = d
-        .simulate_until
-        .as_deref()
-        .map(|u| crate::time::parse_time(u, now_s))
-        .transpose()
+    // REQ: OBS-024 (T13.1) — `now` is no end given: the backend's default takes in this second.
+    let until_s = crate::time::parse_until(d.simulate_until.as_deref(), now_s)
         .map_err(|e| Problem::invalid(format!("`simulateUntil`: {e}")))?;
     let window =
         (!auto && !text.is_empty() && !text.eq_ignore_ascii_case("true")).then(|| text.to_owned());
@@ -1944,7 +1946,7 @@ async fn write(
     }
     // `simulate=auto` from a token that can't read the log: no simulation, not an error.
     let simulate = simulate.filter(|_| crate::simulate_api::agent_may_simulate(&p, None).is_ok());
-    if let Err(e) = group_guard(&p, backend.as_ref(), &name, &op) {
+    if let Err(e) = group_guard(&p, &backend, &name, &op).await {
         return e.into_response();
     }
     let expect = match expected_version(&headers) {
@@ -2035,7 +2037,12 @@ async fn write(
     match result {
         Ok(c) => {
             let mut r = Json(c).into_response();
-            if let Ok(v) = HeaderValue::from_str(&format!("\"{}\"", backend.config_version())) {
+            // REQ: CLU-004 (ADR-174) — a replica reads the version from the primary: off the
+            // runtime's worker. The change is made either way, so a failed read is no ETag.
+            let version = blocking(move || Ok(backend.config_version())).await;
+            if let Ok(version) = version
+                && let Ok(v) = HeaderValue::from_str(&format!("\"{version}\""))
+            {
                 r.headers_mut().insert(axum::http::header::ETAG, v);
             }
             r

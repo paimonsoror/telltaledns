@@ -606,9 +606,14 @@ fn ops_012_dumps_are_private_and_only_the_newest_five_stay() {
 #[test]
 fn ops_012_the_writer_makes_a_real_dump_of_this_process() {
     let dir = tempfile::tempdir().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .build()
+        .unwrap();
     let mut writer = Writer {
         dir: dir.path().join("watchdog"),
         started: Instant::now(),
+        runtime: Some(rt.handle().clone()),
     };
     let why = Reason {
         stall: Stall {
@@ -629,6 +634,48 @@ fn ops_012_the_writer_makes_a_real_dump_of_this_process() {
     assert!(text.contains("exits with status 70"), "{text}");
     assert!(text.contains(crate::build_info::VERSION), "{text}");
     assert!(text.contains("== threads"), "{text}");
+    // REQ: OPS-012 (ADR-174) — the runtime's own numbers are in the process section.
+    assert!(
+        text.contains("runtime workers: 2, tasks alive: 0, waiting in the global queue: 0"),
+        "{text}"
+    );
+}
+
+// REQ: OPS-012 (ADR-174) — a stuck runtime still reports itself: its one worker is blocked, a
+// task is running (alive) and two more wait in the global queue. The numbers need no worker, so
+// "workers, tasks waiting, none running" reads at a glance next to the thread table.
+#[test]
+fn ops_012_the_dump_counts_the_tasks_of_a_stuck_runtime() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+    rt.spawn(async move {
+        let _ = entered_tx.send(());
+        let _ = held.recv(); // blocks the one worker
+    });
+    entered.recv_timeout(secs(5)).unwrap();
+    for _ in 0..2 {
+        rt.spawn(async {});
+    }
+    assert_eq!(
+        runtime_line(rt.handle()),
+        "runtime workers: 1, tasks alive: 3, waiting in the global queue: 2"
+    );
+    let lines = process_lines(Some(rt.handle()));
+    assert!(
+        lines.iter().any(|l| l.starts_with("runtime workers: 1,")),
+        "{lines:?}"
+    );
+    assert!(
+        process_lines(None)
+            .iter()
+            .all(|l| !l.starts_with("runtime ")),
+        "no handle, no line"
+    );
+    release.send(()).unwrap();
 }
 
 // ---- settings and metrics ---------------------------------------------------------------------

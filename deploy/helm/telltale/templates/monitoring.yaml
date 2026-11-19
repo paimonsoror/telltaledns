@@ -61,12 +61,21 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: More than 5% of answers are SERVFAIL on {{ "{{" }} $labels.instance {{ "}}" }}.
+        {{- /* REQ: FLT-004, OBS-005 — the last success is over 48 h ago AND the latest refresh
+        failed, not merely old: a list's refresh_secs may exceed 48 h, and a list disabled at
+        runtime keeps its last success, so either ages without anything being wrong. spec/06 §8
+        (OBS-010 rule examples) has "list fetch failing for > 48 h" as an example for the in-app
+        alert rules; this rule is the reading above, not that sentence. Not covered (the in-app
+        list_failing rule reports both): a list that never succeeded (it has no last-success
+        series) and a list held by max_shrink_percent (ADR-147: not a failure). */}}
         - alert: TelltaleDNSListStale
-          expr: time() - telltale_list_last_success_timestamp_seconds{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 172800
+          expr: |
+            (time() - telltale_list_last_success_timestamp_seconds{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 172800)
+              and on(instance, list) (telltale_list_fetch_consecutive_failures{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 0)
           for: 30m
           labels: { severity: warning }
           annotations:
-            summary: Filter list {{ "{{" }} $labels.list {{ "}}" }} hasn't refreshed in over 48 hours.
+            summary: Filter list {{ "{{" }} $labels.list {{ "}}" }} hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
         - alert: TelltaleDNSTelemetryDropping
           expr: sum by (instance) (rate(telltale_telemetry_dropped_total{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"}[10m])) > 0
           for: 30m

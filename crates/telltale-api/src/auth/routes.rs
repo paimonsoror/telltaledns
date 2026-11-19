@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use telltale_store::state::User;
 use utoipa::ToSchema;
 
-use super::{Actor, Auth, NewSession, Presented, Principal, Role, Scope, Via, crypto};
+use super::{
+    Actor, Auth, NewSession, PasswordLogin, Presented, Principal, Role, Scope, Via, crypto,
+};
 use crate::problem::{Code, Problem};
 
 /// Header carrying the caller's reason for a change, stored in the audit log (AGT-005).
@@ -417,6 +419,7 @@ pub struct Me {
 /// Whether setup is needed and who is signed in (public).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // the answer's shape: independent yes or no fields
 pub struct AuthStatus {
     /// No user exists yet: create the first admin with the setup token.
     pub setup_required: bool,
@@ -429,6 +432,12 @@ pub struct AuthStatus {
     /// Password sign-in is offered to this client (off with `disable_local_login`, except
     /// from the break-glass admin networks).
     pub local_login: bool,
+    // REQ: API-004 (issue #63, ADR-175)
+    /// Password sign-in is limited to admins on trusted networks (`[auth.oidc]
+    /// disable_local_login` is on). The same for every client: `localLogin` says whether the form
+    /// is offered to this one. The networks are not listed here; admins read them in
+    /// `GET /api/v1/users` (`passwordLogin`).
+    pub password_login_restricted: bool,
     /// OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`.
     pub oidc: Vec<OidcButton>,
 }
@@ -648,6 +657,18 @@ pub struct UpdateUser {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Listed<T> {
     pub items: Vec<T>,
+}
+
+/// The users, and how this node limits password sign-in (admins only).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserList {
+    pub items: Vec<UserInfo>,
+    // REQ: API-004 (issue #63, ADR-175)
+    /// Whether `disable_local_login` is on and which networks admins may use a password from, on
+    /// the node that answers. The networks are why this is here and not in the public
+    /// `GET /auth/status`.
+    pub password_login: PasswordLogin,
 }
 
 fn user_info(u: &User) -> UserInfo {
@@ -954,6 +975,7 @@ pub(crate) async fn status(
             user,
             csrf_token: csrf,
             local_login: auth.local_login_allowed(ip),
+            password_login_restricted: auth.settings().disable_local_login,
             oidc,
         }))
     })
@@ -1920,14 +1942,15 @@ pub(crate) async fn revoke_user_token(
 
 /// Users (admin).
 ///
-/// Every user with role, status, and two-factor state.
+/// Every user with role, status, and two-factor state, and `passwordLogin`: whether password
+/// sign-in is limited to admins on trusted networks (`[auth.oidc] disable_local_login`) and which
+/// networks (`allowed_admin_networks`) on the node that answers. The public `GET /auth/status`
+/// carries only the yes or no.
 #[utoipa::path(get, path = "/api/v1/users", tag = "auth",
-    responses((status = 200, body = Listed<UserInfo>, description = "The result."), (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction).")))]
-pub(crate) async fn list_users(
-    State(auth): State<AuthState>,
-) -> Result<Json<Listed<UserInfo>>, Problem> {
+    responses((status = 200, body = UserList, description = "The result."), (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction).")))]
+pub(crate) async fn list_users(State(auth): State<AuthState>) -> Result<Json<UserList>, Problem> {
     blocking(move || {
-        Ok(Json(Listed {
+        Ok(Json(UserList {
             items: auth
                 .state()
                 .users()
@@ -1935,6 +1958,7 @@ pub(crate) async fn list_users(
                 .iter()
                 .map(user_info)
                 .collect(),
+            password_login: auth.settings().password_login(),
         }))
     })
     .await

@@ -235,7 +235,9 @@ fn collect(
         sample: (detailed && sample_rows > 0).then(|| {
             let n = usize::try_from(sample_rows).unwrap_or(0);
             gather(me, started, move |b| {
-                let to_us = now.saturating_mul(1_000_000);
+                // REQ: OPS-011 — `to` is exclusive: end with the current second, or the sample
+                // leaves out the newest rows (issue #69).
+                let to_us = now.saturating_add(1).saturating_mul(1_000_000);
                 b.queries(&QueryParams::default(), 0, to_us, n)
                     .map_or(Value::Null, |p| val(&p))
             })

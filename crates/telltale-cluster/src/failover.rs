@@ -37,11 +37,16 @@ const RELOAD: Duration = Duration::from_secs(5);
 
 /// The cluster's voters (eligible nodes and witnesses), sorted.
 pub fn voters(id: &Identity) -> Vec<String> {
-    let mut v: Vec<String> = id
-        .registry()
-        .into_iter()
-        .filter(crate::node::NodeRecord::voter)
-        .map(|n| n.node_id)
+    voters_in(&id.registry())
+}
+
+/// The voters among `registry`, sorted: for a caller that has read the registry once and needs
+/// more than the voters from it.
+pub fn voters_in(registry: &[crate::node::NodeRecord]) -> Vec<String> {
+    let mut v: Vec<String> = registry
+        .iter()
+        .filter(|n| n.voter())
+        .map(|n| n.node_id.clone())
         .collect();
     v.sort();
     v.dedup();
@@ -51,8 +56,12 @@ pub fn voters(id: &Identity) -> Vec<String> {
 /// Whether automatic failover runs on this node: `auto` mode, three or more voters, and this
 /// node one of them.
 pub fn active(id: &Identity) -> bool {
-    let v = voters(id);
-    id.meta.failover == "auto" && v.len() >= 3 && v.contains(&id.meta.node_id)
+    active_among(id, &voters(id))
+}
+
+/// [`active`], given the registry's voters ([`voters_in`]) already.
+pub fn active_among(id: &Identity, voters: &[String]) -> bool {
+    id.meta.failover == "auto" && voters.len() >= 3 && voters.contains(&id.meta.node_id)
 }
 
 /// REQ: CLU-005 (review 05-05) — leases are timed on the election clock, which never steps:

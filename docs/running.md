@@ -280,6 +280,8 @@ max_restarts_per_hour = 6   # past it, only the dump is written; 0 never restart
 
 It watches only whether the node answers. A node that is slow, or busy for a few seconds, still passes; one that is stuck never does. A restart is limited to `max_restarts_per_hour` (counted from `<data_dir>/watchdog/restarts`), so a false alarm can't become an endless loop.
 
+Know its limits. Past `max_restarts_per_hour` (6) restarts in an hour, a node that is still stuck stays stuck and only the dump is written, so alert on `telltale_watchdog_check_age_seconds`. A partial stall, where one worker of several is blocked and the others still run tasks, isn't seen, because the runtime check still passes. And recovery takes about a minute (`stall_secs` plus the restart), during which TCP, DoT, DoH, DoQ and every query the cache can't answer go unanswered. It is the backstop for a hang nobody has found yet. One cause is closed: a cluster read, such as a replica's read of its primary, can no longer wait on a stuck runtime for ever; it gives up at its deadline (ADR-174).
+
 **The dump** is `<data_dir>/watchdog/hang-<UTC time>.txt` (directory `0750`, files `0640`, the newest five kept). It says which check failed and for how long, the build, the uptime, memory and load, every thread (its name, state, what the kernel has it waiting on, its CPU time), **each thread's stack as raw addresses**, the executable's mappings, and the last 200 lines of the log (see Support package). It holds no client data and no settings. A support package includes the newest dump. The log says at start when the previous run ended by the watchdog, and `telltale_watchdog_last_action_timestamp_seconds` holds the time.
 
 **Reading the stacks.** The release binary is stripped, so the dump has addresses, not names. Every release and edge build publishes the matching debug file next to the binary, `telltale-<arch>-linux.debug.zst` (`x86_64`, `aarch64`, or `armv7`), covered by the signed `SHA256SUMS`. Take the one from the same release or edge build as `telltale --version` shows, then:
@@ -310,10 +312,10 @@ with its default). Keep only what you change in your own file and install with `
 the chart's schema rejects a mistyped value with its path.
 - **One LoadBalancer Service, UDP and TCP 53**, with `externalTrafficPolicy: Local` so the query log and per-device rules see real client addresses (verified in CI: a query through the LoadBalancer is logged with the sender's address). `Cluster` hides clients behind node addresses, and the install notes warn about it. Use your LB's annotation for a fixed IP: MetalLB `metallb.universe.tf/loadBalancerIPs`, Cilium `io.cilium/lb-ipam-ips`, kube-vip `kube-vip.io/loadbalancerIPs`.
 - **`hostNetwork: true`** answers on port 53 of the node itself (no LoadBalancer, MAC addresses visible). Binding 53 there needs root with only `NET_BIND_SERVICE` kept; on Ubuntu nodes turn off systemd-resolved's stub listener first. k3s's CoreDNS doesn't conflict.
-- **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network).
+- **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network; with `disable_local_login`, read **Break-glass sign-in** under Users and sign-in first: where the ingress hides the client address, address checks can't be trusted).
 - **Configuration**: `config:` is merged after the chart's own settings (listeners, data directory, ports): upstreams, lists, groups, `[auth.oidc]`, everything in `docs/configuration.md`.
 - **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
-- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
+- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, lists whose last good copy is over 48 hours old and whose latest refresh failed, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - **Encrypted DNS**: `encrypted.dot.enabled` (853), `encrypted.doh.enabled` (443, plus `encrypted.doh.http3`), and `encrypted.doq.enabled` add DoT, DoH, and DoQ to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
 - **One replica or many.** `mode: allInOne` (the default) is one StatefulSet with a volume for lists, the query log, and users. **`mode: scaled`** adds resolver pods:
@@ -984,10 +986,18 @@ Among rules of the same kind, the one reported is an exact-name rule first, then
 
 Lookups take well under a microsecond: about 0.3 µs typically and under 1 µs at p99 on an x86 server with 2.6M blocked names. They use an in-memory index built from the snapshot (about 10 bytes per name, on top of the snapshot's 9). A new snapshot is served the moment it's loaded, and the index is swapped in about a second later, without pausing queries. Memory with HaGeZi Pro + TIF + OISD big + StevenBlack + AdGuard (2.7M names): about 85 MiB in total; HaGeZi Pro alone (227k names): about 10 MiB.
 
-Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `telltale_filter_paused_until_seconds{group}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. Inline lists (`rules = [...]`) are never fetched, so they have no `telltale_list_last_success_timestamp_seconds`. To alert on a list that has failed for two days:
+Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `telltale_filter_paused_until_seconds{group}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. Inline lists (`rules = [...]`) are never fetched, so they have no `telltale_list_last_success_timestamp_seconds`. To alert on a list whose last good copy is over two days old and whose latest refresh failed (the Helm chart's `TelltaleDNSListStale` does this):
 ```
-time() - telltale_list_last_success_timestamp_seconds > 172800
+(time() - telltale_list_last_success_timestamp_seconds > 172800)
+  and on(instance, list) (telltale_list_fetch_consecutive_failures > 0)
 ```
+Age alone isn't enough: a list with `refresh_secs` over two days is legitimately older than that between refreshes, and a list disabled while the server runs keeps its last value until a restart.
+
+What this alert covers, so you know when to rely on it:
+- It fires (after 30 minutes, with the chart's `for: 30m`) when the last success is over 48 hours ago **and** the latest refresh failed. It isn't a literal "failing for 48 hours": with the default `refresh_secs` (one day) it fires about a day after the first failed refresh, and for a list refreshed less often than every two days, shortly after its first failed refresh. The last good copy keeps blocking meanwhile.
+- A list that has **never succeeded** (a new list with a mistyped URL, or an empty data directory) has no `telltale_list_last_success_timestamp_seconds`, so it isn't covered. A list **held** by `max_shrink_percent` isn't a failed refresh (its failure count stays 0), so it isn't covered either. The in-app alert rule `list_failing` reports both.
+- A list that was failing when you disabled it keeps alerting until the node restarts (the metrics of a disabled list are kept until then).
+- It is unrelated to the in-app `list_stale` (content unchanged for 30 days, see [Lists that stopped changing](#lists-that-stopped-changing)): that one is about a source that keeps answering with the same content.
 
 ### Lists that stopped changing
 A list whose maintainer gave up can keep answering HTTP 200 with the same content forever: it downloads fine, so nothing fails, but it stops keeping up. A URL list whose content hasn't changed in 30 days is called **stale**:
@@ -1496,7 +1506,7 @@ Explain answers for one name. A simulation answers for a whole change: before yo
   # "simulation": {"rows": 183204, "newlyBlocked": {"queries": 412, "devices": 2,
   #   "topNames": [{"name": "www.tiktok.com", "queries": 300, "devices": 2, "list": "quick rule: tiktok.com"}]}, ...}
   ```
-  `simulateUntil` moves the end of the window back (`-24h`, or an RFC 3339 time). A change that can't affect an answer, such as an alert rule or the exclusions, answers `"applicable": false` instead of replaying anything.
+  The window ends now, including the second the request arrives in, so a query logged a moment ago is replayed. `simulateUntil` moves the end back (`-24h`, or an RFC 3339 time); `now` is the same as leaving it out. A change that can't affect an answer, such as an alert rule or the exclusions, answers `"applicable": false` instead of replaying anything.
 - **A whole configuration:** `POST /api/v1/simulate` takes the shared sections as JSON, the way a Git commit's TOML becomes. `telltale config simulate` reads the TOML for you, so you can test a commit before pushing it:
   ```sh
   TELLTALE_TOKEN=... telltale config simulate shared.toml --window 24h --url https://dns.example.com:8053
@@ -1780,6 +1790,19 @@ links to eligible nodes, and one of those doesn't stop the search. Configuration
 files always come from the primary (another replica has none to give), over the node's own
 link when that's to the primary, else from the primary's addresses directly. Each time the
 link comes up the log says where: `cluster: linked to a peer` with its URL and node ID.
+Once it has moved back, the two replicas drop each other from their peer lists within about
+18 seconds: a replica keeps a silent peer it has no stream to only if it expects to hear from
+it, the primary (the node that said so when its stream opened, or the one named by the last
+version the replica applied, which covers a node promoted since) and, under automatic failover,
+the other voters. So a link like this one doesn't leave `TelltaleDNSClusterPeerDown` firing. A
+replica that is really down is reported by the primary.
+
+This is true of the Prometheus metrics and the peers in `/api/v1/system/info`. The Cluster
+page, `/api/v1/health` and the in-app node-down alert also list the nodes the cluster registry
+has and this node has no entry for, as down with no link.
+On a replica that includes the other replica once it has been forgotten, as it already does for
+a replica that never had a stream to it. The link-less row appears after the node you're on has
+been up for about a minute and a half.
 
 **One view of the whole cluster.** Open any node's UI and the dashboard, top lists, latency,
 groups, query log, and live query stream cover every node:
@@ -1792,6 +1815,12 @@ groups, query log, and live query stream cover every node:
   - query-log rows interleave by time, and each row shows the node that answered it.
 - A node that doesn't answer within 2 seconds is left out, and the page says so ("Partial
   results: pi didn't answer"). It never hangs. The API lists those nodes in `missingNodes`.
+- Other nodes are asked about a range of time up to a limit: a request for more than 256
+  windows of 240 buckets a node (over 17 hours of seconds, 42 days of minutes, or 7 years of
+  hours) is answered from this node alone, with the other nodes in `missingNodes`. Every range
+  the API documents (15 minutes of seconds, 7 days of minutes, 400 days of hours, and every
+  day) is well under it. A node that refuses cluster reads, because too many are waiting or
+  one asks for too much, says so in its log as a warning, once a minute at most.
 - `scope` on a stats or query-log request narrows it: `cluster` (the default, every node),
   `site:<name>` (the nodes of one site, e.g. `site:k8s`), `node:<name or ID>` (one node, by
   site, pod, or node ID), or `node:local` (the node you're asking). For example
@@ -1913,8 +1942,11 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   **Conflicts** on that node's Cluster page, with the settings they touched, so you can make them
   again on the current primary.
 
-**Removing a node.** A node that is gone for good stays in the member list as a down node: it
-counts as a voter in automatic failover and keeps `TelltaleDNSClusterPeerDown` firing. This
+**Removing a node.** A node that is gone for good stays in the member list as a down node on the
+primary and, under automatic failover, on the other voters (any other replica forgets it within
+about 18 seconds, as above, unless it was the primary: a primary that is rebuilt under a new node
+ID stays listed as down on a replica until that replica restarts): it counts as a voter in
+automatic failover and keeps `TelltaleDNSClusterPeerDown` firing there. This
 happens when you rebuild a machine and join it again, because it comes back under a new node
 ID. The Cluster page lists such a record as a down node (a record that hasn't connected since
 the node you're looking at started appears after about a minute and a half). Remove it:
@@ -2134,7 +2166,9 @@ telltale cluster status
 - **Metrics:**
   - `telltale_cluster_peers{state}`;
   - per peer: `telltale_cluster_peer_up`, `telltale_cluster_peer_rtt_seconds` and
-    `telltale_cluster_peer_config_lag`;
+    `telltale_cluster_peer_config_lag`. The primary lists every node; a replica lists the
+    primary, the other voters under automatic failover, and any other node only while a link
+    to it is open or it was heard from in the last 15 seconds;
   - this node: `telltale_cluster_config_seq`, `telltale_cluster_behind_seconds`,
     `telltale_cluster_sync_error` and `telltale_cluster_cert_expiry_timestamp_seconds`.
 
@@ -2558,7 +2592,7 @@ The dashboard's **Where time goes** section (Advanced view) has two views:
   - a large screen (2560 × 1300 and up): all six at once, nothing rotating, and the live queries as a column beside them.
 
   Panels that don't fit rotate in the large panel every `every` seconds; the arrow keys move it. `?layout=single` keeps one panel at a time on any screen, `?layout=grid` the large screen's grid, and `?layout=portrait` (or `compact`, `standard`, `ultrawide`, `large`) forces one. A wall display's link can carry it. `?motion=off` (or the system's reduced-motion setting) stops every animation; the panels still change.
-- **Space** pauses, the arrow keys move between panels, **Esc** or a click goes back to the dashboard. Nothing animates while the tab is hidden.
+- **Space** pauses, the arrow keys move between panels, **Esc** or a click goes back to the dashboard. Nothing animates while the tab is hidden. Resizing or zooming the window keeps the panel you are on (unless it changes the layout); a new address or a new layout starts again from the first.
 - It needs a signed-in session like any page. For a screen nobody sits at, make it a **wall display** instead (**Settings → Users → Wall displays**, admins): give it a name and, best, the screen's address or network (`192.168.2.40`, `192.168.2.0/24`), and open the link it shows once on that screen's browser. The screen then stays signed in until you revoke it (or until the days you set run out), with no idle sign-out, but it can only show the wall: the traffic map, the flow, the service level, the heatmaps, the change markers, and the live queries (it does see live query names, like a viewer). Every other page and every change is refused, and from an address outside its networks it's refused too. The link is shown once; making, opening, and revoking one is in the audit log. In a cluster, make it on the primary; every node accepts it. `POST /api/v1/displays` makes one from a script; the code only works as a link, never as an API token.
 - The Grafana dashboard is the other wall.
 
@@ -3254,7 +3288,7 @@ TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a lo
 - **API tokens** for scripts, dashboards, and agents: `POST /api/v1/tokens` with `{"name": "grafana", "scope": "read"}` returns `tt_<id>_<secret>` once; send it as `Authorization: Bearer ...`. Scope `read` acts as viewer, `write` as operator, `admin` as admin, never above the owner's role. Only a hash is stored. Tokens are created and revoked from a signed-in session (the web UI, or `POST /api/v1/auth/login` and its cookie and CSRF token), and so are password and two-factor changes: a token, or HTTP Basic, can use the account but not change it.
 - **HTTP Basic**, for scrapers and widgets that can't send a token: off per user until an admin sets `allowBasicApi`, and refused over plain HTTP unless `[auth] allow_insecure_basic = true`. Verified credentials are cached for a minute.
 
-**Two-factor sign-in (TOTP):** `POST /api/v1/auth/totp/setup` returns a secret and an `otpauth://` URL for an authenticator app, and `POST /api/v1/auth/totp/enable` with a current code turns it on and returns ten single-use recovery codes. To require it for a role:
+**Two-factor sign-in (TOTP):** `POST /api/v1/auth/totp/setup` returns a secret and an `otpauth://` URL for an authenticator app, and `POST /api/v1/auth/totp/enable` with a current code turns it on and returns ten single-use recovery codes. To require it for a role (enrol your own account first: someone who must use it and has none set up can't sign in to enrol):
 ```toml
 [auth]
 totp_required_roles = ["admin"]
@@ -3298,8 +3332,23 @@ At the provider, create a confidential client with the redirect URI `<public_url
 - The username comes from `preferred_username` (or `username_claim`). TelltaleDNS never attaches a provider account to an existing local user: if the name is taken, the new account is called `name@provider`.
 - Signing out also signs out at the provider (Keycloak asks "Do you want to log out?"; Authentik shows its own "logged out" page).
 - Provider accounts have no TelltaleDNS password; they can still create API tokens.
-- `disable_local_login = true` turns off password sign-in and HTTP Basic, except for admins from `allowed_admin_networks`: a break-glass way in when the provider is down. **That list is private networks and loopback by default**, so on a home or office network, or from a Docker or Kubernetes network, the sign-in form is still shown and the local admin can still sign in; it is not a switch that hides the form. To keep it for one machine, narrow the list (`allowed_admin_networks = ["127.0.0.0/8", "::1/128"]` for the host itself; inside a container the server may see the Docker bridge's address instead, such as `172.17.0.1/32`). `allowed_admin_networks = []` turns password sign-in off for everyone, and then nobody can sign in with a password while the provider is down. Behind a reverse proxy, set `[api] trusted_proxies` as well: without it every browser appears to come from the proxy's address, which is usually a private one. The start-up log says which networks are open. Turn on two-factor sign-in for the break-glass admin (Settings, Account).
-- The provider is only contacted while signing in; sessions are local afterwards. Changes to `[auth.oidc]` need a restart. If a provider can't be set up (for example its secret file is missing), it's logged and password sign-in keeps working.
+- `disable_local_login = true` turns off password sign-in and HTTP Basic, except for admins from `allowed_admin_networks`: a break-glass way in when the provider is down. It is not a switch that hides the form: **the list is private networks and loopback by default**, so on a home or office network, or from a Docker or Kubernetes network, the sign-in form is still shown and the local admin can still sign in. (The API only answers clients in `[access] allowed_networks`, the same list by default, so with the defaults the flag changes who may sign in with a password, not from where.) Start-up says so: a warning when the list includes whole networks (a range of more than one address, as the default list does), information when it names only this machine and single hosts. The sign-in page and Settings say so too (next paragraph). What to check before you rely on it is under **Break-glass sign-in** below.
+- The provider is only contacted while signing in; sessions are local afterwards. Changes to `[auth.oidc]` need a restart. If a provider can't be set up (for example its secret file is missing), it's logged and no "Sign in with ..." button is offered. Password sign-in is then whatever `disable_local_login` and `allowed_admin_networks` say: with the flag on, the break-glass networks still decide who can use a password.
+
+**Seeing the state.** With `disable_local_login = true` the setting is shown, not only logged:
+- **On the sign-in page,** a client the password form is offered to sees "or, as an admin on a trusted network, with a password" above it (when there are "Sign in with" buttons) and "Password sign-in is limited to admins on trusted networks. Use it when your sign-in provider is down." under it. A client outside the list still sees "Password sign-in is turned off on this server."
+- **In Settings, under Users (admins only),** a "Password sign-in" card lists the networks from `allowed_admin_networks`. It adds an "Includes whole networks" note when any of them is a range of more than one address (the default list is; a list of single hosts such as `192.168.1.10/32`, with or without loopback, is not), says plainly that nobody can sign in with a password when the list is empty, and, for a list that names this machine while `127.0.0.1` is not inside any `[api] trusted_proxies` network, reminds you of the proxy rule below. It describes the node you are connected to. With the flag off nothing is shown.
+- **In the API,** `GET /api/v1/auth/status` (public) has `passwordLoginRestricted`: a yes or no, the same for every client (`localLogin` still says whether the form is offered to this one), with no network in it. The networks are `passwordLogin` in `GET /api/v1/users`, which needs the admin role: a viewer, an operator, a token below the admin scope, and an agent token are refused. The block is `restricted`, `networks`, `coversWholeNetworks` (some network is a range, not a single host or this machine), `includesLoopback`, and `loopbackIsTrustedProxy` (`127.0.0.1` is inside a `trusted_proxies` network). The start-up line and the card use one rule for each, so they agree.
+
+**Break-glass sign-in.** Before you rely on `disable_local_login`:
+- **Narrow the list to the machines you manage from.** For one workstation, `allowed_admin_networks = ["192.168.1.10/32"]` (a list of single addresses like this is information at start-up; any range, even a `/31`, still gets the warning); for the host itself, loopback (`["127.0.0.0/8", "::1/128"]`) and an SSH tunnel. `[]` turns password sign-in off for everyone: nobody can then sign in with a password while the provider is down, and the way back is to set `disable_local_login = false` and restart (`telltale config check` warns about an empty list). Look at the address the audit log records for your own sign-in before you narrow it: in a container the server may see the Docker network's gateway instead of your machine, and that address differs from one Docker network to the next (it is not always `172.17.0.1`).
+- **A reverse proxy on the same host needs `trusted_proxies = ["127.0.0.1/32"]`.** Unless `127.0.0.1` is inside a network of `[api] trusted_proxies` (an ingress's network does not count), every browser a proxy serves appears to come from the proxy. For Caddy or nginx on `127.0.0.1` that is loopback, so a loopback-only list leaves password sign-in open to everyone the proxy serves, the Internet included if the proxy is exposed. Loopback counts on its own only for `X-Forwarded-Proto` (so HTTP Basic works behind a TLS proxy on the same host), never for `X-Forwarded-For`.
+- **List only the proxies in `trusted_proxies`, never your LAN.** For requests from a listed address the client address is read from `X-Forwarded-For`, so any other machine on the list can send that header itself and claim to be `127.0.0.1`.
+- **If the proxy hides the client address, don't rely on addresses.** Behind source NAT (a Kubernetes Service with `externalTrafficPolicy: Cluster`, some ingress and load-balancer setups) every client arrives from a private address of the cluster, so a list of private networks lets everyone in. Use `allowed_admin_networks = []` there, and keep the provider, and the way back above, as your way in.
+- **The gate stays in force when a provider fails to set up.** A missing secret file doesn't open password sign-in: with the list narrowed or empty you can be left without either way in. Start-up logs the break-glass line whether or not the provider was set up.
+- **Turning the flag on doesn't sign anyone out.** Sessions made before (up to 7 days) and API tokens keep working from anywhere until they expire or you revoke them.
+- **Turn on two-factor for the break-glass admin first, then require it.** Enrol it under Settings, Account, and only then put `admin` in `[auth] totp_required_roles`: with the role required and no code set up, that admin's sign-in is refused ("this role must use two-factor sign-in") and they can't reach Settings to enrol.
+- **Sign-in lockouts are per node and kept in memory** (a restart clears them). They count the username and the address: anyone on an allowed network can lock the break-glass admin out for up to 15 minutes by failing five times, and behind a proxy with `trusted_proxies` unset every browser shares the proxy's count.
 
 **HTTPS without a proxy.** Out of the box the UI and API on port 8053 are plain HTTP, so on a home network the sign-in form's password crosses the LAN in the clear. TelltaleDNS can serve them over HTTPS itself:
 ```toml
@@ -3318,9 +3367,9 @@ tls = { self_signed = true }                 # a certificate made on first start
 **Behind a reverse proxy or ingress,** tell TelltaleDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):
 ```toml
 [api]
-trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingress runs in
+trusted_proxies = ["10.42.0.5/32"]   # your ingress controller's address
 ```
-The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) always counts.
+The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) counts for that header without being listed, but not for `X-Forwarded-For`: to have the client address from it, list `127.0.0.1/32`. List only the proxies themselves, never your LAN, or any machine on it can forge the header. How this matters for break-glass sign-in is under **Break-glass sign-in** above.
 
 **Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 

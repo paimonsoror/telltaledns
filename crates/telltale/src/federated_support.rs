@@ -7,7 +7,6 @@
 //! doesn't know the request (an older build), is listed in the manifest with a fixed reason: nothing
 //! a peer says is copied into the package.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use telltale_api::SupportPackageOutput;
@@ -17,7 +16,7 @@ use telltale_support::Level;
 use telltale_support::cluster::{NodeResult, Part, assemble};
 use telltale_support::pseudo::{Category, Pseudonyms};
 
-use super::{Federated, KIND, Read};
+use super::{Federated, Read};
 
 /// How long a peer may take to make its part (its collectors have 30 s in all, and then it
 /// compresses and cuts).
@@ -34,7 +33,7 @@ fn why(error: &str) -> &'static str {
         "busy making another package"
     } else if e.contains("too large") {
         "its part was too large for the cluster channel"
-    } else if e.contains("timed out") || e.contains("timeout") {
+    } else if e.contains("timed out") || e.contains("timeout") || e.contains("in time") {
         "did not answer in time"
     } else {
         "did not answer"
@@ -69,25 +68,16 @@ impl Federated {
             req: Box::new(collect.clone()),
         })
         .map_err(|e| Problem::internal(format!("the request doesn't serialize: {e}")))?;
-        let cluster = Arc::clone(&self.cluster);
-        // The peers work in parallel, and so does this node.
-        let (mine, answers) = std::thread::scope(|s| {
-            let calls: Vec<_> = peers
-                .iter()
-                .map(|peer| {
-                    let (rt, cluster, body, peer) =
-                        (rt.clone(), Arc::clone(&cluster), body.clone(), peer.clone());
-                    s.spawn(move || {
-                        let r = rt.block_on(cluster.call(&peer, KIND, body, DEADLINE));
-                        (peer, r)
-                    })
-                })
-                .collect();
-            let mine = self.local.support_part(&collect);
-            let answers: Vec<(String, Result<Vec<u8>, String>)> =
-                calls.into_iter().filter_map(|h| h.join().ok()).collect();
-            (mine, answers)
-        });
+        // The peers work in parallel, and so does this node. REQ: CLU-004 (ADR-174) — the peers'
+        // calls run as tasks and this (blocking-pool) thread waits for them on a `std` channel
+        // with a deadline of its own, so a runtime that can't run them costs the wait, not the node.
+        let calls = peers
+            .iter()
+            .map(|peer| (peer.clone(), body.clone()))
+            .collect();
+        let pending = self.start_calls(&rt, calls, DEADLINE);
+        let mine = self.local.support_part(&collect);
+        let answers = pending.wait();
         // Our own part failing fails the package (busy, a bad request): there is nothing to add to.
         let mine = Part::from_wire(&mine?)
             .ok_or_else(|| Problem::internal("this node's part couldn't be read back"))?;

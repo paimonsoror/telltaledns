@@ -125,10 +125,9 @@ impl Lab {
         load(extra, self.tmp.path())
     }
 
-    /// Logs `n` queries for `name` from `ip` (last octet), one second apart, ending at
-    /// `end_s`, as the pipeline would have (status `blocked` when `blocked`).
-    fn log(&self, name: &str, ip: u8, n: u64, end_s: u64, blocked: bool) {
-        let mut b = Builder::spawn(Settings {
+    /// A writer on this lab's query log (nothing flushes before it is dropped).
+    fn writer(&self) -> Builder {
+        Builder::spawn(Settings {
             dir: self.qlog(),
             node: 1,
             privacy: 0,
@@ -138,7 +137,22 @@ impl Lab {
             retention_bytes: u64::MAX,
             rotate_after: None,
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    /// Logs one query for `name` from `ip` (last octet) at `ts_us` microseconds, as the
+    /// pipeline would have (status `blocked` when `blocked`).
+    fn log_at(&self, name: &str, ip: u8, ts_us: u64, blocked: bool) {
+        let mut b = self.writer();
+        let wire = NameBuf::from_presentation(name).unwrap();
+        b.push(&event(ts_us, [10, 0, 0, ip], blocked), wire.as_wire());
+        drop(b);
+    }
+
+    /// Logs `n` queries for `name` from `ip` (last octet), one second apart, ending at
+    /// `end_s`, as the pipeline would have (status `blocked` when `blocked`).
+    fn log(&self, name: &str, ip: u8, n: u64, end_s: u64, blocked: bool) {
+        let mut b = self.writer();
         let wire = NameBuf::from_presentation(name).unwrap();
         for i in 0..n {
             b.push(
@@ -463,6 +477,64 @@ fn obs_024_bounds() {
     let w = window(&lab.current.simulate, None, Some(t0_s()), t0_s() + 99).unwrap();
     assert_eq!(w.to_us, t0_s() * 1_000_000);
     assert_eq!(w.from_us, (t0_s() - 86_400) * 1_000_000);
+}
+
+// REQ: OBS-024 (T13.1) — issue #69: the window `[from, to)` ends at the END of the request's own
+// second unless the request names an end, so what was logged a moment ago is replayed (a window
+// ending at the start of that second, which it did before, left out every row of the second the
+// request arrived in). A named `until` stays exact; the window keeps its length.
+#[test]
+fn obs_024_the_current_second_is_replayed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = load("", tmp.path());
+    let w = window(&cfg.simulate, None, None, t0_s()).unwrap();
+    let inside = |ts_us: u64| w.from_us <= ts_us && ts_us < w.to_us;
+
+    let now_us = t0_s() * 1_000_000;
+    assert!(
+        inside(now_us + 400_000),
+        "{w:?}: a row 0.4 s into the request's second"
+    );
+    assert!(
+        inside(now_us + 999_999),
+        "{w:?}: the last microsecond of that second"
+    );
+    assert!(
+        !inside(now_us + 1_000_000),
+        "{w:?}: the next second is later than the request"
+    );
+    assert_eq!(w.to_us, now_us + 1_000_000);
+    assert_eq!(
+        w.to_us - w.from_us,
+        86_400 * 1_000_000,
+        "still the default 24 hours"
+    );
+    assert!(
+        !inside(now_us - 86_401 * 1_000_000),
+        "{w:?}: a row 24 hours and 1 second before the request"
+    );
+
+    let w = window(&cfg.simulate, None, Some(t0_s()), t0_s() + 99).unwrap();
+    assert_eq!(w.to_us, now_us, "a named `until` is exact");
+    assert_eq!(w.from_us, (t0_s() - 86_400) * 1_000_000);
+}
+
+// REQ: OBS-024 (T13.1) — issue #69, through the real query log: one query logged 0.4 s into the
+// request's second is counted by a simulation over the default window (no hand-built window, no
+// real clock). It is what the UI's `obs_024` end-to-end test depends on: it sends queries, then asks
+// for the simulation about a second later, which is the same second in a few percent of runs.
+#[test]
+fn obs_024_a_row_in_the_requests_own_second_is_counted() {
+    let _s = serial();
+    let lab = Lab::new("");
+    lab.log_at("tracker.example", 7, t0_s() * 1_000_000 + 400_000, false);
+    let block =
+        lab.candidate("[[rule]]\nid = \"r\"\naction = \"block\"\ndomain = \"tracker.example\"\n");
+    let mut i = lab.inputs(block, Vec::new());
+    i.window = window(&lab.current.simulate, None, None, t0_s()).unwrap();
+    let t = run(i).unwrap();
+    assert_eq!(t.rows, 1, "the row in the request's own second");
+    assert_eq!(t.classes[0].queries, 1, "newly blocked");
 }
 
 // REQ: OBS-024 — AC (4): privacy level 1 can't replay names; a change to devices only still

@@ -1021,7 +1021,7 @@
           ]
         },
         "trusted_proxies": {
-          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here. Default: none (the connection's\naddress is the client).",
+          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback counts on its own for `X-Forwarded-Proto`\nonly (a TLS terminator on the same host needs nothing here for that), not for\n`X-Forwarded-For`: for the client address from a proxy on the same host, list\n`127.0.0.1/32`. List only the proxies, never your LAN: any other machine on this list\ncan send `X-Forwarded-For` itself and claim to be loopback. Default: none (the\nconnection's address is the client).",
           "type": "array",
           "default": [],
           "items": {
@@ -1113,7 +1113,7 @@
           "minimum": 0
         },
         "totp_required_roles": {
-          "description": "Roles that must use two-factor sign-in (TOTP), e.g. `[\"admin\"]`.",
+          "description": "Roles that must use two-factor sign-in (TOTP), e.g. `[\"admin\"]`. Enrol your own account\nfirst: someone who must use it and has none set up can't sign in to enrol.",
           "type": "array",
           "default": [],
           "items": {
@@ -2615,7 +2615,7 @@
       "type": "object",
       "properties": {
         "allowed_admin_networks": {
-          "description": "Where break-glass admin sign-in is allowed while `disable_local_login` is on. Default:\nprivate networks and loopback, so from a LAN or a Docker or Kubernetes network the\npassword form is still offered. Narrow it to loopback (`[\"127.0.0.0/8\", \"::1/128\"]`; in a\ncontainer the server may see the Docker bridge's address instead, such as\n`172.17.0.1/32`) or to the one machine you manage from, or set it to `[]` to turn password\nsign-in off for everyone (then nobody can sign in with a password while the provider is\ndown). Behind a reverse proxy, set `[api] trusted_proxies` too, or every browser appears\nto come from the proxy's address.",
+          "description": "Where break-glass admin sign-in is allowed while `disable_local_login` is on. Default:\nprivate networks and loopback, so from a LAN or a Docker or Kubernetes network the\npassword form is still offered (start-up warns about that). Narrow it to the machines you\nmanage from (`[\"192.168.1.10/32\"]`, or loopback, `[\"127.0.0.0/8\", \"::1/128\"]`, through a\ntunnel), or set it to `[]` to turn password sign-in off for everyone (then nobody can sign\nin with a password while the provider is down; `telltale config check` warns). In a\ncontainer the server may see the Docker network's gateway instead of your machine (its\naddress differs per network, not always `172.17.0.1`). Behind a reverse proxy, set\n`[api] trusted_proxies` too, or every browser appears to come from the proxy's address:\nfor a proxy on this host that is loopback, which leaves a loopback-only list open to\neveryone the proxy serves (list `127.0.0.1/32`). Where the proxy hides the client address\n(source NAT), address checks can't be trusted: use `[]`. A provider that fails to set up\nleaves this limit in force.",
           "type": "array",
           "default": [
             "10.0.0.0/8",
@@ -2634,7 +2634,7 @@
           }
         },
         "disable_local_login": {
-          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down). That list is\nprivate networks and loopback unless you change it, so on a home or office network the\nsign-in form is still shown and the local admin can still sign in: this is a way in for\nwhen the provider is down, not a switch that hides the form. Narrow\n`allowed_admin_networks` to hide it from the rest of your network, or set it to `[]` to\nturn password sign-in off for everyone.",
+          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down). That list is\nprivate networks and loopback unless you change it, so on a home or office network the\nsign-in form is still shown and the local admin can still sign in: this is a way in for\nwhen the provider is down, not a switch that hides the form. Narrow\n`allowed_admin_networks` to hide it from the rest of your network, or set it to `[]` to\nturn password sign-in off for everyone. Turning it on doesn't sign anyone out: earlier\nsessions and API tokens keep working.",
           "type": "boolean",
           "default": false
         },

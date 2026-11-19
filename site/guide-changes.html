@@ -89,7 +89,7 @@ plans_by_default = false   # true: agents' plans simulate even when they don't a
 <pre><code>curl -X PUT 'https://dns.example.com/api/v1/rules/kids-tiktok?dryRun=true&amp;simulate=24h' \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"action":"block","domain":"tiktok.com","groups":["kids"]}'</code></pre>
-      <p><code>simulateUntil</code> moves the end of the window back (<code>-24h</code>, or an RFC 3339 time).</p>
+      <p>The window ends now, including the second the request arrives in, so a query logged a moment ago is replayed. <code>simulateUntil</code> moves the end back (<code>-24h</code>, or an RFC 3339 time); <code>now</code> is the same as leaving it out.</p>
       <p>To test a whole configuration, such as a Git commit before you push it, use <code>POST /api/v1/simulate</code>, or let <code>telltale config simulate</code> read the TOML for you. Node-local sections in the file are ignored.</p>
 <pre><code>TELLTALE_TOKEN=... telltale config simulate shared.toml --window 24h --url https://dns.example.com:8053</code></pre>
     </div>

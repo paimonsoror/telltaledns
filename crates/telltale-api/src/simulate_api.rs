@@ -73,11 +73,8 @@ pub(crate) async fn simulate(
     agent_may_simulate(&p, Some("config:read"))?;
     let req = body(b)?;
     let now = backend.now_unix_seconds();
-    let until_s = req
-        .until
-        .as_deref()
-        .map(|u| crate::time::parse_time(u, now))
-        .transpose()
+    // REQ: OBS-024 (T13.1) — `now` is no end given: the backend's default takes in this second.
+    let until_s = crate::time::parse_until(req.until.as_deref(), now)
         .map_err(|e| Problem::invalid(format!("`until`: {e}")))?;
     let opts = SimulateOpts {
         window: req.window.clone(),
