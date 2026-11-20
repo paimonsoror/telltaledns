@@ -1,4 +1,4 @@
-//! REQ: T8.2, API-002 (ADR-176) — the credentials of a router set through the API or the UI.
+//! REQ: T8.2, API-002 (ADR-181) — the credentials of a router set through the API or the UI.
 //!
 //! A router body may carry `api_key`, `api_secret`, or `password`. Each pasted value is written
 //! to a new file under `<data_dir>/secrets/` (0600, in a 0700 directory, created exclusively,
@@ -153,7 +153,7 @@ pub(crate) struct Prepared {
     old: Vec<PathBuf>,
 }
 
-/// REQ: T8.2 (ADR-176) — prepares a router write (nothing for other kinds): each pasted secret
+/// REQ: T8.2 (ADR-181) — prepares a router write (nothing for other kinds): each pasted secret
 /// is swapped for a new file's path in the body, credential files are checked, and a
 /// credential the body leaves out keeps the current file unless the endpoint changed.
 pub(crate) fn prepare(src: &Sources, w: &mut ManagedWrite) -> Result<Prepared, Problem> {
@@ -229,7 +229,7 @@ pub(crate) fn prepare_body(
             (None, Some(f)) => Some(f),
             (None, None) => now.clone(),
         };
-        // ADR-176 (review) — a key isn't sent to an endpoint it wasn't entered for.
+        // ADR-181 (review) — a key isn't sent to an endpoint it wasn't entered for.
         if moved
             && file.is_some()
             && file == now
@@ -389,7 +389,7 @@ mod tests {
         d
     }
 
-    /// REQ: T8.2 (ADR-176) — a pasted key goes to a new file under secrets/ (a fresh name, or
+    /// REQ: T8.2 (ADR-181) — a pasted key goes to a new file under secrets/ (a fresh name, or
     /// a new one the body names); relative paths are under the data directory; a credential
     /// left out keeps the current file.
     #[test]
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(b["api_key_file"], "/data/secrets/router-udm.api_key.1");
     }
 
-    /// REQ: T8.2 (ADR-176, review) — credential files outside secrets/ are refused (the poll
+    /// REQ: T8.2 (ADR-181, review) — credential files outside secrets/ are refused (the poll
     /// would send their content), and so is reusing a saved key for a new endpoint.
     #[test]
     fn t8_2_router_secrets_refused() {
@@ -458,7 +458,7 @@ mod tests {
         );
     }
 
-    /// REQ: T8.2 (ADR-176) — new files are private and never overwrite one; a failed change
+    /// REQ: T8.2 (ADR-181) — new files are private and never overwrite one; a failed change
     /// removes what it wrote; only files the API wrote are pruned.
     #[cfg(unix)]
     #[test]

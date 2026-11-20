@@ -2944,7 +2944,7 @@ impl Backend for ApiBackend {
                 &mut out,
             );
         }
-        // REQ: T8.2 (ADR-176) — the definitions name files, never the secrets themselves.
+        // REQ: T8.2 (ADR-181) — the definitions name files, never the secrets themselves.
         if want("router") {
             rows("router", &cfg.router, &file.router, &e.routers, &mut out);
         }
@@ -3996,7 +3996,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Schedule, _) => {
             "Applies within 15 seconds to the groups that use it.".into()
         }
-        // REQ: T8.2 (ADR-176)
+        // REQ: T8.2 (ADR-181)
         (ManagedKind::Router, true) => {
             "The router is read within 5 seconds; its devices are named once it answers (the log says if it doesn't).".into()
         }
@@ -4708,7 +4708,7 @@ fn plan_override(
             before_cfg.schedule.iter().find(|u| u.name() == name),
             &mut entries.schedules,
         )?,
-        // REQ: T8.2 (ADR-176) — the secrets were swapped for their files' paths already.
+        // REQ: T8.2 (ADR-181) — the secrets were swapped for their files' paths already.
         ManagedKind::Router => override_step(
             &name,
             w.body.as_ref(),
@@ -4992,7 +4992,7 @@ impl ApiBackend {
             // the next write looks (two writes planned on the same snapshot could each be
             // valid and together not: the reload would then fall back to the files alone).
             let one_at_a_time = src.config_writes.lock().await;
-            // REQ: T8.2 (ADR-176) — a router's secrets, swapped for their files' paths.
+            // REQ: T8.2 (ADR-181) — a router's secrets, swapped for their files' paths.
             let secrets = crate::router_secrets::prepare(&src, &mut w)?;
             let state = src
                 .auth
@@ -5049,7 +5049,7 @@ impl ApiBackend {
                 }
                 return Ok(out);
             }
-            // ADR-176 — new files, removed again unless the change applies.
+            // ADR-181 — new files, removed again unless the change applies.
             let written = secrets.write()?;
             let stored = {
                 let (state, w, name, body, also) = (

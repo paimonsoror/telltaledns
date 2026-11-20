@@ -1301,7 +1301,7 @@ const fn is_default_offline_days(d: &u32) -> bool {
 pub enum RouterKind {
     Unifi,
     Opnsense,
-    /// REQ: T8.2 (ADR-177) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.
+    /// REQ: T8.2 (ADR-182) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.
     Mikrotik,
 }
 

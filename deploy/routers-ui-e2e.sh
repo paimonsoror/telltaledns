@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQ: T8.2, API-002 (ADR-176) — a router added through the API, as the UI does: its API key is
+# REQ: T8.2, API-002 (ADR-181) — a router added through the API, as the UI does: its API key is
 # saved to a new private file under <data_dir>/secrets/ (never stored, listed, or audited), the
 # router is read without a restart, credential files outside secrets/ are refused, a change to
 # another field keeps the key but a new address needs it again, a refused change writes

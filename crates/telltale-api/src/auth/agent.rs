@@ -54,7 +54,7 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:groups",
         "add, change, and remove client groups",
     ),
-    // REQ: T8.2 (ADR-176) — routers hold credentials and say where they're sent: their own
+    // REQ: T8.2 (ADR-181) — routers hold credentials and say where they're sent: their own
     // scope, for an admin's token, and not part of `config:write:*`.
     (
         "config:write:routers",
@@ -100,7 +100,7 @@ pub const SCOPES: &[(&str, &str)] = &[
     ),
 ];
 
-/// REQ: T8.2 (ADR-176) — the routers' scope: an admin's, and not in `config:write:*`.
+/// REQ: T8.2 (ADR-181) — the routers' scope: an admin's, and not in `config:write:*`.
 const ROUTERS: &str = "config:write:routers";
 
 /// What an agent token gets when none are named: read-only, without the query log.
@@ -244,7 +244,7 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/groups") || under("/api/v1/schedules") {
             return Need::Scope("config:write:groups");
         }
-        // REQ: T8.2 (ADR-176)
+        // REQ: T8.2 (ADR-181)
         if under("/api/v1/routers") {
             return Need::Scope("config:write:routers");
         }
@@ -828,7 +828,7 @@ mod tests {
             "twelve write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate; not routers) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
-        // REQ: T8.2 (ADR-176) — routers only when named, and only for an admin's token.
+        // REQ: T8.2 (ADR-181) — routers only when named, and only for an admin's token.
         assert!(!s.contains("config:write:routers"));
         assert_eq!(
             implied_role(&parse_scopes(&["config:write:routers".into()]).unwrap()),
