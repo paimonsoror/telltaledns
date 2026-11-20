@@ -1,14 +1,21 @@
-// REQ: OBS-039 (ADR-167) — builds the domain icons' data from Simple Icons (CC0-1.0):
-//   ui/src/lib/icons/brands.ts    brand colour and 24x24 glyph path per slug (a lazy chunk in the UI)
+// REQ: OBS-039 (ADR-167) — builds the domain icons' data from two packs:
+//   Simple Icons (CC0-1.0), the first choice: colour brand marks on a 24x24 grid;
+//   Bootstrap Icons (MIT), for the marks Simple Icons dropped (Microsoft, Amazon, LinkedIn, ...):
+//   monochrome glyphs on a 16x16 grid, given a brand colour by hand in BOOTSTRAP below.
+//   ui/src/lib/icons/brands.ts    brand colour, glyph path and, when it isn't 24, the glyph's grid
+//                                 size per slug (a lazy chunk in the UI)
 //   ui/src/lib/icons/map.data.ts  the domains (or hosts) each brand owns, and the brand titles
-// Both are committed: a build never needs the network or this package. Run it to change the curated
-// list below or to move to another Simple Icons release (then review the diff):
-//   cd ui && npm i --no-save simple-icons@16.38.0 && node scripts/brand-icons.mjs
-// or point SIMPLE_ICONS_DIR at an installed copy. It reports the brands Simple Icons doesn't carry
-// (the pack has dropped several large companies' marks: those names wear a monogram) and which
-// of our service presets (presets/services) still have no icon.
+// Both are committed: a build never needs the network or these packages. Path data is minified
+// with svgo to two decimals (a third of the bytes, under 1% difference at 16-20 px). Run it to change
+// the curated list below or to move to another pack release (then review the diff):
+//   cd ui && npm i --no-save simple-icons@16.38.0 bootstrap-icons@1.13.2 svgo@4.1.0 && node scripts/brand-icons.mjs
+// or point SIMPLE_ICONS_DIR and BOOTSTRAP_ICONS_DIR at installed copies (svgo is found beside
+// Simple Icons). It reports the brands neither pack carries (those names wear a monogram) and which
+// of our service presets (presets/services) still have no icon. docs: site/dev-icons.html.
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const PINNED = '16.38.0';
@@ -23,6 +30,63 @@ if (installed !== PINNED) {
 const si = await import(pathToFileURL(path.join(dir, 'index.mjs')).href);
 const all = Object.values(si).filter((x) => x && typeof x === 'object' && x.slug);
 const bySlug = new Map(all.map((x) => [x.slug, x]));
+
+// Bootstrap Icons (MIT): the second pack. Its glyphs have no colour, so each one used gets a brand
+// colour here (the mark's well-known colour, chosen to read as a tile with a white or dark glyph).
+const BOOTSTRAP_PINNED = '1.13.2';
+const SVGO_PINNED = '4.1.0';
+const PRECISION = 2;
+const bsDir = process.env.BOOTSTRAP_ICONS_DIR ?? path.join(import.meta.dirname, '../node_modules/bootstrap-icons');
+const bsInstalled = JSON.parse(fs.readFileSync(path.join(bsDir, 'package.json'), 'utf8')).version;
+if (bsInstalled !== BOOTSTRAP_PINNED) {
+  console.error(`bootstrap-icons ${bsInstalled} is installed but ${BOOTSTRAP_PINNED} is pinned here. Install ${BOOTSTRAP_PINNED}, or change BOOTSTRAP_PINNED and review the diff.`);
+  process.exit(1);
+}
+const svgoDir = path.join(dir, '../svgo');
+const svgoInstalled = JSON.parse(fs.readFileSync(path.join(svgoDir, 'package.json'), 'utf8')).version;
+if (svgoInstalled !== SVGO_PINNED) {
+  console.error(`svgo ${svgoInstalled} is installed but ${SVGO_PINNED} is pinned here. Install ${SVGO_PINNED}, or change SVGO_PINNED and review the diff.`);
+  process.exit(1);
+}
+const { optimize } = createRequire(path.join(dir, 'package.json'))('svgo');
+
+/** Bootstrap Icons name -> the slug it is stored under, its brand colour, and its title. */
+const BOOTSTRAP = {
+  microsoft: { slug: 'microsoft', hex: '0078D4', title: 'Microsoft' },
+  'microsoft-teams': { slug: 'microsoftteams', hex: '6264A7', title: 'Microsoft Teams' },
+  windows: { slug: 'windows', hex: '0078D4', title: 'Windows' },
+  xbox: { slug: 'xbox', hex: '107C10', title: 'Xbox' },
+  bing: { slug: 'bing', hex: '008373', title: 'Bing' },
+  linkedin: { slug: 'linkedin', hex: '0A66C2', title: 'LinkedIn' },
+  amazon: { slug: 'amazon', hex: 'FF9900', title: 'Amazon' },
+  slack: { slug: 'slack', hex: '4A154B', title: 'Slack' },
+  openai: { slug: 'openai', hex: '412991', title: 'OpenAI' },
+  'nintendo-switch': { slug: 'nintendo', hex: 'E60012', title: 'Nintendo' },
+  skype: { slug: 'skype', hex: '00AFF0', title: 'Skype' },
+};
+
+/**
+ * A Bootstrap glyph's path data: its `<path>`s as one. A path that starts with a relative `m` (Bing's
+ * third) would be read from the end of the one before it, so it is anchored at the origin: `M0 0` then
+ * the same `m` (which, after an absolute move to 0 0, is the absolute move it was meant to be).
+ */
+function bootstrapPath(name) {
+  const svg = fs.readFileSync(path.join(bsDir, 'icons', `${name}.svg`), 'utf8');
+  if (/evenodd/.test(svg)) throw new Error(`${name}: fill-rule evenodd isn't supported (the tile draws every glyph with the default rule)`);
+  const ds = [...svg.matchAll(/<path[^>]*\sd="([^"]+)"/g)].map((m) => m[1]);
+  if (ds.length === 0 || ds.some((d) => !/^[Mm]/.test(d))) throw new Error(`${name}: expected paths that start with a move (M or m)`);
+  return ds.map((d) => (d.startsWith('m') ? `M0 0${d}` : d)).join(' ');
+}
+
+/** Path data minified by svgo to PRECISION decimals (the viewBox is `0 0 size size`). */
+function minify(d, size) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}"><path d="${d}"/></svg>`;
+  const out = optimize(svg, {
+    multipass: true,
+    plugins: [{ name: 'preset-default', params: { overrides: { convertPathData: { floatPrecision: PRECISION } } } }],
+  }).data;
+  return /<path[^>]*\sd="([^"]+)"/.exec(out)?.[1] ?? d;
+}
 
 // [candidate slugs (the first one Simple Icons has wins), the domains the brand owns]. A full host is
 // allowed (`teams.microsoft.com`): the longest matching suffix of a name wins.
@@ -41,18 +105,19 @@ const LIST = [
   [['applemusic'], ['music.apple.com']],
   [['appletv'], ['tv.apple.com']],
   // Microsoft (Simple Icons dropped the main logo; the product marks it keeps are used where they exist)
-  [['microsoft'], ['microsoft.com', 'msftconnecttest.com']],
-  [['microsoftoffice', 'microsoft365'], ['office.com', 'office365.com', 'office.net', 'officeapps.live.com', 'microsoftonline.com', 'sharepoint.com']],
-  [['microsoftteams'], ['teams.microsoft.com', 'teams.events.data.microsoft.com']],
-  [['microsoftedge'], ['edge.microsoft.com', 'msedge.net']],
-  [['microsoftazure', 'azure'], ['azure.com', 'azureedge.net', 'azurewebsites.net', 'windows.net']],
-  [['bing'], ['bing.com', 'bing.net']],
-  [['windows11', 'windows'], ['windowsupdate.com', 'windows.com', 'live.com']],
-  [['xbox'], ['xbox.com', 'xboxlive.com']],
+  [['microsoft', 'bi:microsoft'], ['microsoft.com', 'msftconnecttest.com']],
+  [['microsoftoffice', 'microsoft365', 'bi:microsoft'], ['office.com', 'office365.com', 'office.net', 'officeapps.live.com', 'microsoftonline.com', 'sharepoint.com']],
+  [['microsoftteams', 'bi:microsoft-teams'], ['teams.microsoft.com', 'teams.events.data.microsoft.com']],
+  [['skype', 'bi:skype'], ['skype.com', 'skypeassets.com']],
+  [['microsoftedge', 'bi:microsoft'], ['edge.microsoft.com', 'msedge.net']],
+  [['microsoftazure', 'azure', 'bi:microsoft'], ['azure.com', 'azureedge.net', 'azurewebsites.net', 'windows.net']],
+  [['bing', 'bi:bing'], ['bing.com', 'bing.net']],
+  [['windows11', 'windows', 'bi:windows'], ['windowsupdate.com', 'windows.com', 'live.com']],
+  [['xbox', 'bi:xbox'], ['xbox.com', 'xboxlive.com']],
   [['github'], ['github.com', 'githubusercontent.com', 'githubassets.com', 'github.io', 'githubcopilot.com']],
-  [['linkedin'], ['linkedin.com', 'licdn.com']],
+  [['linkedin', 'bi:linkedin'], ['linkedin.com', 'licdn.com']],
   // Amazon
-  [['amazon'], ['amazon.com', 'media-amazon.com', 'ssl-images-amazon.com', 'amazon.co.uk']],
+  [['amazon', 'bi:amazon'], ['amazon.com', 'media-amazon.com', 'ssl-images-amazon.com', 'amazon.co.uk', 'a2z.com']],
   [['amazonwebservices', 'amazonaws'], ['amazonaws.com', 'awsstatic.com', 'aws.amazon.com']],
   [['amazoncloudfront', 'amazonaws'], ['cloudfront.net']],
   [['primevideo'], ['primevideo.com', 'aiv-cdn.net', 'amazonvideo.com', 'pv-cdn.net']],
@@ -76,7 +141,7 @@ const LIST = [
   [['mastodon'], ['mastodon.social', 'joinmastodon.org']],
   [['twitch'], ['twitch.tv', 'ttvnw.net', 'jtvnw.net', 'twitchcdn.net']],
   [['tinder'], ['tinder.com', 'gotinder.com']],
-  [['slack'], ['slack.com', 'slack-edge.com']],
+  [['slack', 'bi:slack'], ['slack.com', 'slack-edge.com']],
   [['zoom'], ['zoom.us', 'zoom.com']],
   // Streaming
   [['netflix'], ['netflix.com', 'nflxvideo.net', 'nflximg.net', 'nflxso.net', 'nflxext.com']],
@@ -96,7 +161,7 @@ const LIST = [
   [['roblox'], ['roblox.com', 'rbxcdn.com', 'rbx.com', 'robloxlabs.com']],
   [['minecraft'], ['minecraft.net', 'mojang.com']],
   [['playstation'], ['playstation.com', 'playstation.net', 'sonyentertainmentnetwork.com']],
-  [['nintendo', 'nintendoswitch'], ['nintendo.com', 'nintendo.net']],
+  [['nintendo', 'nintendoswitch', 'bi:nintendo-switch'], ['nintendo.com', 'nintendo.net']],
   [['ea'], ['ea.com']],
   [['battledotnet', 'battlenet'], ['battle.net', 'blizzard.com']],
   // Developer and infrastructure
@@ -120,7 +185,7 @@ const LIST = [
   [['nodedotjs'], ['nodejs.org']],
   [['letsencrypt'], ['letsencrypt.org']],
   [['homeassistant'], ['home-assistant.io', 'nabucasa.com']],
-  [['openai'], ['openai.com', 'chatgpt.com', 'oaistatic.com', 'oaiusercontent.com']],
+  [['openai', 'bi:openai'], ['openai.com', 'chatgpt.com', 'oaistatic.com', 'oaiusercontent.com']],
   [['anthropic'], ['anthropic.com']],
   [['claude'], ['claude.ai']],
   [['stackoverflow'], ['stackoverflow.com', 'sstatic.net']],
@@ -176,24 +241,44 @@ const brands = {};
 const titles = {};
 const map = {};
 const dropped = [];
+let fromBootstrap = 0;
 for (const [cands, domains] of LIST) {
-  const slug = cands.find((c) => bySlug.has(c));
-  if (!slug) {
+  // Simple Icons first; a `bi:` candidate (a Bootstrap Icons name) only when it has none of the others.
+  const si = cands.find((c) => bySlug.has(c));
+  const bi = si ? undefined : cands.find((c) => c.startsWith('bi:'))?.slice(3);
+  let slug;
+  if (si) {
+    slug = si;
+    if (!brands[slug]) {
+      const i = bySlug.get(slug);
+      brands[slug] = [i.hex, minify(i.path, 24)];
+      titles[slug] = i.title;
+    }
+  } else if (bi) {
+    const b = BOOTSTRAP[bi];
+    if (!b) throw new Error(`BOOTSTRAP has no entry for ${bi}`);
+    slug = b.slug;
+    if (!brands[slug]) {
+      brands[slug] = [b.hex, minify(bootstrapPath(bi), 16), 16];
+      titles[slug] = b.title;
+      fromBootstrap++;
+    }
+  } else {
     dropped.push(`${cands[0]} (${domains[0]}${domains.length > 1 ? ` +${domains.length - 1}` : ''})`);
     continue;
   }
-  const i = bySlug.get(slug);
-  brands[slug] = [i.hex, i.path];
-  titles[slug] = i.title;
   for (const d of domains) map[d] = slug;
+}
+for (const name of Object.keys(BOOTSTRAP)) {
+  if (!LIST.some(([cands]) => cands.includes(`bi:${name}`))) throw new Error(`BOOTSTRAP has ${name}, which no LIST entry uses`);
 }
 
 const sorted = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
-const head = `// GENERATED by ui/scripts/brand-icons.mjs from simple-icons ${PINNED} (CC0-1.0); do not edit by hand.\n`;
+const head = `// GENERATED by ui/scripts/brand-icons.mjs from simple-icons ${PINNED} (CC0-1.0) and bootstrap-icons ${BOOTSTRAP_PINNED} (MIT), path data minified by svgo ${SVGO_PINNED} to ${PRECISION} decimals; do not edit by hand.\n`;
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(
   path.join(OUT, 'brands.ts'),
-  `${head}// slug -> [brand colour (hex, no #), 24x24 SVG path]. A separate chunk: loaded when the first brand icon is drawn.\nexport const BRANDS: Record<string, [string, string]> = ${JSON.stringify(sorted(brands))};\n`,
+  `${head}// slug -> [brand colour (hex, no #), SVG path, the glyph's grid size when it isn't 24]. A separate chunk: loaded when the first brand icon is drawn.\nexport const BRANDS: Record<string, [string, string, number?]> = ${JSON.stringify(sorted(brands))};\n`,
 );
 fs.writeFileSync(
   path.join(OUT, 'map.data.ts'),
@@ -216,7 +301,9 @@ for (const f of fs.readdirSync(presets).filter((n) => n.endsWith('.toml'))) {
     if (!doms.map(suffixHit).find(Boolean)) uncovered.push(id);
   }
 }
-const raw = JSON.stringify(sorted(brands)).length;
-console.log(`${Object.keys(brands).length} of ${LIST.length} brands have an icon; ${Object.keys(map).length} domains mapped; glyph data ${(raw / 1024).toFixed(0)} KiB raw`);
-console.log(`not in Simple Icons (${dropped.length}): ${dropped.join('; ')}`);
+const json = JSON.stringify(sorted(brands));
+const kib = (n) => (n / 1024).toFixed(1);
+console.log(`${Object.keys(brands).length} brands have an icon (${Object.keys(brands).length - fromBootstrap} from Simple Icons, ${fromBootstrap} from Bootstrap Icons); ${Object.keys(map).length} domains mapped`);
+console.log(`glyph data ${kib(json.length)} KiB raw, ${kib(zlib.gzipSync(Buffer.from(json), { level: 9 }).length)} KiB gzip`);
+console.log(`in neither pack (${dropped.length}): ${dropped.join('; ')}`);
 console.log(`service presets without an icon (${uncovered.length} of ${services}): ${uncovered.join(', ')}`);

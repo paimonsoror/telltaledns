@@ -48,32 +48,36 @@
 <section id="install">
   <p class="eyebrow">Step 1</p>
   <h2>Pick where it runs</h2>
-  <p class="muted">Every path ends the same way: your router hands out TelltaleDNS as the DNS server, and every device uses it, with its own address visible. <span class="badge"><span class="dot"></span> Pre-1.0: installs follow builds from main (<code>edge</code>).</span></p>
+  <p class="muted">Every path ends the same way: your router hands out TelltaleDNS as the DNS server, and every device uses it, with its own address visible. <span class="badge"><span class="dot"></span> Pre-1.0: installs use the latest tagged release by default (From source builds <code>main</code>); <code>edge</code> is the opt-in build from main.</span></p>
   <div class="tabs">
     <div role="tablist" aria-label="Where it runs">
-      <button role="tab" type="button">Raspberry Pi</button>
-      <button role="tab" type="button">Linux (native)</button>
+      <button role="tab" type="button">Raspberry Pi &amp; Linux</button>
       <button role="tab" type="button">Docker</button>
       <button role="tab" type="button">Kubernetes</button>
       <button role="tab" type="button">From source</button>
     </div>
 
-    <div class="panel" id="pi"><h3>Raspberry Pi with Docker Compose <span class="muted small">· the recommended home setup, about 10 minutes</span></h3>
+    <!-- Tabs are labelled by how you install; the Pi is named where it lives. Old links still land:
+         start.html#pi (the Raspberry Pi tab) and #native (the Linux tab) open this first tab (#pi is an
+         empty anchor inside it, and the tab script opens the panel that holds the id). The Docker Compose
+         bundle that used to be #pi now sits under Docker (#compose). -->
+    <div class="panel" id="native"><span id="pi"></span><h3>Raspberry Pi and Linux, native (systemd)</h3>
+      <p>No Docker needed: a single static binary runs as a sandboxed systemd service, on any systemd distribution (x86-64, arm64, or 32-bit ARM).</p>
       <figure class="figure">
         <svg viewBox="0 0 900 230" role="img">
-          <title>Devices ask the Pi; the Pi answers from its cache or asks an encrypted upstream</title>
+          <title>Devices ask TelltaleDNS on a Raspberry Pi or Linux machine; it answers from its cache or asks an encrypted upstream</title>
           <defs><marker id="i-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
           <rect x="20" y="30" width="190" height="170" rx="16" class="svg-box"/>
           <text x="115" y="62" text-anchor="middle" class="svg-text">Your devices</text>
           <text x="115" y="104" text-anchor="middle" font-size="28">📱 💻 📺</text>
-          <text x="115" y="140" text-anchor="middle" class="svg-sub">get the Pi as DNS</text>
+          <text x="115" y="140" text-anchor="middle" class="svg-sub">get it as their DNS</text>
           <text x="115" y="158" text-anchor="middle" class="svg-sub">from the router (DHCP)</text>
           <path d="M210 115 H340" class="svg-stroke-brand" stroke-width="2" marker-end="url(#i-arrow)"/>
           <text x="275" y="104" text-anchor="middle" class="svg-sub">port 53</text>
           <rect x="342" y="30" width="230" height="170" rx="16" class="svg-brand"/>
-          <text x="457" y="62" text-anchor="middle" fill="#e8eef6" font-weight="700">🍓 Raspberry Pi</text>
-          <text x="457" y="98" text-anchor="middle" fill="#e8eef6" font-size="13">TelltaleDNS container</text>
-          <text x="457" y="120" text-anchor="middle" fill="#e8eef6" font-size="12">host network · read-only</text>
+          <text x="457" y="62" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="15">🍓 Raspberry Pi or Linux</text>
+          <text x="457" y="98" text-anchor="middle" fill="#e8eef6" font-size="13">TelltaleDNS service</text>
+          <text x="457" y="120" text-anchor="middle" fill="#e8eef6" font-size="12">systemd · sandboxed</text>
           <text x="457" y="142" text-anchor="middle" fill="#e8eef6" font-size="12">blocklists · cache · query log</text>
           <text x="457" y="176" text-anchor="middle" fill="#e8eef6" font-size="12">UI on :8053</text>
           <path d="M572 115 H700" class="svg-stroke-accent" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#i-arrow)"/>
@@ -82,39 +86,33 @@
           <text x="791" y="104" text-anchor="middle" class="svg-text">Cloudflare / Quad9</text>
           <text x="791" y="128" text-anchor="middle" class="svg-sub">only for names not cached</text>
         </svg>
-        <figcaption>Host networking is what lets TelltaleDNS see each device's own address (and MAC), so per-device statistics and rules work.</figcaption>
+        <figcaption>TelltaleDNS runs on the machine's own network, which is what lets it see each device's own address (and MAC), so per-device statistics and rules work.</figcaption>
       </figure>
+      <div class="callout">
+        <p><b>On a Raspberry Pi</b></p>
+        <ul>
+          <li><b>Model and OS:</b> Raspberry Pi OS on a Pi 3, 4, 5, or Zero 2 W. The 64-bit version is recommended. The 32-bit version works too, and the installer picks the matching build. The original Pi Zero, the Zero W, and the Pi 1 (ARMv6) aren't supported.</li>
+          <li><b>SD card:</b> the query log writes continuously, so keep it short. The installer's starter config keeps it for 7 days (the walk-through asks how many). A USB SSD is better for longer history.</li>
+        </ul>
+      </div>
       <ol class="guide">
-        <li><b>Prepare the Pi.</b> Raspberry Pi OS (64-bit recommended) on a Pi 3, 4, 5, or Zero 2 W, with a fixed address (set a DHCP reservation in your router), and Docker:
-<pre><code>curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER    # log out and back in</code></pre></li>
-        <li><b>Free port 53.</b> If Pi-hole or another DNS server runs on the Pi, stop it. Check: <code>sudo ss -ulpn 'sport = :53'</code> should print nothing.</li>
-        <li><b>Download the bundle and start it.</b>
-<pre><code>mkdir ~/telltale && cd ~/telltale
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
-docker compose up -d
-docker compose ps        # STATUS shows "healthy" within a minute</code></pre></li>
-        <li><b>Test it from another computer</b> (replace the address with your Pi's):
+        <li><b>Prepare the machine.</b> Give it a fixed address (a DHCP reservation in your router). Then free port 53: if Pi-hole or another DNS server runs on it, stop it. Check: <code>sudo ss -Hulpn 'sport = :53'</code> should print nothing. (systemd-resolved is the one exception; see the list below.)</li>
+        <li><b>Install it.</b> The installer checks the release's signature and checksum before installing anything, so read it, then run it:
+<pre><code>curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
+less install.sh
+sudo sh install.sh                 # the latest release; --edge: builds from main</code></pre></li>
+        <li><b>Test it from another computer</b> (replace the address with this machine's; the installer prints it at the end):
 <pre><code>dig @192.168.1.2 example.com          # an address: it resolves
 dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works</code></pre>
           On Windows: <code>nslookup example.com 192.168.1.2</code>.</li>
-        <li><b>Create the admin account.</b> Print the one-time setup token and open the UI at <code>http://&lt;pi&gt;:8053/</code>:
-<pre><code>docker compose exec telltale telltale auth setup-token</code></pre></li>
+        <li><b>Create the admin account.</b> Print the one-time setup token and open the UI at <code>http://&lt;address&gt;:8053/</code> (skip the token if you chose a password in the walk-through):
+<pre><code>sudo -u telltale /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml</code></pre></li>
       </ol>
-      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>docker compose kill -s HUP</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
-    </div>
-
-    <div class="panel" id="native"><h3>Raspberry Pi or Linux, native (systemd)</h3>
-      <p>No Docker: a single static binary as a sandboxed systemd service, on any systemd distribution (x86-64, arm64, or 32-bit ARM). The installer checks the release's signature and checksum before installing anything, so read it, then run it:</p>
-<pre><code>curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
-less install.sh
-sudo sh install.sh                 # the latest release; --edge: builds from main
-sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code></pre>
+      <p><b>About the installer</b></p>
       <ul>
-        <li>It asks first: press Enter for the recommended settings, or <b>walk me through the options</b> to pick upstreams (encrypted presets or your own server), starting blocklists (or none), the listen address, the first admin (a setup token, or a password now), and the query log's retention and privacy. Every step shows its default; Enter keeps it. Piped or automated runs (and <code>--yes</code>) ask nothing.</li>
+        <li>It asks first: press Enter for the recommended settings, or <b>walk me through the options</b> to pick upstreams (encrypted presets or your own server), starting blocklists (or none), the listen address, the first admin (a setup token, or a password now), and the query log's retention and privacy. Every step shows its default; Enter keeps it. Piped or automated runs, <code>--yes</code>, and a re-run over an existing config skip these questions (the next point has the one about systemd-resolved).</li>
         <li>It creates a <code>telltale</code> user, writes the config to <code>/etc/telltale/telltale.toml</code> (never overwriting yours), and keeps data in <code>/var/lib/telltale</code>.</li>
-        <li>If systemd-resolved holds port 53 (Ubuntu, some Debian setups), it offers to turn the stub listener off (<code>--disable-resolved-stub</code> does it without asking).</li>
+        <li>If systemd-resolved holds port 53 (Ubuntu, some Debian setups), a new install in a terminal turns the stub listener off with the recommended settings and asks about it in the walk-through (step 5). A re-run, or <code>--yes</code>, in a terminal asks <code>[Y/n]</code>. Without a terminal it is left as it is, unless <code>--interactive</code> feeds the answers of a new install. <code>--disable-resolved-stub</code> turns it off without asking (the walk-through still asks, and its answer wins). After turning it off it waits up to 15 seconds for port 53 to be free before it starts the service. If something still holds the port, it prints what.</li>
         <li>Updates: <code>sudo telltale self-update --restart</code> (add <code>--channel edge</code> if you installed with <code>--edge</code>). The previous binary is kept as <code>telltale.old</code>.</li>
         <li>Logs: <code>journalctl -u telltale -f</code>. Reload after editing the config: <code>sudo systemctl reload telltale</code>.</li>
         <li>Uninstall: <code>sudo sh install.sh --uninstall</code>. It removes the service and binary, offers to give the machine its own resolver back (systemd-resolved, as it was before), and keeps your config and data unless you ask it to delete them (<code>--purge</code>).</li>
@@ -122,13 +120,38 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code>
     </div>
 
     <div class="panel" id="docker"><h3>Docker</h3>
+      <p>Two ways to run the image on a Raspberry Pi or any Linux machine with Docker: the Compose bundle, which brings a starter config and host networking, or a single <code>docker run</code>.</p>
+
+      <h4 id="compose">Docker Compose bundle</h4>
+      <p class="muted">The bundle runs TelltaleDNS on the host network, read-only. Host networking is what lets it see each device's own address (and MAC), so per-device statistics and rules work.</p>
+      <ol class="guide">
+        <li><b>Install Docker</b> (skip this if you have it). On a Raspberry Pi, use Raspberry Pi OS (64-bit recommended) on a Pi 3, 4, 5, or Zero 2 W, and give it a fixed address (a DHCP reservation in your router):
+<pre><code>curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER    # log out and back in</code></pre></li>
+        <li><b>Free port 53.</b> If Pi-hole or another DNS server runs on the machine, stop it (for systemd-resolved, see <a href="#trouble">troubleshooting</a>). Check: <code>sudo ss -Hulpn 'sport = :53'</code> should print nothing.</li>
+        <li><b>Download the bundle and start it.</b>
+<pre><code>mkdir ~/telltale && cd ~/telltale
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+docker compose up -d
+docker compose ps        # STATUS shows "healthy" within a minute</code></pre></li>
+        <li><b>Test it from another computer</b> (replace the address with this machine's):
+<pre><code>dig @192.168.1.2 example.com          # an address: it resolves
+dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works</code></pre>
+          On Windows: <code>nslookup example.com 192.168.1.2</code>.</li>
+        <li><b>Create the admin account.</b> Print the one-time setup token and open the UI at <code>http://&lt;address&gt;:8053/</code>:
+<pre><code>docker compose exec telltale telltale auth setup-token</code></pre></li>
+      </ol>
+      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>docker compose kill -s HUP</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
+
+      <h4>docker run</h4>
 <pre><code>docker run -d --name telltale --read-only --cap-drop ALL \
   -p 53:53/udp -p 53:53/tcp -p 8053:8053 -p 9153:9153 \
   -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
   -v telltale-data:/var/lib/telltale \
   ghcr.io/paimonsoror/telltale:latest
 docker exec telltale telltale auth setup-token</code></pre>
-      <p class="muted">amd64, arm64, and arm/v7; about 13 MiB compressed, web UI included; runs as a non-root user. Published ports can hide each device's own address behind Docker's (the UI warns if they do): on a home network, <code>--network host</code> (or the Pi Compose bundle) makes sure each device shows up as itself. A starter config is in <a href="#configure">step 2</a>.</p>
+      <p class="muted">amd64, arm64, and arm/v7; about 13 MiB compressed, web UI included; runs as a non-root user. Published ports can hide each device's own address behind Docker's (the UI warns if they do): on a home network, <code>--network host</code> (or the Compose bundle above) makes sure each device shows up as itself. A starter config is in <a href="#configure">step 2</a>.</p>
       <p class="muted"><strong>Unraid:</strong> a Docker template with its own LAN address (<code>br0</code>), appdata folders for the config, data, and secrets, and the same locked-down settings is in <a href="https://github.com/paimonsoror/telltaledns/tree/main/deploy/unraid"><code>deploy/unraid</code></a>, with install steps.</p>
     </div>
 
@@ -302,7 +325,7 @@ strategy = "fastest"</code></pre>
   <h2>Troubleshooting</h2>
   <dl class="faq">
     <dt>"address already in use" on port 53</dt>
-    <dd>Another DNS server runs there: Pi-hole, dnsmasq, or systemd-resolved's stub (<code>sudo ss -ulpn 'sport = :53'</code> names it). Stop it, or for systemd-resolved add <code>DNSStubListener=no</code> under <code>[Resolve]</code> in <code>/etc/systemd/resolved.conf.d/telltale.conf</code> and restart it.</dd>
+    <dd>Another DNS server runs there: Pi-hole, dnsmasq, or systemd-resolved's stub (<code>sudo ss -Hulpn 'sport = :53'</code> names it). Stop it, or for systemd-resolved add <code>DNSStubListener=no</code> under <code>[Resolve]</code> in <code>/etc/systemd/resolved.conf.d/telltale.conf</code> and restart it.</dd>
     <dt>A site is broken</dt>
     <dd>Find it in the <b>Query log</b> and press <b>Why?</b>: it names the list and line that blocked it. Then allow it with a quick rule, or add an allow line (<code>@@||name^</code>) to a list.</dd>
     <dt>Every query shows the same address</dt>

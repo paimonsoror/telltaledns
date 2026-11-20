@@ -605,6 +605,589 @@ async fn api_004_disable_local_login_keeps_a_break_glass_admin() {
     ));
 }
 
+// ---- the break-glass gate (issue #63). These tests pin what the code does today, so a change to
+// it (the owner's decisions on the default list and on `X-Forwarded-For`) shows up here.
+
+/// `req` as if it arrived from `peer` (the listener puts the connection's address there).
+fn from_peer(peer: &str, mut req: Request<Body>) -> Request<Body> {
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+            peer.parse().unwrap(),
+            40_000,
+        )));
+    req
+}
+
+async fn answer(app: &Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+    let r = app.clone().oneshot(req).await.unwrap();
+    let status = r.status();
+    let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// The sign-in form's request: `root`, with the right password.
+fn form_login(peer: &str, forwarded_for: Option<&str>) -> Request<Body> {
+    let mut b = Request::post("/api/v1/auth/login").header("content-type", "application/json");
+    if let Some(f) = forwarded_for {
+        b = b.header("x-forwarded-for", f);
+    }
+    from_peer(
+        peer,
+        b.body(Body::from(
+            serde_json::json!({"username": "root", "password": "correct horse battery"})
+                .to_string(),
+        ))
+        .unwrap(),
+    )
+}
+
+/// What the sign-in page is told: `localLogin` from `GET /auth/status`.
+async fn form_offered(app: &Router, peer: &str, forwarded_for: Option<&str>) -> bool {
+    let mut b = Request::get("/api/v1/auth/status");
+    if let Some(f) = forwarded_for {
+        b = b.header("x-forwarded-for", f);
+    }
+    let (s, v) = answer(app, from_peer(peer, b.body(Body::empty()).unwrap())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["localLogin"].as_bool().unwrap()
+}
+
+fn net(s: &str, prefix: u8) -> (std::net::IpAddr, u8) {
+    (s.parse().unwrap(), prefix)
+}
+
+fn refused(v: &serde_json::Value) -> bool {
+    v.to_string()
+        .contains("password sign-in is off on this server")
+}
+
+/// REQ: API-004 (issue #63) — HTTP Basic obeys the same flag and list as the form, and the check
+/// comes before the one-minute cache of verified credentials: an admin from inside the list gets
+/// in, and the same credentials from outside it, right after, do not; a non-admin never does.
+#[tokio::test]
+async fn api_004_basic_is_gated_like_the_form() {
+    use base64::Engine as _;
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: vec![net("192.168.1.0", 24)],
+        ..Settings::default()
+    });
+    h.auth
+        .create_user("ops", "correct horse battery", Role::Admin, true, 1)
+        .unwrap();
+    h.auth
+        .create_user("kid", "another long password", Role::Viewer, true, 1)
+        .unwrap();
+    let basic = |u: &str, p: &str| {
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{u}:{p}"))
+        )
+    };
+    let me = |peer: &str, credentials: &str| {
+        let mut r = from_peer(
+            peer,
+            Request::get("/api/v1/auth/me")
+                .header("authorization", credentials)
+                .body(Body::empty())
+                .unwrap(),
+        );
+        // Over the listener's own TLS, so that Basic is allowed at all.
+        r.extensions_mut()
+            .insert(crate::auth::routes::TlsConnection);
+        r
+    };
+    let ops = basic("ops", "correct horse battery");
+    let kid = basic("kid", "another long password");
+
+    let (s, v) = answer(&h.app, me("192.168.1.5", &ops)).await;
+    assert_eq!(s, StatusCode::OK, "an admin from inside the list: {v}");
+    let (s, v) = answer(&h.app, me("192.168.1.5", &kid)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a viewer from inside: {v}");
+    assert!(refused(&v), "it says why: {v}");
+    let (s, v) = answer(&h.app, me("10.9.9.9", &ops)).await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "the same admin from outside, with the credentials cached: {v}"
+    );
+    assert!(refused(&v), "{v}");
+    let (s, v) = answer(&h.app, me("10.9.9.9", &kid)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a viewer from outside: {v}");
+    // The page agrees: the form is offered inside the list only.
+    assert!(form_offered(&h.app, "192.168.1.5", None).await);
+    assert!(!form_offered(&h.app, "10.9.9.9", None).await);
+}
+
+/// REQ: API-004 (issue #63) — `allowed_admin_networks = []` leaves no address that may use a
+/// password: not loopback, not the LAN, for the form or for Basic, and the page hides the form.
+#[tokio::test]
+async fn api_004_empty_break_glass_list_refuses_everyone() {
+    use base64::Engine as _;
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: Vec::new(),
+        ..Settings::default()
+    });
+    h.auth
+        .create_user("ops", "correct horse battery", Role::Admin, true, 1)
+        .unwrap();
+    for peer in ["127.0.0.1", "::1", "192.168.1.5", "203.0.113.9"] {
+        let (s, v) = answer(&h.app, form_login(peer, None)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "form from {peer}: {v}");
+        assert!(refused(&v), "{peer}: {v}");
+        assert!(!form_offered(&h.app, peer, None).await, "{peer}");
+        let mut r = from_peer(
+            peer,
+            Request::get("/api/v1/auth/me")
+                .header(
+                    "authorization",
+                    format!(
+                        "Basic {}",
+                        base64::engine::general_purpose::STANDARD
+                            .encode("ops:correct horse battery")
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        );
+        r.extensions_mut()
+            .insert(crate::auth::routes::TlsConnection);
+        let (s, v) = answer(&h.app, r).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "Basic from {peer}: {v}");
+    }
+}
+
+/// REQ: API-004 (issue #63) — `X-Forwarded-For` is read only from `[api] trusted_proxies`: a
+/// client that is not a proxy can't claim to be loopback, and from a proxy it is the rightmost
+/// entry that counts (the one the proxy added), not a forged one on the left.
+#[tokio::test]
+async fn api_004_forwarded_for_from_a_non_proxy_is_ignored_for_break_glass() {
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: vec![net("127.0.0.0", 8), net("::1", 128)],
+        trusted_proxies: vec![net("10.0.0.1", 32)],
+        ..Settings::default()
+    });
+    // A LAN host sending the header itself.
+    let (s, v) = answer(&h.app, form_login("192.168.1.50", Some("127.0.0.1"))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(!form_offered(&h.app, "192.168.1.50", Some("127.0.0.1")).await);
+    // Through the proxy: a forged `127.0.0.1` on the left, the real client added on the right.
+    let (s, v) = answer(
+        &h.app,
+        form_login("10.0.0.1", Some("127.0.0.1, 192.168.1.50")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(!form_offered(&h.app, "10.0.0.1", Some("127.0.0.1, 192.168.1.50")).await);
+    // The machine itself, with no proxy in between, is still let in.
+    let (s, v) = answer(&h.app, form_login("127.0.0.1", None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(form_offered(&h.app, "127.0.0.1", None).await);
+}
+
+/// REQ: API-004 (issue #63) — the reason the docs say a proxy on the same host needs
+/// `trusted_proxies = ["127.0.0.1/32"]`: loopback is not trusted for `X-Forwarded-For` by itself,
+/// so with the list unset every browser the proxy serves looks like loopback and a loopback-only
+/// break-glass list is open to all of them; once the proxy is listed, the real client decides.
+#[tokio::test]
+async fn api_004_a_same_host_proxy_looks_like_loopback_until_it_is_listed() {
+    let loopback = || vec![net("127.0.0.0", 8), net("::1", 128)];
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: loopback(),
+        trusted_proxies: Vec::new(),
+        ..Settings::default()
+    });
+    let (s, v) = answer(&h.app, form_login("127.0.0.1", Some("203.0.113.9"))).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "unset: the proxy's address is the client's, a stranger gets the form's answer: {v}"
+    );
+    assert!(form_offered(&h.app, "127.0.0.1", Some("203.0.113.9")).await);
+
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: loopback(),
+        trusted_proxies: vec![net("127.0.0.1", 32)],
+        ..Settings::default()
+    });
+    let (s, v) = answer(&h.app, form_login("127.0.0.1", Some("203.0.113.9"))).await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "listed: the stranger is refused: {v}"
+    );
+    assert!(!form_offered(&h.app, "127.0.0.1", Some("203.0.113.9")).await);
+}
+
+/// REQ: API-004 (issue #63) — the reason the docs say `trusted_proxies` lists only the proxies,
+/// never the LAN: a machine inside a listed range can send `X-Forwarded-For: 127.0.0.1` itself and
+/// be believed. This is a misconfiguration, pinned here as what happens today (a hardening that
+/// ignores a forwarded loopback address from a non-loopback peer is the owner's decision).
+#[tokio::test]
+async fn api_004_a_trusted_range_that_covers_the_lan_believes_a_forged_loopback() {
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: vec![net("127.0.0.0", 8), net("::1", 128)],
+        trusted_proxies: vec![net("10.0.0.0", 8)],
+        ..Settings::default()
+    });
+    let (s, v) = answer(&h.app, form_login("10.1.2.3", Some("127.0.0.1"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(form_offered(&h.app, "10.1.2.3", Some("127.0.0.1")).await);
+}
+
+// ---- the policy is visible (issue #63, ADR-175)
+
+/// The whole `GET /auth/status` answer for a client at `peer`.
+async fn status_for(app: &Router, peer: &str) -> serde_json::Value {
+    let (s, v) = answer(
+        app,
+        from_peer(
+            peer,
+            Request::get("/api/v1/auth/status")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+
+/// REQ: API-004, API-005 (issue #63, ADR-175) — the public sign-in status says whether password
+/// sign-in is restricted (`disable_local_login`): the same for every client, whatever
+/// `localLogin` says for it, and without the networks (those are for admins).
+#[tokio::test]
+async fn api_004_status_says_when_password_sign_in_is_restricted() {
+    // The flag off: not restricted, offered to everyone.
+    let h = harness(Settings::default());
+    for peer in ["192.168.1.5", "203.0.113.9"] {
+        let v = status_for(&h.app, peer).await;
+        assert_eq!(v["passwordLoginRestricted"], false, "{peer}: {v}");
+        assert_eq!(v["localLogin"], true, "{peer}: {v}");
+    }
+
+    // The flag on, with a network: restricted for an allowed client and for one outside the list;
+    // `localLogin` keeps saying whether the form is offered to this client.
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: vec![net("192.168.1.0", 24)],
+        ..Settings::default()
+    });
+    let inside = status_for(&h.app, "192.168.1.5").await;
+    assert_eq!(inside["passwordLoginRestricted"], true, "{inside}");
+    assert_eq!(inside["localLogin"], true, "{inside}");
+    let outside = status_for(&h.app, "10.9.9.9").await;
+    assert_eq!(outside["passwordLoginRestricted"], true, "{outside}");
+    assert_eq!(outside["localLogin"], false, "{outside}");
+
+    // The flag on and no network at all: still restricted, offered to nobody.
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: Vec::new(),
+        ..Settings::default()
+    });
+    let v = status_for(&h.app, "127.0.0.1").await;
+    assert_eq!(v["passwordLoginRestricted"], true, "{v}");
+    assert_eq!(v["localLogin"], false, "{v}");
+
+    // Public: one boolean, and no network list anywhere in the answer.
+    let mut keys: Vec<&str> = inside
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "authenticated",
+            "localLogin",
+            "oidc",
+            "passwordLoginRestricted",
+            "setupRequired"
+        ],
+        "{inside}"
+    );
+    assert!(
+        !inside.to_string().contains("192.168.1.0"),
+        "a network must not appear in a public answer: {inside}"
+    );
+}
+
+/// A signed-in session's cookie for `username`, on the real clock.
+fn cookie_for(h: &Harness, username: &str) -> String {
+    let user = h.auth.state().user_by_name(username).unwrap().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let s = h
+        .auth
+        .start_session(&user, "127.0.0.1".parse().unwrap(), now)
+        .unwrap();
+    format!("{}={}", crate::auth::routes::COOKIE, s.cookie)
+}
+
+/// `GET /users` as `cookie` (none: anonymous).
+async fn users_as(app: &Router, cookie: Option<&str>) -> (StatusCode, serde_json::Value) {
+    let mut b = Request::get("/api/v1/users");
+    if let Some(c) = cookie {
+        b = b.header("cookie", c);
+    }
+    answer(app, b.body(Body::empty()).unwrap()).await
+}
+
+/// REQ: API-004, AGT-004 (issue #63, ADR-175) — the networks password sign-in is limited to are
+/// told to admins only, in the admin-only user list: an anonymous caller, a viewer, an operator,
+/// and a read token of an admin get a refusal that says nothing about them. An admin gets the
+/// block for the default-shaped list, a loopback-only list, and an empty one.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: who is refused, then what an admin is told
+async fn api_004_the_policy_detail_is_admin_only() {
+    let reach = vec![
+        net("10.0.0.0", 8),
+        net("192.168.0.0", 16),
+        net("127.0.0.0", 8),
+        net("fc00::", 7),
+        net("::1", 128),
+    ];
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: reach,
+        ..Settings::default()
+    });
+    h.auth
+        .create_user("vic", "a viewer password", Role::Viewer, false, 1)
+        .unwrap();
+    h.auth
+        .create_user("opal", "an operator password", Role::Operator, false, 1)
+        .unwrap();
+
+    // Who is refused, and that the refusal carries no network.
+    let (id, secret) = (
+        crate::auth::crypto::random_id(),
+        crate::auth::crypto::random_secret(),
+    );
+    let root = h.auth.state().user_by_name("root").unwrap().unwrap();
+    h.auth
+        .state()
+        .create_token(
+            &id,
+            root.id,
+            "reader",
+            &crate::auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            1,
+        )
+        .unwrap();
+    let read_token = Request::get("/api/v1/users")
+        .header("authorization", format!("Bearer tt_{id}_{secret}"))
+        .body(Body::empty())
+        .unwrap();
+    for (who, (status, body)) in [
+        ("anonymous", users_as(&h.app, None).await),
+        (
+            "a viewer",
+            users_as(&h.app, Some(&cookie_for(&h, "vic"))).await,
+        ),
+        (
+            "an operator",
+            users_as(&h.app, Some(&cookie_for(&h, "opal"))).await,
+        ),
+        ("a read token of an admin", answer(&h.app, read_token).await),
+    ] {
+        let expected = if who == "anonymous" {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::FORBIDDEN
+        };
+        assert_eq!(status, expected, "{who}: {body}");
+        assert!(
+            !body.to_string().contains("10.0.0.0") && body.get("passwordLogin").is_none(),
+            "{who} must not be told the policy: {body}"
+        );
+    }
+
+    // An admin is told: the list as configured, in order, as `address/prefix`.
+    let admin = cookie_for(&h, "root");
+    let (s, v) = users_as(&h.app, Some(&admin)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"].as_array().map(Vec::len), Some(3), "{v}");
+    assert_eq!(
+        v["passwordLogin"],
+        serde_json::json!({
+            "restricted": true,
+            "networks": ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.0/8", "fc00::/7", "::1/128"],
+            "coversWholeNetworks": true,
+            "includesLoopback": true,
+            "loopbackIsTrustedProxy": false
+        })
+    );
+
+    // Loopback only, with a proxy listed.
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: vec![net("127.0.0.0", 8), net("::1", 128)],
+        trusted_proxies: vec![net("127.0.0.1", 32)],
+        ..Settings::default()
+    });
+    let (s, v) = users_as(&h.app, Some(&cookie_for(&h, "root"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["passwordLogin"],
+        serde_json::json!({
+            "restricted": true,
+            "networks": ["127.0.0.0/8", "::1/128"],
+            "coversWholeNetworks": false,
+            "includesLoopback": true,
+            "loopbackIsTrustedProxy": true
+        })
+    );
+
+    // An empty list: restricted, and nobody may use a password.
+    let h = harness(Settings {
+        disable_local_login: true,
+        admin_networks: Vec::new(),
+        ..Settings::default()
+    });
+    let (_, v) = users_as(&h.app, Some(&cookie_for(&h, "root"))).await;
+    assert_eq!(
+        v["passwordLogin"],
+        serde_json::json!({
+            "restricted": true,
+            "networks": [],
+            "coversWholeNetworks": false,
+            "includesLoopback": false,
+            "loopbackIsTrustedProxy": false
+        })
+    );
+
+    // The flag off: not restricted, and the list in the settings (unused) is not reported.
+    let h = harness(Settings {
+        disable_local_login: false,
+        admin_networks: vec![net("10.0.0.0", 8)],
+        ..Settings::default()
+    });
+    let (_, v) = users_as(&h.app, Some(&cookie_for(&h, "root"))).await;
+    assert_eq!(
+        v["passwordLogin"],
+        serde_json::json!({
+            "restricted": false,
+            "networks": [],
+            "coversWholeNetworks": false,
+            "includesLoopback": false,
+            "loopbackIsTrustedProxy": false
+        })
+    );
+}
+
+/// REQ: API-004 (ADR-175) — what the admin's block says about a list of single hosts and about
+/// the proxy list. A host (`/32`, `/128`) is not a whole network, so `coversWholeNetworks` stays
+/// false for a list of hosts, and for hosts beside loopback; a `/31` (two hosts), a `/24`, or any
+/// range is one. `loopbackIsTrustedProxy` is true exactly when `127.0.0.1` is inside a listed
+/// proxy network, the test `remote()` applies to the peer (a proxy on this machine arrives from
+/// it): a pod network does not count, a `/32` of it or a `/8` around it does.
+#[tokio::test]
+async fn api_004_the_policy_reports_single_hosts_and_the_loopback_proxy() {
+    let case = |networks: Vec<(std::net::IpAddr, u8)>, proxies: Vec<(std::net::IpAddr, u8)>| {
+        harness(Settings {
+            disable_local_login: true,
+            admin_networks: networks,
+            trusted_proxies: proxies,
+            ..Settings::default()
+        })
+    };
+    let block = |h: &Harness| {
+        let cookie = cookie_for(h, "root");
+        let app = h.app.clone();
+        async move { users_as(&app, Some(&cookie)).await.1["passwordLogin"].clone() }
+    };
+    let flags = |v: &serde_json::Value| {
+        (
+            v["coversWholeNetworks"].as_bool(),
+            v["includesLoopback"].as_bool(),
+            v["loopbackIsTrustedProxy"].as_bool(),
+        )
+    };
+
+    // Hosts only: not whole networks. The LAN host is not loopback.
+    let v = block(&case(vec![net("192.168.1.10", 32)], Vec::new())).await;
+    assert_eq!(v["networks"], serde_json::json!(["192.168.1.10/32"]), "{v}");
+    assert_eq!(flags(&v), (Some(false), Some(false), Some(false)), "{v}");
+    let v = block(&case(
+        vec![net("fd00::5", 128), net("10.0.0.7", 32)],
+        Vec::new(),
+    ))
+    .await;
+    assert_eq!(flags(&v), (Some(false), Some(false), Some(false)), "{v}");
+
+    // Hosts beside loopback: still hosts, and loopback is listed.
+    let v = block(&case(
+        vec![net("127.0.0.1", 32), net("192.168.1.10", 32)],
+        Vec::new(),
+    ))
+    .await;
+    assert_eq!(flags(&v), (Some(false), Some(true), Some(false)), "{v}");
+    let v = block(&case(
+        vec![
+            net("127.0.0.0", 8),
+            net("::1", 128),
+            net("192.168.1.10", 32),
+        ],
+        Vec::new(),
+    ))
+    .await;
+    assert_eq!(flags(&v), (Some(false), Some(true), Some(false)), "{v}");
+
+    // A range is a whole network, however small: a /31, a /24, a v6 /127 and /64.
+    for wide in [
+        net("192.168.1.10", 31),
+        net("192.168.1.0", 24),
+        net("fd00::4", 127),
+        net("fd00::", 64),
+        net("0.0.0.0", 0),
+    ] {
+        let v = block(&case(vec![net("192.168.1.10", 32), wide], Vec::new())).await;
+        assert_eq!(v["coversWholeNetworks"], true, "{wide:?}: {v}");
+    }
+    // Loopback ranges are this machine, not whole networks; a /7 around 127.0.0.0 is a network.
+    let v = block(&case(
+        vec![net("127.0.0.0", 8), net("127.1.2.3", 32)],
+        Vec::new(),
+    ))
+    .await;
+    assert_eq!(flags(&v), (Some(false), Some(true), Some(false)), "{v}");
+    let v = block(&case(vec![net("127.0.0.0", 7)], Vec::new())).await;
+    assert_eq!(v["coversWholeNetworks"], true, "{v}");
+    assert_eq!(v["includesLoopback"], false, "{v}");
+
+    // Is loopback a trusted proxy? Only when 127.0.0.1 is inside a listed network.
+    for (proxies, trusted) in [
+        (Vec::new(), false),
+        (vec![net("10.42.0.0", 16)], false),
+        (vec![net("10.42.0.5", 32)], false),
+        (vec![net("::1", 128)], false),
+        (vec![net("127.0.0.2", 32)], false),
+        (vec![net("127.0.0.1", 32)], true),
+        (vec![net("127.0.0.0", 8)], true),
+        (vec![net("10.42.0.0", 16), net("127.0.0.1", 32)], true),
+        (vec![net("0.0.0.0", 0)], true),
+    ] {
+        let v = block(&case(vec![net("127.0.0.1", 32)], proxies.clone())).await;
+        assert_eq!(v["loopbackIsTrustedProxy"], trusted, "{proxies:?}: {v}");
+    }
+}
+
 /// An access token from the fake provider, signed with its key.
 fn access_token(claims: &serde_json::Value) -> String {
     use base64::Engine as _;

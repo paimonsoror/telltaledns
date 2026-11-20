@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Svelte pitfalls — TelltaleDNS</title>
+<meta name="description" content="The rules of the TelltaleDNS web UI that the build and the tests enforce, and the mistakes behind them: the attribute that quietly broke two-factor sign-in, the content security policy, help topics, generated types, and the bundle budget.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="dev-svelte">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Developers</p>
+  <h1>Svelte pitfalls</h1>
+  <p class="lede">The web UI is a Svelte 5 app embedded in the binary. Most of its rules are enforced by a check, so a mistake fails loudly. A few are not, and one of those went unnoticed from the first release until a user hit it. This page lists both kinds.</p>
+  <ul class="onpage">
+    <li><a href="#braces">Braces in a quoted attribute</a></li>
+    <li><a href="#csp">The content security policy</a></li>
+    <li><a href="#checks">What the build checks</a></li>
+    <li><a href="#habits">Habits that keep it working</a></li>
+    <li><a href="#example">Worked example: two-factor sign-in</a></li>
+  </ul>
+</section>
+
+<section id="braces">
+  <h2>Braces in a quoted attribute are an expression</h2>
+  <div class="callout warn"><p><b>In Svelte, <code>{…}</code> inside a quoted attribute value is an expression, not text.</b> <code>pattern="[0-9]{6}"</code> reaches the browser as <code>pattern="[0-9]6"</code>: the <code>{6}</code> is the number 6 and the quantifier is gone. Nothing warns you.</p></div>
+  <ul>
+    <li><b>Write the value as an expression:</b> <code>pattern={'[0-9]{6}'}</code>. The same goes for any attribute that holds braces as text (a regular expression, an SVG path template, a JSON snippet).</li>
+    <li><b>The guard:</b> <code>ui/tests/e2e/6-markup.spec.ts</code> scans every <code>.svelte</code> file in <code>ui/src</code> for a quoted attribute that holds <code>{digits}</code> or <code>{digits,digits}</code> and fails with the file and line. It needs no browser.</li>
+    <li><b>To check a suspicion,</b> compile the file with <code>svelte/compiler</code> and look at the <code>set_attribute</code> call it generates. That is how the bug below was confirmed.</li>
+  </ul>
+</section>
+
+<section id="csp">
+  <h2>The content security policy</h2>
+  <p>The server sends this policy with the page (<code>crates/telltale-api/src/ui.rs</code>):</p>
+<pre><code>default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
+font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none';
+form-action 'self'; frame-ancestors 'none'</code></pre>
+  <ul>
+    <li><b>Everything comes from the page's own origin.</b> No external font, image, script, or request. That is a privacy rule as much as a security one: the UI never tells a third party which names a person looks at.</li>
+    <li><b>No inline styles.</b> Use classes, and Svelte's <code>style:</code> directive for a computed value (<code>style:width={…}</code>), which sets the property from script. The UI has no <code>style="…"</code> attribute at all, and about ninety <code>style:</code> directives.</li>
+    <li><b>Images are <code>'self'</code> or <code>data:</code>.</b> Draw icons as inline SVG.</li>
+    <li><b>A violation is a console error</b>, and the Playwright suite fails on any console error. You find out in the first run.</li>
+  </ul>
+</section>
+
+<section id="checks">
+  <h2>What the build checks</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Command</th><th>What it enforces</th></tr></thead>
+    <tbody>
+      <tr><td><code>npm run check</code></td><td>svelte-check with warnings as failures: type errors, and accessibility warnings (a control with no label, a click handler on a non-interactive element), and unused CSS selectors.</td></tr>
+      <tr><td><code>npm run check:help</code></td><td>Every <code>&lt;HelpButton id="…"&gt;</code> has a topic in <code>docs/help/topics.json</code>, and every topic not marked <code>general</code> is used somewhere (API-011).</td></tr>
+      <tr><td><code>npm run types</code></td><td>Regenerates <code>ui/src/lib/api-types.ts</code> from <code>docs/api/openapi.json</code>. CI fails if the committed file differs. Don't hand-write a type for something the API returns; the few exceptions are commented.</td></tr>
+      <tr><td><code>npm run build</code></td><td>The 400 KiB gzipped budget for the whole of <code>ui/dist</code>, lazy chunks included. See <a href="dev-budgets.html#ui">Size and performance budgets</a>.</td></tr>
+      <tr><td><code>npm run test:e2e</code></td><td>The Playwright suite, which also fails on any page error or console error. See <a href="dev-ui-tests.html">Write UI tests</a>.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="habits">
+  <h2>Habits that keep it working</h2>
+  <ul>
+    <li><b>Big data is a lazy chunk.</b> Load it with a dynamic <code>import()</code> the first time something needs it, and fall back to something that works if the load fails (the icon glyphs fall back to letters).</li>
+    <li><b>Both themes.</b> A colour that works on light can vanish on dark. Component styles that depend on the theme repeat their rule for <code>:root[data-theme='dark']</code> and for <code>prefers-color-scheme: dark</code> (see <code>DomainIcon.svelte</code>); look at both.</li>
+    <li><b>The address is the state of a list page.</b> The query log's form mirrors the URL and the URL drives loading, so a search can be bookmarked and shared. Add new keys without changing what old addresses mean, and drop a key whose filter is absent instead of sending the API a request it refuses.</li>
+    <li><b>Decorative marks are hidden from screen readers</b> (<code>aria-hidden</code>), and the text beside them is the label.</li>
+    <li><b>An <code>$effect</code> reruns when anything it reads changes.</b> One that writes state it also reads can loop. Prefer <code>$derived</code> for a value computed from other state.</li>
+    <li><b>Give a thing a test id</b> (<code>data-testid</code>) when a test must find it and its text may change.</li>
+  </ul>
+</section>
+
+<section id="example">
+  <h2>Worked example: two-factor sign-in</h2>
+  <p>In 0.7.0 a user reported that two-factor sign-in could not be turned on: the code box answered "Please match the requested format" to every code, even the example. The box had <code>pattern="[0-9]{6}"</code>. Compiled with the project's Svelte, the attribute was <code>pattern="[0-9]6"</code>: one digit then a literal 6. The same box on the sign-in form meant nobody who had two-factor could sign in with a code either. It had been that way since the first UI in v0.1.0, and no test touched two-factor.</p>
+  <ul>
+    <li><b>The fix</b> was two characters of syntax in two files.</li>
+    <li><b>The tests</b> were the real work. A Playwright test turns two-factor on through the page with a code it computes from the shown secret, signs out, signs in with the next code, and turns it off; with the old pattern put back it fails at the first step. And the markup guard above stops the whole class.</li>
+    <li><b>The lesson:</b> a feature with no test through the real page can be broken for a month without anyone knowing. When you add a form field, drive it in a test.</li>
+  </ul>
+  <div class="guide-nav">
+    <a class="btn" href="dev-ui-tests.html">← Write UI tests</a>
+    <a class="btn primary" href="developers.html">Back to Working on TelltaleDNS →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

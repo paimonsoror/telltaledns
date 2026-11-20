@@ -11,6 +11,8 @@ export const session = $state({
   /** Sign-in providers (OIDC) and whether the password form is offered here. */
   oidc: [] as S['OidcButton'][],
   localLogin: true,
+  /** REQ: API-004 (ADR-175) — password sign-in is limited to admins on trusted networks. */
+  passwordLoginRestricted: false,
 });
 
 export async function refreshSession() {
@@ -20,6 +22,8 @@ export async function refreshSession() {
     session.user = s.user ?? null;
     session.oidc = s.oidc;
     session.localLogin = s.localLogin;
+    // An older server doesn't send it: it reads as "not restricted", as before.
+    session.passwordLoginRestricted = s.passwordLoginRestricted ?? false;
     setCsrf(s.csrfToken ?? undefined);
     session.error = '';
   } catch (e) {

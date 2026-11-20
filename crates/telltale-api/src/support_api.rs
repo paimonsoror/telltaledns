@@ -86,6 +86,11 @@ pub fn validate(req: &SupportPackageRequest) -> Result<(), Problem> {
             "Use level `standard` (names are pseudonymized) or `none`, or leave the sample out.",
         ));
     }
+    if req.cluster && req.keep_map {
+        return Err(Problem::invalid("`keepMap`: not with `cluster`").hint(
+            "A cluster package's names are replaced on the nodes they belong to and never leave them, so there is no map to keep. Make a package on one node for that.",
+        ));
+    }
     Ok(())
 }
 
@@ -108,6 +113,11 @@ pub fn validate(req: &SupportPackageRequest) -> Result<(), Problem> {
 /// With `keepMap`, the answer carries `X-Support-Package-Id`, and `GET
 /// /system/support-package/{id}/map` returns the pseudonyms and the real values behind them once,
 /// within ten minutes: it is not for attaching. `?dryRun=true` answers with the manifest only.
+///
+/// With **`cluster`**, the package covers every reachable node: each makes and redacts its own part
+/// under one key made for this package (sent over the cluster channel, never stored), so a device
+/// has the same pseudonym in every node's files and no real value crosses the network. The
+/// manifest lists each node and whether it answered; the size cap is shared. Not with `keepMap`.
 /// Free text is redacted by pattern, which is best effort: look the package over before you
 /// attach it. Admin only; audit-logged as `support.package`. Not an MCP tool.
 #[utoipa::path(post, path = "/api/v1/system/support-package", tag = "system",
@@ -247,7 +257,24 @@ mod tests {
             reveal: reveal.iter().map(|s| (*s).to_owned()).collect(),
             query_sample: sample,
             keep_map: false,
+            cluster: false,
         }
+    }
+
+    // REQ: OPS-011 (ADR-172) — a cluster package has no pseudonym map to keep: the names are
+    // replaced on the nodes they belong to.
+    #[test]
+    fn ops_011_a_cluster_package_has_no_map_to_keep() {
+        let mut r = req(None, 0, &[]);
+        r.cluster = true;
+        assert!(validate(&r).is_ok());
+        r.keep_map = true;
+        let e = validate(&r).unwrap_err();
+        assert!(e.detail.contains("keepMap"), "{}", e.detail);
+        assert!(
+            e.hint.unwrap_or_default().contains("never leave"),
+            "it says why"
+        );
     }
 
     // REQ: OPS-011 — a request is checked before anything is collected, with a hint.

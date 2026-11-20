@@ -30,10 +30,39 @@ test('obs_039 the generated data is whole: every mapped brand has a colour, a gl
     expect(g, `glyph for ${s}`).toBeTruthy();
     expect(g[0], `colour of ${s}`).toMatch(/^[0-9A-Fa-f]{6}$/);
     expect(g[1].length, `path of ${s}`).toBeGreaterThan(20);
+    expect([undefined, 16], `grid of ${s}`).toContain(g[2]);
     expect(BRAND_TITLE[s], `title of ${s}`).toBeTruthy();
   }
   // Nothing in the glyph data that no domain points at (it would ship unused).
   for (const s of Object.keys(BRANDS)) expect(slugs.has(s), `${s} is mapped`).toBe(true);
+});
+
+// The second pack: Bootstrap Icons (MIT) for the marks Simple Icons dropped. Its glyphs sit on a 16 grid and
+// were given a brand colour by hand; the first pack's stay on 24 (no third element).
+test('obs_039 the marks Simple Icons dropped come from the second pack', () => {
+  const cases: [string, string][] = [
+    ['teams.events.data.microsoft.com', 'microsoftteams'],
+    ['vortex.data.microsoft.com', 'microsoft'],
+    ['login.microsoftonline.com', 'microsoft'],
+    ['www.bing.com', 'bing'],
+    ['login.xboxlive.com', 'xbox'],
+    ['atlas.skype.com', 'skype'],
+    ['www.amazon.com', 'amazon'],
+    ['b79c66.us-east-1.prod.service.a2z.com', 'amazon'],
+    ['media.licdn.com', 'linkedin'],
+    ['edge-chat.slack.com', 'slack'],
+    ['api.openai.com', 'openai'],
+    ['ctest.nintendo.net', 'nintendo'],
+  ];
+  for (const [name, slug] of cases) {
+    expect(brandFor(name), name).toBe(slug);
+    expect(BRANDS[slug][2], `${slug} sits on a 16 grid`).toBe(16);
+    expect(BRAND_TITLE[slug], `title of ${slug}`).toBeTruthy();
+  }
+  expect(BRANDS.netflix[2], 'a Simple Icons glyph has no grid size').toBeUndefined();
+  expect(brandFor('notmicrosoft.com')).toBeNull(); // whole labels only
+  // A mark neither pack carries is still a monogram, never a guess.
+  for (const n of ['www.hulu.com', 'www.disneyplus.com', 'www.bbc.co.uk']) expect(brandFor(n), n).toBeNull();
 });
 
 test('obs_039 who owns a name, and the names of the network itself', () => {

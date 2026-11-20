@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Extend the domain icons — TelltaleDNS</title>
+<meta name="description" content="How the domain icons work and how to extend them: the two icon packs and the order they are tried in, how to add a brand or a whole pack, the checks that keep it small and legal, and what to look at when a name still shows a letter.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="dev-icons">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Developers</p>
+  <h1>Extend the domain icons</h1>
+  <p class="lede">The web UI draws a small mark left of a domain name: a brand's logo if we know the brand, a letter otherwise. The brands come from two icon packs, through one generator, from a list that a person curates. This page is how to add a brand or a pack without breaking the rules that make it safe, small, and legal.</p>
+  <ul class="onpage">
+    <li><a href="#how">How it works</a></li>
+    <li><a href="#rules">The rules</a></li>
+    <li><a href="#brand">Add a brand</a></li>
+    <li><a href="#pack">Add a pack</a></li>
+    <li><a href="#checks">The checks</a></li>
+    <li><a href="#files">The files</a></li>
+    <li><a href="#trouble">Why does this name still show a letter?</a></li>
+  </ul>
+  <p class="muted">The user's view is in <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#domain-icons">Domain icons</a>, the decision and its numbers in ADR-167 on the <a href="decisions.html">Decisions</a> page.</p>
+</section>
+
+<section id="how">
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li class="step"><b>A curated list</b> in <code>ui/scripts/brand-icons.mjs</code> says which domains belong to which brand, and which pack's glyph to use for it.</li>
+    <li class="step"><b>The generator</b> reads the two packs, minifies the glyph paths, and writes two committed files: <code>brands.ts</code> (a colour, a path, and sometimes a grid size per brand: a lazy chunk) and <code>map.data.ts</code> (the domains and the titles).</li>
+    <li class="step"><b>The page</b> (<code>DomainIcon.svelte</code>) looks a name up by its longest matching suffix on whole labels. A brand it knows gets its colour as a tile with the glyph on it; any other name gets a monogram in a stable colour; a name of the network itself gets a house; a name the privacy level hid gets nothing.</li>
+  </ol>
+  <p>Nothing is fetched at any point. The tile is drawn from data already in the page.</p>
+</section>
+
+<section id="rules">
+  <h2>The rules</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Rule</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><b>Nothing is fetched.</b> No favicon service, no request to the sites, no image URL. The icon is inline SVG.</td><td>Every icon request would tell a third party which names are in a person's query log, and the content security policy allows images from <code>'self'</code> and <code>data:</code> only. The owner declined any such dependency. At privacy level 1 and above the names are hashed, so there is nothing to fetch for anyway.</td></tr>
+      <tr><td><b>Two packs, in this order:</b> Simple Icons first, Bootstrap Icons only when Simple Icons has none of the brand's candidates, then a monogram.</td><td>Simple Icons has the real colour marks. Bootstrap Icons is monochrome, so its glyphs get a brand colour from us. Neither pack has every brand, and a missing brand is a monogram, never a look-alike glyph or a guess.</td></tr>
+      <tr><td><b>The list is curated.</b> A brand is on the map because a person listed it with its domains. The generator never adds a pack's whole set.</td><td>A pack indexes brands, not domains, and no open dataset maps domains to icons. The whole of Simple Icons is 4.8 MiB, which the image cannot afford.</td></tr>
+      <tr><td><b>A domain belongs to one brand, matched on whole labels, longest suffix first.</b> A full host may be listed (<code>teams.microsoft.com</code> beats <code>microsoft.com</code>).</td><td><code>notnetflix.com</code> is not Netflix. A CDN name belongs to the company that owns the content on it, not to the CDN.</td></tr>
+      <tr><td><b>Only CC0, MIT, or Apache-2.0 sources</b>, with their notice in <code>docs/third-party-notices.md</code>.</td><td>The marks are their owners' trademarks and are shown only to identify the name; the notice says so, and a permissive licence on the artwork does not change that.</td></tr>
+      <tr><td><b>The glyph data stays small.</b> It is a lazy chunk (fetched when the first brand tile is drawn), minified to two decimals, and counted in the UI's 400 KiB budget and the image's 15 MiB.</td><td>See <a href="dev-budgets.html">Size and performance budgets</a>. The minifying paid for the second pack: eleven more glyphs and about 15 KiB gzipped less.</td></tr>
+      <tr><td><b>The output is committed, and a build needs neither pack.</b> The versions are pinned in the generator, which refuses a different one.</td><td>A build must not touch the network, and an icon must not change because a package did.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="brand">
+  <h2>Add a brand</h2>
+  <ol class="steps">
+    <li class="step"><b>Find the domains it owns.</b> Its own site, its CDN and telemetry names, the hosts you see in your Top domains list. Use a registrable domain (<code>licdn.com</code>) or a full host when one brand under a shared domain needs its own mark.</li>
+    <li class="step"><b>Check the packs.</b> Is there a Simple Icons slug (look in <code>node_modules/simple-icons</code> or on its site)? If not, is there a Bootstrap Icons name (<code>icons/&lt;name&gt;.svg</code>)? If neither, stop: it stays a monogram.</li>
+    <li class="step"><b>Add a line to <code>LIST</code></b> in <code>ui/scripts/brand-icons.mjs</code>: the candidate slugs in order (Simple Icons slugs first, then <code>bi:</code> and a Bootstrap name), then the domains.
+<pre><code>[['microsoftteams', 'bi:microsoft-teams'], ['teams.microsoft.com', 'teams.events.data.microsoft.com']],</code></pre>
+    Several lines may use the same glyph (Microsoft's Office, Azure, and Edge names all end in <code>bi:microsoft</code>); the generator stores it once.</li>
+    <li class="step"><b>For a Bootstrap glyph, add it to <code>BOOTSTRAP</code></b>: the slug it is stored under, a brand colour as six hex digits, and the title. Pick the colour people know the brand by; the tile chooses a white or a dark glyph by the colour's luminance. The generator checks that the glyph has no <code>evenodd</code> rule (the tile draws every glyph with the default one) and that its paths start with a move.</li>
+    <li class="step"><b>Run the generator</b> with the pinned packages:
+<pre><code>cd ui
+npm i --no-save simple-icons@16.38.0 bootstrap-icons@1.13.2 svgo@4.1.0
+node scripts/brand-icons.mjs</code></pre>
+    <code>--no-save</code> keeps them out of <code>package.json</code>: they are tools for this script, not dependencies of the UI. Point <code>SIMPLE_ICONS_DIR</code> and <code>BOOTSTRAP_ICONS_DIR</code> at installed copies if you keep them elsewhere (svgo is found beside Simple Icons).</li>
+    <li class="step"><b>Read what it reports</b>: how many brands came from each pack, the glyph data's size raw and gzipped, the brands that are in neither pack, and which of our service presets (<code>presets/services</code>) still have no icon. The gzipped size must not go up for a small addition; if it does, say why.</li>
+    <li class="step"><b>Review the diff</b> of <code>brands.ts</code> and <code>map.data.ts</code>. A new domain should be there, and nothing else should have moved.</li>
+    <li class="step"><b>Add the names to the test</b> in <code>ui/tests/e2e/4-icons.spec.ts</code> (it runs without a browser): a name you added and the slug it must map to, and a look-alike that must not.</li>
+    <li class="step"><b>Look at it</b> in the light and the dark theme at 16 and 20 px. A glyph that is a thin outline can vanish on a tile; a near-black brand flips to a light tile in the dark theme by itself.</li>
+    <li class="step"><b>Update the docs</b> if the list of missing brands changed (<code>docs/running.md</code>, ADR-167's note), and the roadmap entry.</li>
+  </ol>
+</section>
+
+<section id="pack">
+  <h2>Add a pack</h2>
+  <p>Adding a pack is a decision, not an edit: write it as an amendment to ADR-167 with the numbers. The second pack's amendment is the template. A pack qualifies when it passes all of these:</p>
+  <ul>
+    <li><b>Licence:</b> CC0, MIT, or Apache-2.0, with the notice text you must reproduce in <code>docs/third-party-notices.md</code>. Not CC BY (it needs per-icon attribution in the page), not "free for personal use".</li>
+    <li><b>Shape:</b> SVG paths you can put in one <code>&lt;path&gt;</code> with the default fill rule, on a square grid you record (the data carries the grid size when it is not 24).</li>
+    <li><b>Cost:</b> the glyphs you take, minified, add less than you remove elsewhere, or you show that the lazy chunk stays within the budget. Measure with the generator's report and the UI build.</li>
+    <li><b>Coverage:</b> it has brands the first pack lacks. Say which.</li>
+  </ul>
+  <p>Then, in the generator: a pinned version and a check for it, a directory variable, a table for anything the pack does not carry (colours, titles), a new candidate prefix like <code>bi:</code>, and a test that its glyphs reach the data. A pack you add must be <i>after</i> the earlier ones in the candidate order, so it never replaces a mark that was already right.</p>
+  <div class="callout warn"><p><b>Never:</b> an icon fetched at run time, a favicon service, a raster image, an icon font, or art taken from a company's own site. Each is a privacy, a size, or a licensing problem, and the content security policy blocks the first two.</p></div>
+</section>
+
+<section id="checks">
+  <h2>The checks</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What fails</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td>The generator exits with "… is installed but … is pinned here"</td><td>The package version differs from the pin. Install the pinned one, or change the pin and review the whole diff.</td></tr>
+      <tr><td>The generator throws "BOOTSTRAP has … which no LIST entry uses", or "has no entry for …"</td><td>The table and the list disagree: a colour without a use, or a <code>bi:</code> name with no colour.</td></tr>
+      <tr><td><code>obs_039 the generated data is whole</code></td><td>A mapped brand has no colour, path, or title, or a glyph on the map is unused (it would ship for nothing), or a grid size is not 16.</td></tr>
+      <tr><td><code>obs_039 the marks Simple Icons dropped come from the second pack</code></td><td>A name you expected to map to a Bootstrap glyph does not (the list or the suffix rule), or a first-pack glyph picked up a grid size.</td></tr>
+      <tr><td><code>npm run build</code> over 400 KiB, or the image size gate</td><td>The data grew more than you planned. See the budgets page.</td></tr>
+      <tr><td><code>svelte-check</code></td><td>The glyph tuple's type changed and a user of it did not.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="files">
+  <h2>The files</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>File</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui/scripts/brand-icons.mjs</code></td><td>The generator: the list, the Bootstrap colours, the pins. Edit this.</td></tr>
+      <tr><td><code>ui/src/lib/icons/brands.ts</code>, <code>map.data.ts</code></td><td>Generated and committed. Never edit by hand.</td></tr>
+      <tr><td><code>ui/src/lib/icons/DomainIcon.svelte</code>, <code>map.ts</code>, <code>brands.svelte.ts</code></td><td>The tile, the lookup (longest suffix, monogram colour and letter), and the lazy loader.</td></tr>
+      <tr><td><code>ui/src/lib/icons/prefs.ts</code>, <code>prefs.svelte.ts</code></td><td>The per-browser choice of style and size (Settings → Account → Domain icons).</td></tr>
+      <tr><td><code>ui/tests/e2e/4-icons.spec.ts</code></td><td>The tests that need no browser: the map, the data, the preferences.</td></tr>
+      <tr><td><code>docs/third-party-notices.md</code></td><td>The licence notices. Update it with every pack.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="trouble">
+  <h2>Why does this name still show a letter?</h2>
+  <p>Work down the list; each step rules something out.</p>
+  <ol class="steps">
+    <li class="step"><b>Is the style Brand and monogram?</b> <i>Monogram only</i> and <i>Off</i> never draw a brand. It is per person and per browser (Settings → Account → Domain icons).</li>
+    <li class="step"><b>Is the name hashed?</b> At privacy level 1 and above a name shows as <code>h</code> and 16 hex digits and gets no icon at all.</li>
+    <li class="step"><b>Is the domain on the map?</b> Search <code>map.data.ts</code> for it. Remember the longest suffix on whole labels: <code>b79c66.us-east-1.prod.service.a2z.com</code> matches <code>a2z.com</code>, but only if <code>a2z.com</code> is listed.</li>
+    <li class="step"><b>Does the brand have a glyph?</b> The generator prints the brands that are in neither pack. By design those are letters.</li>
+    <li class="step"><b>Did the chunk load?</b> A failed request for the glyph chunk falls back to letters, with no error. Look at the network tab.</li>
+    <li class="step"><b>Is the page old?</b> The UI is embedded in the binary: the node must run a build that contains your change.</li>
+  </ol>
+  <h3>Worked example: the missing Microsoft logo</h3>
+  <p>A list showed an "M" for <code>teams.events.data.microsoft.com</code>. Simple Icons dropped the Microsoft marks on purpose, so the generator found nothing for the Microsoft lines of the list and those names fell back to a letter. Bootstrap Icons has <code>microsoft</code> and <code>microsoft-teams</code>, so the lines gained a <code>bi:</code> candidate and the two glyphs gained colours. Now <code>teams.events.data.microsoft.com</code> is Teams (its host is listed, so it beats <code>microsoft.com</code>) and <code>vortex.data.microsoft.com</code> is Microsoft. Disney+, Hulu, Minecraft, Adobe, the BBC, Walmart, and AWS are in neither pack and stay letters.</p>
+  <div class="guide-nav">
+    <a class="btn" href="dev-cluster.html">← Extend the cluster protocol</a>
+    <a class="btn primary" href="dev-ui-tests.html">Next: Write UI tests →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

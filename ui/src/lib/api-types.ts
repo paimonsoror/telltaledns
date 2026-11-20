@@ -42,6 +42,12 @@ export interface paths {
          *     `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
          *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
          *     Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
+         *     A destination that names either file, before or after the change, is added or changed only
+         *     by an administrator (an admin's sign-in or API token; agent tokens can't); without one, or to
+         *     delete one, the operator role is enough. The file is an absolute path under `/run/secrets/`,
+         *     `/etc/telltale-secrets/` or the data directory's `secrets/` folder (not
+         *     `/run/secrets/kubernetes.io/`), written without `.` or `..`; links are followed. It needn't
+         *     exist yet.
          *     A destination the config files define is overridden until this one is deleted.
          */
         put: operations["put_alert_destination"];
@@ -69,7 +75,8 @@ export interface paths {
          * Send a test alert to one destination (OBS-010, T9.6).
          * @description Sends a message marked as a test, from this node, and answers with what happened: `ok`, or
          *     the destination's error (a wrong password, an unreachable server). Nothing is stored, but
-         *     the test is audited. Needs the operator role.
+         *     the test is audited. Needs the operator role. When the private CA file (`tls_ca`) can't be
+         *     used, only an administrator is told why; anyone else gets that it couldn't be (ADR-180).
          */
         post: operations["test_alert_destination"];
         delete?: never;
@@ -911,7 +918,10 @@ export interface paths {
          *     builds it and asks it for the root's NS records, as health checks do, and answers with what
          *     happened: `ok` with the rcode, records, and time, or the error (a bad URL, a TLS name that
          *     doesn't match, a timeout). Nothing is saved; the check is audited. Needs the operator role
-         *     (agents: `config:write:upstreams`).
+         *     (agents: `config:write:upstreams`). A plugin draft (`exec://`, `unix://`, `args`) is refused
+         *     before anything is built, for everyone: plugin upstreams are defined in the config file
+         *     (ADR-180). When a TLS file the draft names (`tls_ca`, `tls_client_cert`, `tls_client_key`)
+         *     can't be used, only an administrator is told why; anyone else gets that it couldn't be.
          */
         post: operations["check_upstream"];
         delete?: never;
@@ -1404,7 +1414,9 @@ export interface paths {
          *     from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
          *     config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
          *     it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-         *     files' version back. Secrets aren't part of these sections.
+         *     files' version back. Secrets aren't part of these sections. A router's key-file paths and
+         *     `username` are shown to an administrator only (their own sign-in or an admin API token);
+         *     everyone gets each router's `credentials` status.
          */
         get: operations["config_entries"];
         put?: never;
@@ -1622,7 +1634,8 @@ export interface paths {
          * @description Every name under `domain` is asked of `servers` (in order, failing over) instead of the
          *     public upstreams: a work network's DNS over a VPN, a router that knows your devices, another
          *     lab. A bare address means plain DNS; `tls://` and `https://` URLs work too. Local names still
-         *     answer first. Domains routed in the config files are read-only here (409).
+         *     answer first. Domains routed in the config files are read-only here (409). A server can't be a
+         *     plugin (`exec://`, `unix://`): those are defined in the config file (422, ADR-180).
          */
         put: operations["put_forward"];
         post?: never;
@@ -1804,7 +1817,8 @@ export interface paths {
          * Filter lists and their download state.
          * @description Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
          *     `pending`) and last error, size, and how many names it contributes to the active snapshot.
-         *     `hits` adds up every node's in a cluster.
+         *     `hits` adds up every node's in a cluster. For a list read from a local file, the error is
+         *     shown in full to an administrator; anyone else sees a generic reason (ADR-180).
          */
         get: operations["lists"];
         put?: never;
@@ -1829,7 +1843,10 @@ export interface paths {
          *     e.g. `{"url": "https://example.com/hosts.txt"}`. A name the config files use is overridden: this definition replaces theirs
          *     until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
          *     configuration is checked before anything is stored. On a node whose configuration comes from
-         *     Git, the response's `toml` says what to add to the repository to keep the change.
+         *     Git, the response's `toml` says what to add to the repository to keep the change. A list read
+         *     from a local file (`path`) is added, or pointed at another file, only by an administrator (an
+         *     admin's sign-in or API token; no agent token); the operator role covers URL lists, inline
+         *     rules, a file list's other settings, and deleting any list (ADR-180).
          */
         put: operations["put_list"];
         post?: never;
@@ -2009,7 +2026,11 @@ export interface paths {
          * @description Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
          *     glob|regex`), client, status, query type, response code, upstream, minimum latency, and
          *     time range. Pass `nextCursor` back as `cursor` for older rows. Example:
-         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
+         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a
+         *     filter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`
+         *     (`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose
+         *     name does not contain `doubleclick`. A negated search reads every block the time range and
+         *     the other filters leave, so give a time range or another filter on a long log.
          */
         get: operations["queries"];
         put?: never;
@@ -2032,7 +2053,8 @@ export interface paths {
          * @description Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
          *     fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
          *     skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-         *     connection open. Filters are applied on the server. In a browser:
+         *     connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
+         *     applied on the server. In a browser:
          *     `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
          *     in). Honors the query-log privacy level; at most 16 streams per node.
          */
@@ -2122,6 +2144,49 @@ export interface paths {
          *     usual. Names from the config files can't be removed here (409).
          */
         delete: operations["delete_records"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/routers/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change a router integration (T8.2, API-002).
+         * @description The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi
+         *     console: `{"type": "unifi", "url": "https://192.168.1.1", "api_key": "…",
+         *     "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
+         *     UniFi password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
+         *     each to a new file only it can read under `<data_dir>/secrets/` on this node and stores that
+         *     file's path. The value itself is never stored, logged, or returned; with an `Idempotency-Key`,
+         *     the record kept for a retry holds only a keyed hash of it, for a day (ADR-181). A pasted key goes only
+         *     to an `https://` address (or a loopback one), and with `tls_insecure_skip_verify` only to an
+         *     address written as a number, not a host name. The body names no key file (`api_key_file`, …)
+         *     but the router's own, sent back unchanged at the same address: paste the key instead (a file
+         *     elsewhere, such as a Docker or Kubernetes secret, is named in the config file); with a pasted
+         *     value, the file named for it is replaced. Leave a credential out to keep the current one,
+         *     unless the type, address, site, or TLS settings change: then it must be entered again. Admins
+         *     only: an administrator's own sign-in or an admin API token; agent tokens can't. The routers
+         *     are read again within 5 seconds after the reads in progress end; a router the config files
+         *     define is overridden until this one is deleted. A key left out with none of its own is
+         *     refused (422) by the name to paste (`api_key`, `api_secret`, `password`).
+         */
+        put: operations["put_router"];
+        post?: never;
+        /**
+         * Remove a router integration (T8.2, API-002).
+         * @description Its devices lose the names it gave them after the next round of reads, which starts within 5
+         *     seconds after the reads in progress end. A router the config files define
+         *     is hidden until the files' entry is brought back (DELETE again, or Revert to the file).
+         *     Admins only, as for `PUT`.
+         */
+        delete: operations["delete_router"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2251,7 +2316,10 @@ export interface paths {
          *     allowed, a changed route, a changed answer, by name, device, and group. In a cluster every
          *     node replays its own log (and the logs shipped to it) and the counts are summed; nodes that
          *     didn't answer are in `missingNodes`. Nothing changes and nothing is audited. Needs the
-         *     viewer role (agents: `config:read` and `querylog:read`).
+         *     viewer role (agents: `config:read` and `querylog:read`). A caller who isn't an administrator
+         *     can name only the local files (a list's `path`, a zone's `file`, `[local] hosts_files`, an
+         *     upstream's TLS files) and plugin upstreams that the configuration in effect names: anything
+         *     else is refused before it's read (422, ADR-180).
          */
         post: operations["simulate"];
         delete?: never;
@@ -2506,7 +2574,9 @@ export interface paths {
          * Query counts over time.
          * @description Buckets by status, query type, and response code, plus upstream exchanges. `step=second`
          *     covers the last 15 minutes, `step=minute` 7 days (48 hours live), `step=hour` 400 days,
-         *     `step=day` everything. Buckets without queries are omitted. Example:
+         *     `step=day` everything. On a cluster the longest ranges can come back partial: the nodes
+         *     whose answers were left out are in `missingNodes`. Buckets without queries are omitted.
+         *     Example:
          *     `GET /api/v1/stats/timeseries?from=-30d&step=hour`.
          */
         get: operations["stats_timeseries"];
@@ -2647,6 +2717,11 @@ export interface paths {
          *     With `keepMap`, the answer carries `X-Support-Package-Id`, and `GET
          *     /system/support-package/{id}/map` returns the pseudonyms and the real values behind them once,
          *     within ten minutes: it is not for attaching. `?dryRun=true` answers with the manifest only.
+         *
+         *     With **`cluster`**, the package covers every reachable node: each makes and redacts its own part
+         *     under one key made for this package (sent over the cluster channel, never stored), so a device
+         *     has the same pseudonym in every node's files and no real value crosses the network. The
+         *     manifest lists each node and whether it answered; the size cap is shared. Not with `keepMap`.
          *     Free text is redacted by pattern, which is best effort: look the package over before you
          *     attach it. Admin only; audit-logged as `support.package`. Not an MCP tool.
          */
@@ -2816,7 +2891,9 @@ export interface paths {
          *     e.g. `{"url": "tls://9.9.9.9", "tls_server_name": "dns.quad9.net"}`. A name the config files use is overridden: this definition replaces theirs
          *     until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
          *     configuration is checked before anything is stored. On a node whose configuration comes from
-         *     Git, the response's `toml` says what to add to the repository to keep the change.
+         *     Git, the response's `toml` says what to add to the repository to keep the change. Plugin
+         *     upstreams (`exec://`, `unix://`, and `args`) are defined in the config file: such a body is
+         *     refused for everyone, an administrator included (422, ADR-180).
          */
         put: operations["put_upstream"];
         post?: never;
@@ -2841,7 +2918,10 @@ export interface paths {
         };
         /**
          * Users (admin).
-         * @description Every user with role, status, and two-factor state.
+         * @description Every user with role, status, and two-factor state, and `passwordLogin`: whether password
+         *     sign-in is limited to admins on trusted networks (`[auth.oidc] disable_local_login`) and which
+         *     networks (`allowed_admin_networks`) on the node that answers. The public `GET /auth/status`
+         *     carries only the yes or no.
          */
         get: operations["list_users"];
         put?: never;
@@ -3371,6 +3451,13 @@ export interface components {
             localLogin: boolean;
             /** @description OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`. */
             oidc: components["schemas"]["OidcButton"][];
+            /**
+             * @description Password sign-in is limited to admins on trusted networks (`[auth.oidc]
+             *     disable_local_login` is on). The same for every client: `localLogin` says whether the form
+             *     is offered to this one. The networks are not listed here; admins read them in
+             *     `GET /api/v1/users` (`passwordLogin`).
+             */
+            passwordLoginRestricted: boolean;
             /** @description No user exists yet: create the first admin with the setup token. */
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
@@ -4220,7 +4307,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "change_in_progress";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4259,8 +4346,21 @@ export interface components {
          */
         ConfigEntry: {
             /**
+             * @description REQ: API-002, T8.2 (ADR-181) — a router's credentials, by name (`api_key`, `api_secret`,
+             *     `password`), as the node that answered sees them (on a replica, the primary): `saved` (its
+             *     file is there, and that node uses it), `missing` (no file there, and it is one the node
+             *     saves when a key is pasted: enter the key again, as after a restore on another machine or
+             *     a failover), `file_missing` (no file there, and it is one a platform mounts or a config
+             *     file names: put the file there), or `not_used` (the file is there, but it isn't one that
+             *     node sends for this router). Read without the secret. Absent for other kinds.
+             */
+            credentials?: {
+                [key: string]: string;
+            } | null;
+            /**
              * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-             *     hidden).
+             *     hidden). REQ: API-002, T8.2 (ADR-181) — a router's key-file fields and `username` are
+             *     shown to an administrator only.
              */
             definition?: Record<string, never> | null;
             /** @description `upstream`, `upstream_group`, `list`, or `group`. */
@@ -5356,8 +5456,21 @@ export interface components {
         Items_ConfigEntry: {
             items: {
                 /**
+                 * @description REQ: API-002, T8.2 (ADR-181) — a router's credentials, by name (`api_key`, `api_secret`,
+                 *     `password`), as the node that answered sees them (on a replica, the primary): `saved` (its
+                 *     file is there, and that node uses it), `missing` (no file there, and it is one the node
+                 *     saves when a key is pasted: enter the key again, as after a restore on another machine or
+                 *     a failover), `file_missing` (no file there, and it is one a platform mounts or a config
+                 *     file names: put the file there), or `not_used` (the file is there, but it isn't one that
+                 *     node sends for this router). Read without the secret. Absent for other kinds.
+                 */
+                credentials?: {
+                    [key: string]: string;
+                } | null;
+                /**
                  * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-                 *     hidden).
+                 *     hidden). REQ: API-002, T8.2 (ADR-181) — a router's key-file fields and `username` are
+                 *     shown to an administrator only.
                  */
                 definition?: Record<string, never> | null;
                 /** @description `upstream`, `upstream_group`, `list`, or `group`. */
@@ -6251,22 +6364,6 @@ export interface components {
                 scopes?: string[];
             }[];
         };
-        /** @description List wrapper. */
-        Listed_UserInfo: {
-            items: {
-                allowBasicApi: boolean;
-                /** Format: int64 */
-                createdUnixSeconds: number;
-                disabled: boolean;
-                /** Format: int64 */
-                id: number;
-                /** @description The sign-in provider for users created by OIDC sign-in (they have no password here). */
-                oidcProvider?: string | null;
-                role: components["schemas"]["Role"];
-                totpEnabled: boolean;
-                username: string;
-            }[];
-        };
         /** @description A name TelltaleDNS answers itself. */
         LocalName: {
             /** @example nas.home.arpa */
@@ -6661,6 +6758,43 @@ export interface components {
         };
         PasswordConfirm: {
             password: string;
+        };
+        /**
+         * @description How password sign-in is restricted on this node: what an admin is shown under Settings, Users
+         *     (`passwordLogin` in `GET /users`). It carries the networks, so it is never in a public answer.
+         */
+        PasswordLogin: {
+            /**
+             * @description While `restricted`: some network is a range of more than one address that is not this
+             *     machine (not a single host such as `192.168.1.10/32`, not loopback), so everyone in it is
+             *     shown the password form, not only the machines you name. False for a list of single hosts
+             *     and loopback, and when not restricted.
+             */
+            coversWholeNetworks: boolean;
+            /**
+             * @description While `restricted`: some network is this machine (`127.0.0.0/8` or a part of it, or
+             *     `::1`). With a proxy on this machine in front of the UI, everyone it serves arrives from
+             *     there unless `loopbackIsTrustedProxy` is true. False when not restricted.
+             */
+            includesLoopback: boolean;
+            /**
+             * @description While `restricted`: `127.0.0.1` is inside a network of `[api] trusted_proxies`, so a proxy
+             *     on this machine is believed about its clients' addresses (`X-Forwarded-For`). False
+             *     otherwise: a proxy there hides its clients behind its own address. (This node can't tell
+             *     whether such a proxy exists; one that connects over `::1` is not looked for.)
+             */
+            loopbackIsTrustedProxy: boolean;
+            /**
+             * @description While `restricted`: the networks (`address/prefix`, in the order of
+             *     `allowed_admin_networks`) admins may use a password from. Empty means nobody can: if the
+             *     sign-in provider is down, nobody can sign in with a password. Empty when not restricted.
+             */
+            networks: string[];
+            /**
+             * @description `[auth.oidc] disable_local_login` is on: password sign-in and HTTP Basic work only for
+             *     admins from `networks`.
+             */
+            restricted: boolean;
         };
         /** @description One active pause. */
         PauseInfo: {
@@ -7491,6 +7625,14 @@ export interface components {
         };
         /** @description REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold. */
         SupportPackageRequest: {
+            /**
+             * @description REQ: OPS-011 (ADR-172) — one package for the whole cluster: every reachable node makes and
+             *     redacts its own part under one key made for this package, so a device has the same
+             *     pseudonym on every node and no real name or address leaves the node it is on. Not with
+             *     `keepMap` (the names never leave their nodes, so there is no map). A node that doesn't
+             *     answer, or is older than this feature, is listed in the manifest.
+             */
+            cluster?: boolean;
             /** @description Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`). */
             keepMap?: boolean;
             /**
@@ -7894,6 +8036,16 @@ export interface components {
             totpEnabled: boolean;
             username: string;
         };
+        /** @description The users, and how this node limits password sign-in (admins only). */
+        UserList: {
+            items: components["schemas"]["UserInfo"][];
+            /**
+             * @description Whether `disable_local_login` is on and which networks admins may use a password from, on
+             *     the node that answers. The networks are why this is here and not in the public
+             *     `GET /auth/status`.
+             */
+            passwordLogin: components["schemas"]["PasswordLogin"];
+        };
         /** @description What a `vqlog` query costs (REQ: AGT-012). */
         VqlogCost: {
             blocks: number;
@@ -8122,6 +8274,24 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The destination names a credential file (`token_file`, `password_file`), before or after the change, and the caller isn't an administrator. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -8133,6 +8303,15 @@ export interface operations {
             };
             /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8187,8 +8366,26 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description A rule still uses it. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8270,6 +8467,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -8281,6 +8487,15 @@ export interface operations {
             };
             /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8328,6 +8543,24 @@ export interface operations {
             };
             /** @description No entry by that name. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8741,6 +8974,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -8752,6 +8994,15 @@ export interface operations {
             };
             /** @description A field is wrong (no device or group, an unknown kind, a name that matches nothing, a MAC address), or the configuration wouldn't be valid. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8799,6 +9050,24 @@ export interface operations {
             };
             /** @description No entry by that name. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9582,7 +9851,7 @@ export interface operations {
                     "application/json": components["schemas"]["CheckResult"];
                 };
             };
-            /** @description The body isn't an upstream (an unknown or mistyped field). */
+            /** @description The body isn't an upstream (an unknown or mistyped field), or it's a plugin (`exec://`, `unix://`). */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -9834,7 +10103,7 @@ export interface operations {
                     "application/json": components["schemas"]["ClientChange"];
                 };
             };
-            /** @description Defined in the config files, or an Idempotency-Key reused for another request. */
+            /** @description Defined in the config files, or an Idempotency-Key reused for another request; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -9854,6 +10123,15 @@ export interface operations {
             };
             /** @description The resulting configuration is invalid (e.g. an unknown group). */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9908,7 +10186,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Defined in the config files. */
+            /** @description Defined in the config files; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -9919,6 +10197,15 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10245,6 +10532,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -10256,6 +10552,15 @@ export interface operations {
             };
             /** @description A bound is out of range or a canary isn't a node ID, `site:<name>`, or `ephemeral`. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10300,6 +10605,24 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10757,6 +11080,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -10768,6 +11100,15 @@ export interface operations {
             };
             /** @description A name isn't a domain name, a client isn't an address or network, or the configuration wouldn't be valid. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10812,6 +11153,24 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's exclusions are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10922,7 +11281,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
-            /** @description Conflicts with the current state: problem+json says what to change. */
+            /** @description Conflicts with the current state: problem+json says what to change; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10940,8 +11299,17 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A server isn't an address or a supported URL. */
+            /** @description A server isn't an address or a supported URL, or it's a plugin (`exec://`, `unix://`). */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10996,7 +11364,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Conflicts with the current state: problem+json says what to change. */
+            /** @description Conflicts with the current state: problem+json says what to change; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -11007,6 +11375,15 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11076,6 +11453,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -11087,6 +11473,15 @@ export interface operations {
             };
             /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11141,6 +11536,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -11152,6 +11556,15 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11246,6 +11659,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -11257,6 +11679,15 @@ export interface operations {
             };
             /** @description No such group, or an unknown kind. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11304,6 +11735,24 @@ export interface operations {
             };
             /** @description No rule by that key. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11445,6 +11894,24 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The list names a local file (`path`) it didn't read before, and the caller isn't an administrator. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -11456,6 +11923,15 @@ export interface operations {
             };
             /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11510,6 +11986,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -11521,6 +12006,15 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11882,14 +12376,34 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`. Default: `substring`. */
                 match?: components["schemas"]["NameMatch"];
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:
+                 *     does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
+                 *     `name`. Default: false.
+                 */
+                nameNot?: boolean;
                 /** @description Client IP address. */
                 client?: string;
+                /** @description Keep the rows from every client except `client`. Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /**
+                 * @description Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every
+                 *     query that was not blocked). Needs `status`. Default: false.
+                 */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Response codes, comma-separated (`NXDOMAIN,SERVFAIL`). */
                 rcode?: string;
+                /**
+                 * @description Keep the rows whose response code is none of `rcode` (queries that got no response code
+                 *     are kept). Needs `rcode`. Default: false.
+                 */
+                rcodeNot?: boolean;
                 /**
                  * @description Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
                  *     name the upstream that answered for all of them.
@@ -11960,14 +12474,25 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`: `substring` (default), `exact`, `suffix`, or `glob` (`*`, `?`). */
                 match?: components["schemas"]["NameMatch"];
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
+                 *     Needs `name`. Default: false.
+                 */
+                nameNot?: boolean;
                 /** @description Client IP address. */
                 client?: string;
+                /** @description Only queries from every client except `client`. Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description The client's group (its highest-priority group). */
                 group?: string;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /** @description Only queries whose status is none of `status`. Needs `status`. Default: false. */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Only queries whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Upstream ID (from `GET /upstreams`). */
                 upstream?: number;
                 /** @description Only queries that took at least this long. */
@@ -12055,6 +12580,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -12066,6 +12600,15 @@ export interface operations {
             };
             /** @description A field is wrong (a prefix, a CIDR, zero queries while enabled), or the configuration wouldn't be valid. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12110,6 +12653,24 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's rate limit is in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12179,7 +12740,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
-            /** @description Defined in the config files, or an Idempotency-Key reused. */
+            /** @description Defined in the config files, or an Idempotency-Key reused; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12199,6 +12760,15 @@ export interface operations {
             };
             /** @description A value doesn't fit its type (e.g. A with a name), or the result is invalid. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12253,7 +12823,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Conflicts with the current state: problem+json says what to change. */
+            /** @description Conflicts with the current state: problem+json says what to change; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12264,6 +12834,176 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_router: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not an administrator (agent tokens never are). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong (the URL, missing credentials, a key file named, a pasted key for an http:// address or, with an unchecked certificate, for a host name, the key not entered again for a new address, a node whose data_dir isn't a plain absolute path), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_router: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not an administrator (agent tokens never are). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12333,7 +13073,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
-            /** @description Defined in the config files, or an Idempotency-Key reused. */
+            /** @description Defined in the config files, or an Idempotency-Key reused; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12353,6 +13093,15 @@ export interface operations {
             };
             /** @description An unknown device or group, a bad domain, or an expiry in the past. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12407,7 +13156,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Defined in the config files. */
+            /** @description Defined in the config files; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12418,6 +13167,15 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12467,6 +13225,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -12478,6 +13245,15 @@ export interface operations {
             };
             /** @description A field is wrong (a window's time, an unknown list or service), or the configuration wouldn't be valid. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12532,8 +13308,26 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description A group still uses it. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12594,7 +13388,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The configuration isn't valid, or the window isn't a duration of at most 7 days (`simulation_window`). */
+            /** @description The configuration isn't valid, the window isn't a duration of at most 7 days (`simulation_window`), or a caller below admin named a new local file, program or socket. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12642,6 +13436,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -12653,6 +13456,15 @@ export interface operations {
             };
             /** @description A bound is out of range, or the configuration wouldn't be valid. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12697,6 +13509,24 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13477,6 +14307,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -13488,6 +14327,15 @@ export interface operations {
             };
             /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13542,6 +14390,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -13553,6 +14410,15 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13622,6 +14488,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -13631,8 +14506,17 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            /** @description A field is wrong, the configuration wouldn't be valid, or the upstream is a plugin (`exec://`, `unix://`): problem+json says which. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13687,6 +14571,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -13698,6 +14591,15 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many configuration changes are running at once (`Retry-After`: retry shortly). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13722,7 +14624,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Listed_UserInfo"];
+                    "application/json": components["schemas"]["UserList"];
                 };
             };
             /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */

@@ -11,6 +11,11 @@
   let reveal = $state('');
   let sample = $state(0);
   let keepMap = $state(false);
+  // REQ: OPS-011 (ADR-172) — every node makes and hides its own part; there is no map to keep.
+  let cluster = $state(false);
+  $effect(() => {
+    if (cluster) keepMap = false;
+  });
   let busy = $state(false);
   let error = $state<unknown>(null);
   let preview = $state<SupportManifest | null>(null);
@@ -42,10 +47,12 @@
       .map((s) => s.trim())
       .filter(Boolean),
     querySample: level === 'strict' ? 0 : Math.max(0, Math.min(1000, Math.floor(Number(sample) || 0))),
-    keepMap,
+    keepMap: keepMap && !cluster,
+    cluster,
   });
 
-  const total = (m: SupportManifest) => m.files.reduce((n, f) => n + f.bytes, 0);
+  const total = (m: SupportManifest) =>
+    (m.files ?? []).reduce((n, f) => n + f.bytes, 0) + (m.nodes ?? []).reduce((n, x) => n + x.bytes, 0);
   const counts = (r?: Record<string, number>) =>
     r
       ? Object.entries(r)
@@ -125,7 +132,11 @@
       </label>
     {/if}
     <label class="small check">
-      <input type="checkbox" bind:checked={keepMap} data-testid="keep-map" />
+      <input type="checkbox" bind:checked={cluster} data-testid="cluster" />
+      Every node in the cluster (each node hides its own names and addresses first, so nothing real crosses the network)
+    </label>
+    <label class="small check">
+      <input type="checkbox" bind:checked={keepMap} disabled={cluster} data-testid="keep-map" />
       Let me download the key to the pseudonyms (for 10 minutes, once)
     </label>
   </div>
@@ -157,11 +168,30 @@
         {:else}
           <p class="small muted">This is what a package would hold right now; nothing was saved.</p>
         {/if}
+        {#if m.nodes}
+          <!-- REQ: OPS-011 (ADR-172) — a cluster package: each node's part, and whether it answered. -->
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Node</th><th>Answered</th><th class="num">Files</th><th class="num">Size</th><th>Note</th></tr></thead>
+              <tbody>
+                {#each m.nodes as n (n.node)}
+                  <tr data-testid="support-node">
+                    <td class="mono">{n.node}</td>
+                    <td class="small">{#if n.status === 'ok'}<span class="badge ok">yes</span>{:else}<span class="badge warn">missing</span>{/if}</td>
+                    <td class="num small">{n.status === 'ok' ? n.files : '—'}</td>
+                    <td class="num small">{n.status === 'ok' ? kib(n.bytes) : '—'}</td>
+                    <td class="small">{n.note ?? ''}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {:else}
         <div class="table-wrap">
           <table>
             <thead><tr><th>File</th><th>Part</th><th class="num">Size</th><th>Replaced or removed</th></tr></thead>
             <tbody>
-              {#each m.files as f (f.path)}
+              {#each m.files ?? [] as f (f.path)}
                 <tr data-testid="support-file">
                   <td class="mono">{f.path}</td>
                   <td class="small">{f.collector}</td>
@@ -176,11 +206,12 @@
             </tbody>
           </table>
         </div>
-        {#if m.config_fields_removed.length > 0}
-          <p class="small muted">Settings removed as secrets: {m.config_fields_removed.join(', ')}.</p>
         {/if}
-        {#if m.config_fields_unclassified.length > 0}
-          <p class="small"><span class="badge warn">Please report</span> These settings had no rule and were removed: {m.config_fields_unclassified.join(', ')}.</p>
+        {#if (m.config_fields_removed ?? []).length > 0}
+          <p class="small muted">Settings removed as secrets: {(m.config_fields_removed ?? []).join(', ')}.</p>
+        {/if}
+        {#if (m.config_fields_unclassified ?? []).length > 0}
+          <p class="small"><span class="badge warn">Please report</span> These settings had no rule and were removed: {(m.config_fields_unclassified ?? []).join(', ')}.</p>
         {/if}
         {#each m.notes as n (n)}<p class="small muted">{n}</p>{/each}
       </div>

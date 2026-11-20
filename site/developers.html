@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Working on TelltaleDNS — TelltaleDNS</title>
+<meta name="description" content="How TelltaleDNS is built and extended: the gates every change passes, the size and performance budgets, and a page for each area where the project has a fixed way of doing things, for people and for AI agents.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="developers">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Developers</p>
+  <h1>Working on TelltaleDNS</h1>
+  <p class="lede">Some parts of TelltaleDNS are extended in one way only: a brand for the domain icons, a parameter on the API, a read between cluster nodes. These pages write that way down, with the reasons, so a person or an AI agent can extend it correctly the first time.</p>
+  <ul class="onpage">
+    <li><a href="#start">Start here</a></li>
+    <li><a href="#principles">The principles</a></li>
+    <li><a href="#pages">The pages</a></li>
+    <li><a href="#shape">How each page is laid out</a></li>
+    <li><a href="#todo">Not written up yet</a></li>
+  </ul>
+</section>
+
+<section id="start">
+  <h2>Start here</h2>
+  <div class="callout"><p><b>The spec is the source of truth.</b> Read <a href="https://github.com/paimonsoror/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a> first: it says what to read, in what order, and what "done" means. Then the section of <a href="https://github.com/paimonsoror/telltaledns/tree/main/spec"><code>spec/</code></a> for your task, and its entry in the roadmap (<code>spec/10</code>).</p></div>
+  <ul>
+    <li><b>Work task by task.</b> Restate the task's requirement IDs and acceptance criteria before you start, and tick the box when they pass.</li>
+    <li><b>Where the spec is silent, don't invent.</b> Choose the most conservative option, record it as an ADR with status <i>Proposed</i> in <code>spec/11</code>, and list it for the owner. The <a href="decisions.html">Decisions</a> page lists them all.</li>
+    <li><b>Trace everything.</b> Requirement IDs go in code comments at the place they are implemented, in test names, and in commit messages.</li>
+  </ul>
+</section>
+
+<section id="principles">
+  <h2>The principles behind the rules</h2>
+  <p>Every page here applies the same few ideas. When a rule on a page seems arbitrary, it is one of these.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Principle</th><th>What it means in practice</th></tr></thead>
+    <tbody>
+      <tr><td><b>Performance, then footprint</b></td><td>The owner's order is performance, lightweight footprint, observability, deployability, clustering, protocols, and last UI polish. Nothing is added to the query path without a benchmark, and the image has a hard size limit. See <a href="dev-budgets.html">Size and performance budgets</a>.</td></tr>
+      <tr><td><b>DNS never depends on anything else</b></td><td>Telemetry, storage, the API, and the cluster can fail without a query going unanswered. A new feature reads and writes off the query path, with a deadline.</td></tr>
+      <tr><td><b>Measured, not assumed</b></td><td>A size or speed claim comes with a number from a real build, and a speed claim from a benchmark with a control. The ADRs record the numbers.</td></tr>
+      <tr><td><b>Generated files are generated</b></td><td>The OpenAPI document, the MCP tool list, the UI's API types, the configuration schema, and the requirements trace are written by tools and checked for drift. You change the source and regenerate. See <a href="dev-gates.html">How we work: the gates</a>.</td></tr>
+      <tr><td><b>Nothing leaves unredacted</b></td><td>The UI fetches nothing from other sites, the content security policy says so, and a support package is redacted on the node it came from. A feature that moves data between nodes or out of the page has to say what it carries.</td></tr>
+      <tr><td><b>Fail closed, fail loudly</b></td><td>An unclassified setting is removed from a support package and a test fails; an older node that doesn't know a request is listed as missing instead of answering wrongly; a flag without its filter is refused with a message that names it.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="pages">
+  <h2>The pages</h2>
+  <h3>How we work</h3>
+  <div class="grid">
+    <a class="card" href="dev-gates.html">
+      <h3>How we work: the gates</h3>
+      <p>What CI and your own machine check, the generated files and the commands that regenerate them, how tests are named, and how ADRs and the roadmap are kept.</p>
+      <span class="more">Read the page →</span>
+    </a>
+    <a class="card" href="dev-budgets.html">
+      <h3>Size and performance budgets</h3>
+      <p>The 15 MiB image limit and the 400 KiB UI budget, what we cut and what we measured and refused, and how to benchmark without fooling yourself.</p>
+      <span class="more">Read the page →</span>
+    </a>
+  </div>
+  <h3>Extend</h3>
+  <div class="grid">
+    <a class="card" href="dev-api.html">
+      <h3>Add an API parameter</h3>
+      <p>From the store to the page: the model, validation, the cluster, the MCP tool, the command line, the UI, and the generated files, with the "not" filters as the worked example.</p>
+      <span class="more">Read the page →</span>
+    </a>
+    <a class="card" href="dev-cluster.html">
+      <h3>Extend the cluster protocol</h3>
+      <p>Reads between nodes: older nodes, the one-mebibyte answer limit, who may ask, and what a node may never copy from another.</p>
+      <span class="more">Read the page →</span>
+    </a>
+    <a class="card" href="dev-icons.html">
+      <h3>Extend the domain icons</h3>
+      <p>The two icon packs, the order they are tried in, how to add a brand or a pack, and why a name still shows a letter.</p>
+      <span class="more">Read the page →</span>
+    </a>
+  </div>
+  <h3>The web UI</h3>
+  <div class="grid">
+    <a class="card" href="dev-ui-tests.html">
+      <h3>Write UI tests</h3>
+      <p>One serial suite on one server: how to write a test that doesn't disturb the next one, and the timing traps in the query log and the API.</p>
+      <span class="more">Read the page →</span>
+    </a>
+    <a class="card" href="dev-svelte.html">
+      <h3>Svelte pitfalls</h3>
+      <p>The attribute that quietly broke two-factor sign-in for a month, and the other rules the UI's checks enforce.</p>
+      <span class="more">Read the page →</span>
+    </a>
+  </div>
+</section>
+
+<section id="shape">
+  <h2>How each page is laid out</h2>
+  <ol class="steps">
+    <li class="step"><b>The rules.</b> What we insist on, and why. If you need to break one, write an ADR first.</li>
+    <li class="step"><b>The recipe.</b> The steps to extend it, in order, with the files you touch.</li>
+    <li class="step"><b>The checks.</b> Which test or gate fails when you get it wrong, so you know a green run means something.</li>
+    <li class="step"><b>A worked example.</b> A real change, with what went wrong on the way, because that is where the rules came from.</li>
+  </ol>
+</section>
+
+<section id="todo">
+  <h2>Not written up yet</h2>
+  <p>These areas also have a fixed way of doing things, but no page. They are written up the same way when someone needs them:</p>
+  <ul>
+    <li>The presets under <code>presets/</code> (upstreams, services, safe search) and how a service's domains are chosen.</li>
+    <li>Redaction and the configuration classification table behind the support package: every setting must have a class, and a test fails when one doesn't.</li>
+    <li>The Grafana dashboard and the alert rules, which are generated and checked for drift.</li>
+    <li>The Helm chart's values and its end-to-end tests.</li>
+  </ul>
+  <p class="muted">Where to look meanwhile: the <a href="nerds.html">architecture page</a> for how the crates fit together, <a href="decisions.html">Decisions</a> for why, the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/releasing.md">releasing guide</a>, and the <a href="standards.html">standards</a> we implement.</p>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

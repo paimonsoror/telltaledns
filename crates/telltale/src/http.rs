@@ -61,6 +61,10 @@ pub(crate) struct Sources {
     pub(crate) config: ArcSwap<telltale_config::Config>,
     /// The config files alone (what the API's entries are merged onto; ADR-040).
     pub(crate) file_config: ArcSwap<telltale_config::Config>,
+    /// REQ: OBS-010 (ADR-179) — the files couldn't be read at start-up, so `file_config` holds
+    /// the running configuration instead, until a reload reads them: nothing in it counts as this
+    /// node's own when alert destinations' credential files are checked.
+    pub(crate) files_unread: std::sync::atomic::AtomicBool,
     /// The config files' paths, for backups (ADR-063).
     pub(crate) config_files: Vec<std::path::PathBuf>,
     /// Update status from the signed release index (ADR-046).
@@ -579,6 +583,8 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
         election_metrics(c, w);
         rollout_metrics(src, w);
         git_metrics(src, w);
+        // REQ: CLU-004 (ADR-174) — the federated reads this node refused, by reason.
+        crate::federated::render_metrics(w);
         w.family(
             "telltale_cluster_behind_seconds",
             "gauge",
@@ -633,7 +639,7 @@ pub(crate) fn render(src: &Sources) -> String {
     render_upstream_quality(&mut w, &src.pipeline.quality, &state.router);
     render_exported(&mut w, src, &state);
     if let Some(l) = src.lists.load_full() {
-        render_lists(&mut w, &l.fetcher);
+        render_lists(&mut w, &l.fetcher, &src.config.load());
         render_filter(&mut w, &l);
     }
     render_shadow(&mut w, &src.shadow);
@@ -1285,9 +1291,19 @@ type ListGauge = (
     fn(&ListMeta) -> Option<u64>,
 );
 
-/// REQ: FLT-004, `spec/06` §6 alert "list fetch failing for > 48 h": per-list fetch state.
-fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
-    render_list_status(w, &fetcher.status());
+/// REQ: FLT-004, OBS-005 (the chart's list alerts, `spec/06` §8): per-list fetch state, for the
+/// lists the configuration enables. The fetcher keeps a disabled list's state (re-enabling it
+/// needs no download), but a frozen failure count or last success would keep the list alerts
+/// firing for a list nobody is fetching, so it is left out here, at export time. A list the
+/// configuration doesn't hold (a blocked service's) has no `enabled = false` and stays.
+fn render_lists(w: &mut PromWriter, fetcher: &Fetcher, cfg: &telltale_config::Config) {
+    let mut status = fetcher.status();
+    status.retain(|(name, _)| {
+        !cfg.list
+            .iter()
+            .any(|l| !l.enabled && l.name.as_str() == name)
+    });
+    render_list_status(w, &status);
 }
 
 /// REQ: FLT-004 — inline rules are never fetched, so they have no last-success time: one would

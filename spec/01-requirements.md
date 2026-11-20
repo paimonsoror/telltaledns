@@ -152,7 +152,7 @@ AGT-001..012 are defined in `13 §2`. Summary: agent-ready OpenAPI (P0); dry-run
 | OPS-001 | P0 | Multi-arch OCI image (linux/amd64, linux/arm64, linux/arm/v7) built `FROM scratch`/distroless with a static musl binary; runs as non-root. |
 | OPS-002 | P0 | Helm chart: resolver Deployment/DaemonSet, controller StatefulSet (or all-in-one), Services (UDP+TCP), PDB, HPA, ServiceMonitor, NetworkPolicy, probes, cert-manager integration. |
 | OPS-003 | P0 | Client-IP preservation guidance and defaults (externalTrafficPolicy: Local, hostNetwork option, PROXY protocol). The chart validates and warns when client IPs would be masked. |
-| OPS-004 | P0 | Raspberry Pi / Linux: the same image via Docker/Podman Compose (primary path); a static binary + systemd unit + install script (secondary path). |
+| OPS-004 | P0 | Raspberry Pi / Linux: a static binary + systemd unit + install script (primary path); the same image via Docker/Podman Compose, and on Kubernetes (OPS-002), are supported alternatives. |
 | OPS-005 | P0 | Declarative config file (TOML) + env overrides; config can be seeded from a ConfigMap; GitOps mode (config file is the source of truth, API writes are rejected or written back as a PR-able diff). |
 | OPS-006 | P0 | Health endpoints: `/healthz` (process), `/readyz` (snapshot loaded and listeners bound), `/livez`. |
 | OPS-007 | P0 | Graceful shutdown: drain TCP/DoH connections, flush telemetry, persist the cache (if enabled). |

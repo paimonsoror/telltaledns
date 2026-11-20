@@ -16,6 +16,7 @@
 //! they rejoin with the bootstrap secret.
 
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
 
 use serde::{Deserialize, Serialize};
 
@@ -56,18 +57,31 @@ fn save(id: &Identity, r: &Rotation) -> Result<(), String> {
     write(&path(id), &b, false)
 }
 
+/// REQ: CLU-001 (ADR-066) — the cluster directory's one way to write a file: atomically, through a
+/// temporary file named for this write alone (removed if the write fails), and a secret is
+/// owner-only from its first byte. The gain is the CLI's `ca-next.key` (a CA private key), which
+/// was created with the default mode and made owner-only only before its rename. The old fixed
+/// name (`<stem>.tmp`) was shared only by two writes of the same file, never by two files a
+/// rotation writes.
 fn write(p: &Path, data: &[u8], secret: bool) -> Result<(), String> {
-    let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    if secret {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(unix))]
-    let _ = secret;
-    std::fs::rename(&tmp, p).map_err(|e| e.to_string())
+    crate::node::write(p, data, secret).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test seam: what to run inside [`step`] on this thread, after the switch moved the key
+    /// files and before it writes the new bundle (the window a key share could slip into).
+    static AFTER_SWITCH_MOVES: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn after_switch_moves() {
+    AFTER_SWITCH_MOVES.with(|h| {
+        if let Some(f) = h.borrow_mut().as_mut() {
+            f();
+        }
+    });
 }
 
 fn now_ms() -> u64 {
@@ -129,6 +143,11 @@ fn required(id: &Identity) -> Vec<String> {
 /// Advances the rotation if every member is ready (on the primary; call every few seconds).
 /// Returns what happened, for the log and the event list.
 pub fn step(cluster: &Cluster) -> Option<String> {
+    // REQ: CLU-001, CLU-005 — the key files change under their lock, as on a replica (see
+    // `key_files_lock`): a key share (a primary takes one from a newer-epoch primary) must not
+    // see the switch half done. Read the identity under it.
+    let lock = crate::node::key_files_lock(&cluster.identity.dir);
+    let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
     let id = cluster.identity.reload();
     if !id.is_primary() {
         return None;
@@ -163,6 +182,8 @@ pub fn step(cluster: &Cluster) -> Option<String> {
             {
                 return Some(format!("CA rotation: can't switch keys: {e}"));
             }
+            #[cfg(test)]
+            after_switch_moves();
             if let Err(e) = write(
                 &id.dir.join("ca.crt"),
                 format!("{new}{old}").as_bytes(),
@@ -248,10 +269,17 @@ mod tests {
     // is held, then used once a verified bundle trusts it.
     #[test]
     fn clu_001_trust_moves_step_by_step() {
+        use crate::node::{TrustStep, TrustVersion};
+        // The version of the rotation's manifest number `seq` (ADR-177).
+        let at = |id: &Identity, seq: u64| TrustVersion {
+            cluster_id: id.meta.cluster_id.clone(),
+            epoch: 1,
+            seq,
+        };
         let (_d, id) = primary();
         let stranger = pki::new_ca("evil").unwrap();
         assert!(
-            id.adopt_trust(&stranger.cert_pem).is_err(),
+            id.adopt_trust(&stranger.cert_pem, &at(&id, 1)).is_err(),
             "an unrelated CA can't replace trust"
         );
         let next = pki::new_ca_labeled("home", "next").unwrap();
@@ -261,7 +289,8 @@ mod tests {
         assert!(!replica.store_ca_key(&next.key_pem).unwrap());
         assert!(replica.dir.join("ca-pending.key").exists());
         let bundle = format!("{}{}", replica.ca_pem, next.cert_pem);
-        assert!(replica.adopt_trust(&bundle).unwrap());
+        let take = |b: &str, seq| replica.adopt_trust(b, &at(&replica, seq)).unwrap();
+        assert_eq!(take(&bundle, 1), TrustStep::Changed);
         assert!(
             replica.dir.join("ca-next.key").exists(),
             "held key promoted"
@@ -269,12 +298,107 @@ mod tests {
         assert!(!replica.dir.join("ca-pending.key").exists());
         // The switch: the new CA first; its key becomes ca.key.
         let flipped = format!("{}{}", next.cert_pem, replica.ca_pem);
-        assert!(replica.adopt_trust(&flipped).unwrap());
+        assert_eq!(take(&flipped, 2), TrustStep::Changed);
         assert!(replica.reload().signs_now());
         assert!(replica.dir.join("ca-old.key").exists());
         // The end: only the new CA; the old key goes.
-        assert!(replica.adopt_trust(&next.cert_pem).unwrap());
+        assert_eq!(take(&next.cert_pem, 3), TrustStep::Changed);
         assert!(!replica.dir.join("ca-old.key").exists());
         assert_eq!(pki::certs_of(&replica.reload().ca_pem).len(), 1);
+    }
+
+    // REQ: CLU-001, CLU-005 (ADR-066) — the primary's switch moves the key files under their lock,
+    // as a replica's trust change does: a key share arriving in the middle (a primary takes one
+    // only from a newer-epoch primary, which holds the same next key) waits for the switch,
+    // instead of storing a second copy of the signing key as `ca-next.key`, which no later step
+    // removes.
+    #[test]
+    fn clu_001_a_key_share_cannot_slip_into_the_primarys_switch() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::sync::{Arc, mpsc};
+        use std::thread::JoinHandle;
+        use std::time::Duration;
+        let (_d, id) = primary();
+        start(&id, "test").unwrap();
+        let next_key = std::fs::read_to_string(id.dir.join("ca-next.key")).unwrap();
+        let cluster = Cluster::new(id.reload(), "0.1.0");
+        let lock = crate::node::key_files_lock(&id.dir);
+        let share: Rc<RefCell<Option<JoinHandle<()>>>> = Rc::default();
+        let (slot, by) = (Rc::clone(&share), id.clone());
+        AFTER_SWITCH_MOVES.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                // Whether the step holds the key-file lock here (it can't be taken from this
+                // thread then), and the handles on the lock before the share starts.
+                let serialised = lock.try_lock().is_err();
+                let before = Arc::strong_count(&lock);
+                let (by, key) = (by.clone(), next_key.clone());
+                let (tx, rx) = mpsc::channel();
+                let t = std::thread::spawn(move || {
+                    let _ = by.store_ca_key(&key);
+                    let _ = tx.send(());
+                });
+                // Unserialised, the share runs to its end right here, inside the switch.
+                // Serialised, it can only wait: once it holds a handle on the lock, it does.
+                let not_yet = || {
+                    if serialised {
+                        Arc::strong_count(&lock) == before
+                    } else {
+                        rx.try_recv().is_err()
+                    }
+                };
+                let mut waited = 0;
+                while not_yet() {
+                    assert!(waited < 10_000, "the key share neither ran nor waited");
+                    waited += 1;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                *slot.borrow_mut() = Some(t);
+            }));
+        });
+        let msg = step(&cluster).unwrap();
+        AFTER_SWITCH_MOVES.with(|h| *h.borrow_mut() = None);
+        share.borrow_mut().take().unwrap().join().unwrap();
+        assert!(msg.contains("now signs"), "{msg}");
+        assert!(
+            !id.dir.join("ca-next.key").exists(),
+            "the share stored a copy of the signing key as the next key"
+        );
+        assert!(id.reload().signs_now());
+    }
+
+    // REQ: CLU-001 (ADR-066) — each write has a temporary file of its own. The property, shown on
+    // two files of one stem written at the same moment (a rotation never writes this pair: the
+    // old fixed name was shared only by two writes of one file): they never trade contents, and
+    // neither write fails because the other renamed its temporary file away.
+    #[test]
+    fn clu_001_rotation_writes_never_share_a_temporary_file() {
+        use std::sync::{Arc, Barrier};
+        let dir = tempfile::tempdir().unwrap();
+        let (key, crt) = (dir.path().join("ca.key"), dir.path().join("ca.crt"));
+        let rounds = 500;
+        let mut clashes = 0;
+        for round in 0..rounds {
+            let barrier = Arc::new(Barrier::new(2));
+            let t = {
+                let (key, barrier) = (key.clone(), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write(&key, format!("key {round}").as_bytes(), true)
+                })
+            };
+            barrier.wait();
+            let wrote_crt = write(&crt, format!("crt {round}").as_bytes(), false);
+            let wrote_key = t.join().unwrap();
+            let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+            if wrote_key.is_err()
+                || wrote_crt.is_err()
+                || read(&key) != format!("key {round}")
+                || read(&crt) != format!("crt {round}")
+            {
+                clashes += 1;
+            }
+        }
+        assert_eq!(clashes, 0, "{clashes} of {rounds} rounds clashed");
     }
 }

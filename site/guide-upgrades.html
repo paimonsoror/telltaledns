@@ -81,12 +81,12 @@ sudo telltale self-update --restart               # upgrade and restart
 sudo telltale self-update --channel edge --restart  # builds from main</code></pre>
       <ul>
         <li>It verifies the signature with the release key built into the binary and checks the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as <code>telltale.old</code>.</li>
-        <li><b>Or re-run the installer:</b> <code>sudo sh install.sh</code> upgrades the binary in place. When <code>/etc/telltale/telltale.toml</code> already exists it asks no questions and only upgrades; your config is kept.</li>
+        <li><b>Or re-run the installer:</b> <code>sudo sh install.sh</code> upgrades the binary in place. When <code>/etc/telltale/telltale.toml</code> already exists it asks no guided questions and upgrades; your config is kept. One question can still come, in a terminal: if systemd-resolved is running with its stub listener on, it asks whether to turn the stub off (<code>--disable-resolved-stub</code> answers it in advance; without a terminal systemd-resolved is left as it is).</li>
       </ul>
     </div>
 
     <div class="panel" id="up-docker"><h3>Docker</h3>
-      <p>With Docker Compose (the recommended way on a Pi), in the folder with <code>compose.yaml</code>:</p>
+      <p>With the Docker Compose bundle, in the folder with <code>compose.yaml</code>:</p>
 <pre><code>docker compose pull &amp;&amp; docker compose up -d</code></pre>
       <p><code>telltale self-update</code> refuses to run in a container: pull a new image instead. Your data lives in the <code>/var/lib/telltale</code> volume, the only path the container writes to.</p>
     </div>
@@ -133,7 +133,7 @@ telltale backup show pi.ttbk                      # check it and list what's in 
     </div>
     <div class="card">
       <h3>Left out</h3>
-      <p>Sign-in sessions (everyone signs in again); downloaded lists, compiled snapshots, and the cache, which are rebuilt; and the cluster identity and its CA key.</p>
+      <p>Sign-in sessions (everyone signs in again); downloaded lists, compiled snapshots, and the cache, which are rebuilt; the cluster identity and its CA key; and router keys pasted in the UI: after a restore each such router says <b>key missing: enter it again</b>. A copy of the whole data folder or a volume snapshot does hold those keys, so keep it private and encrypt the volume.</p>
     </div>
   </div>
   <div class="callout warn"><p><b>Keep it private.</b> It holds password hashes and API tokens. The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written owner-only (<code>0600</code>).</p></div>

@@ -16,7 +16,7 @@ use telltale_cluster::node::{Identity, JoinRequest};
 use telltale_cluster::pki;
 use telltale_cluster::token::Token;
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const VERSION: &str = crate::build_info::VERSION;
 
@@ -1469,13 +1469,13 @@ pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
         tokio::spawn(net::dial(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(net::mesh(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(telltale_cluster::failover::run(Arc::clone(&cluster), stop.clone()));
-        // T5.4c: the CAs to trust (a rotation) and the witness's own certificate renewal.
+        // T5.4c: the CAs to trust (a rotation) and the witness's own certificate renewal. REQ:
+        // CLU-001 — renewal starts once: two loops renewed twice (and bumped the certificate
+        // generation twice) at every rotation; two commits had each added it.
         tokio::spawn(net::follow_trust(Arc::clone(&cluster), stop.clone()));
-        tokio::spawn(telltale_cluster::renew::run(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(telltale_cluster::renew::run(Arc::clone(&cluster), stop.clone()));
         // The registry and failover mode come with the primary's signed manifests.
         let mut incoming = cluster.incoming();
-        let ca = cluster.identity.ca_pem.clone();
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,
@@ -1483,13 +1483,8 @@ pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
                 r = incoming.changed() => {
                     if r.is_err() { break; }
                     let signed = incoming.borrow_and_update().clone();
-                    if let Some(m) = signed.and_then(|s| s.verify(&ca).ok()) {
-                        if !m.nodes.is_empty() {
-                            let _ = cluster.identity.save_registry(&m.nodes);
-                        }
-                        if !m.failover.is_empty() {
-                            let _ = cluster.identity.save_failover(&m.failover);
-                        }
+                    if let Some(s) = signed {
+                        witness_keep(&cluster, &s);
                     }
                 }
             }
@@ -1497,6 +1492,35 @@ pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
         let _ = stop_tx.send(true);
     });
     ExitCode::SUCCESS
+}
+
+/// What a witness keeps from the primary's signed manifest: the member registry and the
+/// failover mode (ADR-056). Returns whether the manifest verified.
+///
+/// REQ: CLU-005, CLU-001 (T5.4c) — checked against the CAs the witness trusts now, as the
+/// replica's follower checks them (`net::verify_now`): the CA it started with is retired by a
+/// rotation, and checking against it stopped the witness from following until it restarted.
+fn witness_keep(cluster: &Cluster, signed: &telltale_cluster::sync::Signed) -> bool {
+    let m = match net::verify_now(cluster, signed) {
+        Ok(m) => m,
+        Err(e) => {
+            // `follow_trust` says so at `warn` for the same manifest.
+            debug!("witness: ignoring a cluster manifest: {e}");
+            return false;
+        }
+    };
+    debug!(
+        epoch = m.epoch,
+        seq = m.seq,
+        "witness: the registry and failover mode from the primary's manifest"
+    );
+    if !m.nodes.is_empty() {
+        let _ = cluster.identity.save_registry(&m.nodes);
+    }
+    if !m.failover.is_empty() {
+        let _ = cluster.identity.save_failover(&m.failover);
+    }
+    true
 }
 
 #[cfg(unix)]
@@ -1783,6 +1807,69 @@ mod tests {
         cfg.cluster.config_source = telltale_config::SafeString::from("gitops");
         let git = start(&cfg, &stop).unwrap();
         assert_eq!(git.config_source(), "gitops");
+    }
+
+    /// REQ: CLU-005 (ADR-056), CLU-001 (T5.4c, ADR-066) — a witness keeps taking the registry
+    /// and the failover mode from the primary's manifests after a CA rotation: it checks them
+    /// against the CAs it trusts now, not the ones it started with (which the rotation retired).
+    #[test]
+    fn clu_005_a_witness_keeps_following_after_a_ca_rotation() {
+        use telltale_cluster::node::NodeRecord;
+        use telltale_cluster::sync::{ClusterManifest, Signed};
+        let dir = tempfile::tempdir().unwrap();
+        let id =
+            Identity::init(dir.path(), "home", vec!["https://127.0.0.1:1".into()], "w").unwrap();
+        let witness = Cluster::new(id, "0.1.0");
+        let cdir = dir.path().join("cluster");
+        let old_key = std::fs::read_to_string(cdir.join("ca.key")).unwrap();
+        let new = pki::new_ca_labeled("home", "next").unwrap();
+        let manifest = |seq: u64, failover: &str| ClusterManifest {
+            cluster_id: witness.identity.meta.cluster_id.clone(),
+            epoch: 1,
+            seq,
+            primary: "p".into(),
+            nodes: vec![NodeRecord {
+                node_id: format!("node-{seq}"),
+                site: "lab".into(),
+                eligible: true,
+                advertise: vec![],
+                joined: 0,
+                witness: false,
+                ephemeral: false,
+            }],
+            failover: failover.into(),
+            ..ClusterManifest::default()
+        };
+        let has = |node: &str| {
+            witness
+                .identity
+                .reload()
+                .registry()
+                .iter()
+                .any(|n| n.node_id == node)
+        };
+        // Before the rotation: signed by the CA it started with.
+        assert!(witness_keep(
+            &witness,
+            &Signed::sign(&manifest(1, "manual"), &old_key).unwrap()
+        ));
+        assert!(has("node-1"));
+        // The rotation has ended on disk (`follow_trust` adopted each step): only the new CA.
+        std::fs::write(cdir.join("ca.crt"), &new.cert_pem).unwrap();
+        let after = Signed::sign(&manifest(9, "auto"), &new.key_pem).unwrap();
+        assert!(
+            witness_keep(&witness, &after),
+            "a manifest signed by the CA the witness trusts now was refused"
+        );
+        assert!(has("node-9"), "the registry wasn't kept");
+        assert_eq!(witness.identity.reload().meta.failover, "auto");
+        // One signed by the retired CA isn't taken any more.
+        assert!(!witness_keep(
+            &witness,
+            &Signed::sign(&manifest(10, "manual"), &old_key).unwrap()
+        ));
+        assert!(!has("node-10"));
+        assert_eq!(witness.identity.reload().meta.failover, "auto");
     }
 
     #[test]

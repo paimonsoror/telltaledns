@@ -49,6 +49,8 @@ pub(crate) const SIMULATE: &str = "simulate";
 pub(crate) const ROLLOUT: &str = "rollout";
 /// REQ: FLT-017 (T15.1) — `[[kubernetes.map]]` rules, by key (`namespace/kind/name`).
 pub(crate) const KUBERNETES_MAP: &str = "kubernetes_map";
+/// REQ: T8.2, API-002 (ADR-181) — router integrations (they override the files' too).
+pub(crate) const ROUTER: &str = "router";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -91,6 +93,11 @@ impl Named for telltale_config::AlertDestination {
     }
 }
 impl Named for telltale_config::ScheduleConfig {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+impl Named for telltale_config::RouterConfig {
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -154,6 +161,8 @@ pub(crate) struct Entries {
     pub(crate) rollout: Option<telltale_config::RolloutConfig>,
     /// REQ: FLT-017 — `[[kubernetes.map]]` rules by key; they come before the files' rules.
     pub(crate) kubernetes_map: Vec<(String, Ovr<telltale_config::KubernetesMapRule>)>,
+    /// REQ: T8.2 (ADR-181) — router integrations.
+    pub(crate) routers: Vec<(String, Ovr<telltale_config::RouterConfig>)>,
 }
 
 /// Where the state database lives.
@@ -248,6 +257,7 @@ pub(crate) fn entries(state: &State) -> Entries {
             .next()
             .map(|(_, x)| x),
         kubernetes_map: decode_ovr(state, KUBERNETES_MAP),
+        routers: decode_ovr(state, ROUTER),
     }
 }
 
@@ -314,6 +324,344 @@ pub(crate) fn server_url(s: &str) -> String {
     }
 }
 
+/// REQ: UPS-011 (ADR-180) — an upstream URL that names a program the server starts (`exec://`)
+/// or a local socket it connects to (`unix://`): a plugin upstream.
+pub(crate) fn is_plugin_url(url: &str) -> bool {
+    url.trim_start()
+        .split_once("://")
+        .is_some_and(|(s, _)| s.eq_ignore_ascii_case("exec") || s.eq_ignore_ascii_case("unix"))
+}
+
+/// REQ: UPS-011, API-002 (ADR-180) — the field that makes an upstream a plugin one: its `url`, or
+/// `args` (a program's arguments). Plugin upstreams are defined in the config file, so a write
+/// through the API, or a pre-save check, that has one is refused.
+pub(crate) fn plugin_field(url: &str, has_args: bool) -> Option<&'static str> {
+    if is_plugin_url(url) {
+        Some("url")
+    } else if has_args {
+        Some("args")
+    } else {
+        None
+    }
+}
+
+/// REQ: UPS-011 (ADR-180) — something the merge changed in the entries made through the API
+/// because some of them name a program or a local socket: such an upstream, or such a server of a
+/// forwarded domain, is left out (plugin upstreams are defined in the config file; it was stored
+/// by an older version, restored from a backup, or written into `state.db` by hand, and isn't
+/// deleted), and what named it is adjusted so the merged configuration stays valid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LeftOut {
+    /// The entry's name.
+    pub(crate) name: String,
+    /// What happened to it, as the warning says it.
+    pub(crate) what: String,
+}
+
+/// How an upstream group is chosen when the merge leaves out the one an entry named.
+fn default_route(file: &Config) -> &'static str {
+    if file
+        .upstream_group
+        .iter()
+        .any(|g| g.name.as_str() == "default")
+    {
+        "the `default` upstream group"
+    } else {
+        "the `default` upstream group, if there is one"
+    }
+}
+
+/// REQ: UPS-011, API-002 (ADR-180) — the names of what the merge leaves out of the entries made
+/// through the API because they name a program or a local socket: upstreams (a forward's server is
+/// the upstream `forward:<domain>#<n>`) and upstream groups. A write that names one is refused.
+#[derive(Debug, Default)]
+pub(crate) struct LeftOutNames {
+    pub(crate) upstreams: Vec<String>,
+    pub(crate) groups: Vec<String>,
+}
+
+/// REQ: UPS-011, API-002 (ADR-180) — what [`merge`] leaves out of `e`, by name.
+pub(crate) fn left_out_names(file: &Config, e: &Entries) -> LeftOutNames {
+    without_plugins(file, e)
+        .map(|k| k.names)
+        .unwrap_or_default()
+}
+
+/// What [`without_plugins`] keeps, what it changed, and the names it left out.
+struct Kept {
+    entries: Entries,
+    notes: Vec<LeftOut>,
+    names: LeftOutNames,
+}
+
+/// The upstream a forwarded domain's server becomes: numbered by its place among the domain's
+/// servers, so a server keeps its name when another one is left out.
+fn forward_server_name(group: &str, i: usize) -> String {
+    format!("{group}#{}", i + 1)
+}
+
+/// `e` without what names a program or a local socket, and what that changed (`None`: nothing
+/// does). Only these references to an upstream or an upstream group exist (`validate.rs`): a
+/// group's members, a client group's `upstreams`, and a route's group, and routes made through the
+/// API are the forwards' own. So, made through the API:
+/// - a plugin upstream is left out, and taken out of the upstream groups that name it, unless the
+///   files define an upstream of that name (theirs is then the one in effect);
+/// - a forwarded domain keeps its other servers, under the names they had; the upstreams its
+///   plugin servers were are taken out of the upstream groups that name them; with none left it is
+///   left out, and its names go where they would without it;
+/// - an upstream group left with no member is left out (an override of the files' group gives
+///   theirs back); a `parallel` one left with fewer members than it races races them all, or with
+///   one uses `failover`;
+/// - a client group that sent its queries to a group left out uses the files' choice when it
+///   overrides a files' group, else the default.
+///
+/// The merged configuration then validates whenever it did with the plugin entries in it.
+fn without_plugins(file: &Config, e: &Entries) -> Option<Kept> {
+    let plugin_server = |s: &String| is_plugin_url(&server_url(s));
+    let any = e
+        .upstreams
+        .iter()
+        .any(|(_, o)| matches!(o, Ovr::Set(u) if is_plugin_url(u.url.as_str())))
+        || e.forwards
+            .iter()
+            .any(|(_, f)| f.servers.iter().any(plugin_server));
+    if !any {
+        return None;
+    }
+    let mut e = e.clone();
+    let mut notes = Vec::new();
+    let mut gone = Vec::new();
+    e.upstreams.retain(|(n, o)| {
+        let left = matches!(o, Ovr::Set(u) if is_plugin_url(u.url.as_str()));
+        if left {
+            notes.push(LeftOut {
+                name: n.clone(),
+                what: format!(
+                    "upstream `{n}` made through the API isn't used: it names a program or a local socket (`exec://`, `unix://`), and plugin upstreams are defined in the config file; define it there, or remove this one (DELETE /api/v1/upstreams/{n})"
+                ),
+            });
+            if !file.upstream.iter().any(|u| u.name.as_str() == n) {
+                gone.push(n.clone());
+            }
+        }
+        !left
+    });
+    let mut removed = forwards_without_plugins(file, &mut e, &mut gone, &mut notes);
+    upstream_groups_without(file, &mut e, &gone, &mut removed, &mut notes);
+    for (n, o) in &mut e.groups {
+        let Ovr::Set(g) = o else { continue };
+        let Some(u) = g
+            .upstreams
+            .clone()
+            .filter(|u| removed.contains(&u.to_string()))
+        else {
+            continue;
+        };
+        g.upstreams = file
+            .group
+            .iter()
+            .find(|f| f.name.as_str() == n)
+            .and_then(|f| f.upstreams.clone());
+        let now = g.upstreams.as_ref().map_or_else(
+            || default_route(file).to_owned(),
+            |f| format!("the config files' choice, `{f}`"),
+        );
+        notes.push(LeftOut {
+            name: n.clone(),
+            what: format!(
+                "client group `{n}` made through the API sent its queries to upstream group `{u}`, which isn't used (it named only upstreams that are left out); it uses {now} instead"
+            ),
+        });
+    }
+    Some(Kept {
+        entries: e,
+        notes,
+        names: LeftOutNames {
+            upstreams: gone,
+            groups: removed,
+        },
+    })
+}
+
+/// The forwards' plugin servers left out: the upstreams they were go to `gone` (unless the files
+/// define one of that name); the other servers keep their names ([`forward_upstreams`] skips
+/// plugin servers). Returns the upstream groups of forwards left out whole.
+fn forwards_without_plugins(
+    file: &Config,
+    e: &mut Entries,
+    gone: &mut Vec<String>,
+    notes: &mut Vec<LeftOut>,
+) -> Vec<String> {
+    let mut removed = Vec::new();
+    e.forwards.retain_mut(|(d, f)| {
+        let group = forward_group(d);
+        let plugins: Vec<usize> = f
+            .servers
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| is_plugin_url(&server_url(s)))
+            .map(|(i, _)| i)
+            .collect();
+        let left = plugins.len();
+        if left == 0 {
+            return true;
+        }
+        let kept = f.servers.len() - left;
+        // A stub zone's servers are one upstream together: it goes when none is left.
+        let names = if f.stub && kept == 0 {
+            vec![stub_upstream_name(&group)]
+        } else if f.stub {
+            f.servers.retain(|s| !is_plugin_url(&server_url(s)));
+            Vec::new()
+        } else {
+            plugins
+                .iter()
+                .map(|&i| forward_server_name(&group, i))
+                .collect()
+        };
+        gone.extend(
+            names
+                .into_iter()
+                .filter(|n| !file.upstream.iter().any(|u| u.name.as_str() == n)),
+        );
+        if kept == 0 {
+            notes.push(LeftOut {
+                name: d.clone(),
+                what: format!(
+                    "forwarded domain `{d}` made through the API isn't used: its servers name a program or a local socket (`exec://`, `unix://`), and plugin upstreams are defined in the config file; names under it go to {} or a route that matches them; define it in the config file, or remove this one (DELETE /api/v1/forwards/{d})",
+                    default_route(file)
+                ),
+            });
+            removed.push(group);
+            false
+        } else {
+            notes.push(LeftOut {
+                name: d.clone(),
+                what: format!(
+                    "forwarded domain `{d}` made through the API: {left} of its servers name a program or a local socket and aren't used (plugin upstreams are defined in the config file); it keeps the other {kept}"
+                ),
+            });
+            true
+        }
+    });
+    removed
+}
+
+/// The upstream groups made through the API without the upstreams in `gone`; the ones left empty
+/// are left out (their names go to `removed` unless the files define a group of that name).
+fn upstream_groups_without(
+    file: &Config,
+    e: &mut Entries,
+    gone: &[String],
+    removed: &mut Vec<String>,
+    notes: &mut Vec<LeftOut>,
+) {
+    e.upstream_groups.retain_mut(|(n, o)| {
+        let Ovr::Set(g) = o else { return true };
+        let had = g.members.len();
+        g.members.retain(|m| !gone.iter().any(|x| x == m.as_str()));
+        let left = g.members.len();
+        if left == had {
+            return true;
+        }
+        if left == 0 {
+            let instead = if file.upstream_group.iter().any(|f| f.name.as_str() == n) {
+                format!("the config files' `{n}` is the one in effect")
+            } else {
+                removed.push(n.clone());
+                "what sent queries to it uses another group".to_owned()
+            };
+            notes.push(LeftOut {
+                name: n.clone(),
+                what: format!(
+                    "upstream group `{n}` made through the API isn't used: every member names a program or a local socket and is left out; {instead}"
+                ),
+            });
+            return false;
+        }
+        if g.strategy == telltale_config::Strategy::Parallel && usize::from(g.parallel_fanout) > left
+        {
+            let now = if left >= 2 {
+                g.parallel_fanout = u8::try_from(left).unwrap_or(u8::MAX);
+                format!("asks its {left} members at once")
+            } else {
+                g.strategy = telltale_config::Strategy::Failover;
+                "uses `failover` with its one member".to_owned()
+            };
+            notes.push(LeftOut {
+                name: n.clone(),
+                what: format!(
+                    "upstream group `{n}` made through the API lost members that are left out (they name a program or a local socket); it now {now}"
+                ),
+            });
+        }
+        true
+    });
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — review round 3 (security S1, correctness R9) and round 4
+/// (final review M2): `e` without the routers made through the API that name a key file outside
+/// this node's `<data_dir>/secrets/` (by the path as written, so it fails closed) which the
+/// files' router of that name doesn't name for that credential at the same endpoint (a router
+/// the files don't define counts as not matching), and why (`None`: there is none). Such an entry
+/// is an override kept from before the files moved or removed the router, or one restored or
+/// edited in `state.db`; a mounted key is used on any node (the use-time rule's folder rule), so
+/// it is left out here, on the node that applies the API's entries, and the configuration it
+/// publishes never carries it. The files' router, if any, is the one in effect. Routers are named
+/// by nothing else in the configuration, so the merge stays valid. A key pasted in the UI (in
+/// `<data_dir>/secrets/`) is unaffected: its `.written` record vouches for it.
+fn without_unvouched_router_keys(file: &Config, e: &Entries) -> Option<(Entries, Vec<LeftOut>)> {
+    let data_dir = file.node.data_dir.as_str();
+    let unvouched = |o: &Ovr<telltale_config::RouterConfig>| match o {
+        Ovr::Set(r) => crate::router_secrets::unvouched_key_file(&file.router, r, data_dir),
+        Ovr::Hidden => None,
+    };
+    if !e.routers.iter().any(|(_, o)| unvouched(o).is_some()) {
+        return None;
+    }
+    let mut e = e.clone();
+    let mut notes = Vec::new();
+    e.routers.retain(|(n, o)| {
+        let Some(field) = unvouched(o) else {
+            return true;
+        };
+        let instead = if file.router.iter().any(|f| f.name.as_str() == n) {
+            "the config files' router of that name is the one in effect"
+        } else {
+            "the config files don't define it any more, so it isn't read"
+        };
+        notes.push(LeftOut {
+            name: n.clone(),
+            what: format!(
+                "router `{n}` made through the API isn't used: its `{field}` is a key file outside this node's secrets/ folder that the config files don't give this router at this address (they moved or removed it since, or the entry was restored or edited); {instead}. Edit the router in the UI to save it again for the files' address (or paste its key), or remove this entry (DELETE /api/v1/routers/{n})"
+            ),
+        });
+        false
+    });
+    Some((e, notes))
+}
+
+/// REQ: UPS-011 (ADR-180) — one warning per change the merge makes for plugin entries, when it
+/// starts: a configuration that is built again with the same ones logs nothing (per data
+/// directory, so each node in a test process keeps its own).
+fn warn_left_out(file: &Config, left: &[LeftOut]) {
+    static LAST: std::sync::Mutex<std::collections::BTreeMap<String, Vec<LeftOut>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = file.node.data_dir.to_string();
+    let before = last.get(&key).cloned().unwrap_or_default();
+    for l in left.iter().filter(|l| !before.contains(l)) {
+        warn!("{}", l.what);
+    }
+    if left.is_empty() {
+        last.remove(&key);
+    } else {
+        last.insert(key, left.to_vec());
+    }
+}
+
 fn safe(s: &str) -> Result<SafeString, String> {
     SafeString::new(s)
 }
@@ -335,8 +683,14 @@ fn apply_one_of(cfg: &mut Config, e: &Entries) {
 }
 
 /// `file` plus the entries (names the files already use are skipped), if the result validates
-/// (including record values); otherwise `Err` with the reasons.
+/// (including record values); otherwise `Err` with the reasons. Entries that name a program or a
+/// local socket are left out (REQ: UPS-011, ADR-180; [`without_plugins`]).
 pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
+    let kept = without_plugins(file, e);
+    let e = kept.as_ref().map_or(e, |k| &k.entries);
+    // REQ: API-002, T8.2 (ADR-181) — and the routers whose mounted key the files don't vouch for.
+    let routers = without_unvouched_router_keys(file, e);
+    let e = routers.as_ref().map_or(e, |(r, _)| r);
     let mut cfg = file.clone();
     // ADR-069 — upstreams, upstream groups, lists, and groups made through the API override
     // or hide the files' entries of the same name (before forwards add their own).
@@ -348,6 +702,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
+    apply_ovr(&mut cfg.router, &e.routers);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
     apply_one_of(&mut cfg, e);
     for c in &e.clients {
@@ -444,7 +799,12 @@ fn forward_upstreams(
         return members;
     }
     for (i, s) in f.servers.iter().enumerate() {
-        let name = format!("{group}#{}", i + 1);
+        // REQ: UPS-011 (ADR-180) — a server that names a program or a local socket is left out
+        // ([`without_plugins`]); the others keep the names their places give them.
+        if is_plugin_url(&server_url(s)) {
+            continue;
+        }
+        let name = forward_server_name(group, i);
         match (safe(&name), safe(&server_url(s))) {
             (Ok(n), Ok(url)) => match new_upstream(n.clone(), url) {
                 Some(u) => {
@@ -500,7 +860,18 @@ pub(crate) fn effective(file: &Config) -> Config {
             return file.clone();
         }
     };
-    match merge(file, &entries(&state)) {
+    let stored = entries(&state);
+    // REQ: UPS-011 (ADR-180), API-002 (ADR-181) — what the merge leaves out, logged once.
+    let mut left = without_plugins(file, &stored)
+        .map(|k| k.notes)
+        .unwrap_or_default();
+    left.extend(
+        without_unvouched_router_keys(file, &stored)
+            .map(|(_, n)| n)
+            .unwrap_or_default(),
+    );
+    warn_left_out(file, &left);
+    match merge(file, &stored) {
         Ok(c) => c,
         Err(errs) => {
             for e in &errs {
@@ -608,6 +979,36 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("nope"))
         );
+    }
+
+    /// REQ: UPS-011 (ADR-180) — a plugin upstream is known by its URL's scheme, whatever its
+    /// case or leading blanks; `args` count only beside another URL.
+    #[test]
+    fn ups_011_plugin_upstreams_are_known_by_their_scheme() {
+        for url in [
+            "exec:///usr/local/bin/x",
+            "EXEC:///x",
+            " unix:///run/x.sock",
+            "Unix:///x",
+        ] {
+            assert!(is_plugin_url(url), "{url}");
+            assert_eq!(plugin_field(url, false), Some("url"));
+        }
+        for url in [
+            "udp://192.0.2.1",
+            "tls://dns.example",
+            "https://dns.example/dns-query",
+            "recursive://",
+            "sdns://AgcAAAAAAAAA",
+            "executable://x",
+            "192.0.2.1",
+        ] {
+            assert!(!is_plugin_url(url), "{url}");
+            assert_eq!(plugin_field(url, false), None, "{url}");
+        }
+        assert_eq!(plugin_field("udp://192.0.2.1", true), Some("args"));
+        assert!(is_plugin_url(&server_url("exec:///x")));
+        assert!(!is_plugin_url(&server_url("192.0.2.1")));
     }
 
     #[test]

@@ -2612,9 +2612,12 @@ pub struct ApiConfig {
     /// `10.0.0.0/8`). For requests from them, the client address comes from
     /// `X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and
     /// `X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from
-    /// anyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so
-    /// a TLS terminator on the same host needs nothing here. Default: none (the connection's
-    /// address is the client).
+    /// anyone else that header is ignored. Loopback counts on its own for `X-Forwarded-Proto`
+    /// only (a TLS terminator on the same host needs nothing here for that), not for
+    /// `X-Forwarded-For`: for the client address from a proxy on the same host, list
+    /// `127.0.0.1/32`. List only the proxies, never your LAN: any other machine on this list
+    /// can send `X-Forwarded-For` itself and claim to be loopback. Default: none (the
+    /// connection's address is the client).
     pub trusted_proxies: Vec<Cidr>,
     /// REQ: API-003 (ADR-149) — serve the web UI and API over HTTPS on `listen`: with
     /// `{ self_signed = true }` a certificate is made on first start and kept in the data
@@ -2666,7 +2669,8 @@ pub struct AuthConfig {
     /// Accept HTTP Basic over plain HTTP. Off: Basic only behind HTTPS (a proxy that sends
     /// `X-Forwarded-Proto: https`).
     pub allow_insecure_basic: bool,
-    /// Roles that must use two-factor sign-in (TOTP), e.g. `["admin"]`.
+    /// Roles that must use two-factor sign-in (TOTP), e.g. `["admin"]`. Enrol your own account
+    /// first: someone who must use it and has none set up can't sign in to enrol.
     pub totp_required_roles: Vec<UserRole>,
     /// Days the audit log keeps entries (default 365; 0 keeps them forever). Older entries
     /// are removed hourly; the rest still verifies from a checkpoint, and each trim is
@@ -2700,9 +2704,27 @@ pub struct OidcConfig {
     /// after sign-out the provider returns to `<public_url>/`; register both with it.
     pub public_url: SafeString,
     /// Turn off password sign-in (and HTTP Basic) except for admins signing in from
-    /// `allowed_admin_networks` (break-glass, for when the provider is down).
+    /// `allowed_admin_networks` (break-glass, for when the provider is down). That list is
+    /// private networks and loopback unless you change it, so on a home or office network the
+    /// sign-in form is still shown and the local admin can still sign in: this is a way in for
+    /// when the provider is down, not a switch that hides the form. Narrow
+    /// `allowed_admin_networks` to hide it from the rest of your network, or set it to `[]` to
+    /// turn password sign-in off for everyone. Turning it on doesn't sign anyone out: earlier
+    /// sessions and API tokens keep working.
     pub disable_local_login: bool,
-    /// Where break-glass admin sign-in is allowed. Default: private networks and loopback.
+    /// Where break-glass admin sign-in is allowed while `disable_local_login` is on. Default:
+    /// private networks and loopback, so from a LAN or a Docker or Kubernetes network the
+    /// password form is still offered (start-up warns about that). Narrow it to the machines you
+    /// manage from (`["192.168.1.10/32"]`, or loopback, `["127.0.0.0/8", "::1/128"]`, through a
+    /// tunnel), or set it to `[]` to turn password sign-in off for everyone (then nobody can sign
+    /// in with a password while the provider is down; `telltale config check` warns). In a
+    /// container the server may see the Docker network's gateway instead of your machine (its
+    /// address differs per network, not always `172.17.0.1`). Behind a reverse proxy, set
+    /// `[api] trusted_proxies` too, or every browser appears to come from the proxy's address:
+    /// for a proxy on this host that is loopback, which leaves a loopback-only list open to
+    /// everyone the proxy serves (list `127.0.0.1/32`). Where the proxy hides the client address
+    /// (source NAT), address checks can't be trusted: use `[]`. A provider that fails to set up
+    /// leaves this limit in force.
     pub allowed_admin_networks: Vec<Cidr>,
     pub provider: Vec<OidcProvider>,
     /// REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its

@@ -54,6 +54,9 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:groups",
         "add, change, and remove client groups",
     ),
+    // REQ: T8.2, API-002 (ADR-181) — no scope for routers: they hold credentials and say where
+    // they're sent, so only an administrator's own sign-in or admin API token writes one (as for
+    // a credential file, ADR-179).
     (
         "config:write:ratelimit",
         "change the per-client rate limit, or go back to the config file's",
@@ -234,6 +237,11 @@ pub fn required(method: &Method, path: &str) -> Need {
         // Schedules are group settings (FLT-010, T9.7).
         if under("/api/v1/groups") || under("/api/v1/schedules") {
             return Need::Scope("config:write:groups");
+        }
+        // REQ: T8.2, API-002 (ADR-181) — not for agents, whatever a token holds (a token an
+        // earlier build made may hold `config:write:routers`).
+        if under("/api/v1/routers") {
+            return Need::Forbidden;
         }
         // REQ: OBS-010 (T9.6)
         if under("/api/v1/alerts") {
@@ -806,13 +814,36 @@ mod tests {
         );
     }
 
+    /// REQ: API-002, T8.2 (ADR-181, as ADR-179) — no agent token writes a router: there is no
+    /// scope for it (`config:write:*` and a named `config:write:routers` alike), and the routes
+    /// are refused to agents whatever a token holds.
+    #[test]
+    fn api_002_agents_never_write_routers() {
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(required(&m, "/api/v1/routers/udm"), Need::Forbidden, "{m}");
+        }
+        assert!(parse_scopes(&["config:write:routers".into()]).is_err());
+        assert!(
+            !parse_scopes(&["config:write:*".into()])
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("router"))
+        );
+        assert!(!SCOPES.iter().any(|(n, _)| n.contains("router")));
+        // Reading the configuration (routers included, redacted) is `config:read` as before.
+        assert_eq!(
+            required(&Method::GET, "/api/v1/config/entries"),
+            Need::Scope("config:read")
+        );
+    }
+
     #[test]
     fn agt_004_scopes_parse_and_imply_roles() {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
             13,
-            "twelve write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate) + analytics"
+            "twelve write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate; not routers) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

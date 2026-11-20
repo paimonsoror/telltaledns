@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod archive;
 pub mod classify;
+pub mod cluster;
 pub mod manifest;
 pub mod package;
 pub mod pseudo;

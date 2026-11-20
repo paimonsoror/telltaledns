@@ -4,7 +4,10 @@
 //! doesn't answer is listed in `missingNodes` instead of holding the read up. Everything else
 //! — configuration, explain, the live tail — is this node's own (the tail stays node-local).
 //!
-//! Nothing here touches DNS answering: reads run on API worker threads only (CLU-004).
+//! Nothing here touches DNS answering (CLU-004). A read never waits on a runtime worker: it
+//! starts its RPCs on the runtime and waits for them on its own thread (the blocking pool's, where
+//! the API runs its backend calls) with a deadline of the OS's, not the runtime's: see
+//! `federated_bridge.rs` (ADR-174).
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -26,6 +29,15 @@ use telltale_cluster::net::{Cluster, RpcHandler};
 const KIND: &str = "api.read";
 /// How long a read waits for peers (CLU-002: a dead node costs at most this).
 const DEADLINE: Duration = Duration::from_secs(2);
+#[path = "federated_bridge.rs"]
+mod bridge;
+#[path = "federated_support.rs"]
+mod support_cluster;
+// REQ: CLU-004 (ADR-174) — the scan that keeps every federating backend call behind `blocking`.
+#[cfg(test)]
+#[path = "federated_guard_tests.rs"]
+mod guard_tests;
+
 /// How long a replica waits for the primary's configuration version before using its own.
 const VERSION_DEADLINE: Duration = Duration::from_secs(1);
 
@@ -90,6 +102,11 @@ enum Read {
     TailOpen {
         params: Box<TailParams>,
     },
+    /// REQ: OBS-003, OBS-008 (ADR-171) — `TailOpen` with a negated filter. A separate read, so an
+    /// older peer (which would ignore the flags and tail what was not negated) doesn't know it.
+    TailOpenNegated {
+        params: Box<TailParams>,
+    },
     TailPoll {
         id: u64,
     },
@@ -97,6 +114,14 @@ enum Read {
         id: u64,
     },
     Queries {
+        params: Box<QueryParams>,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    },
+    /// REQ: OBS-003 (ADR-171) — `Queries` with a negated filter (older peers don't know it, so
+    /// they are listed as missing instead of answering rows that were not negated).
+    QueriesNegated {
         params: Box<QueryParams>,
         from_us: u64,
         to_us: u64,
@@ -173,6 +198,12 @@ enum Read {
     WorkloadCounts,
     /// REQ: OBS-009 — the peer's own hits per list (older peers don't know it).
     ListHits,
+    /// REQ: OPS-011 (ADR-172) — this node's part of a cluster support package, made and redacted
+    /// here under the key the asking node made for it. The answer is gzip-compressed JSON, not a
+    /// plain JSON value. Older peers don't know the read and are listed as missing.
+    SupportCollect {
+        req: Box<telltale_api::model::SupportCollectRequest>,
+    },
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -219,13 +250,21 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Identities => serde_json::to_vec(&b.identities()),
         Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
         Read::ClientRhythm { client } => serde_json::to_vec(&b.client_rhythm(&client).ok()),
-        Read::TailOpen { params } => serde_json::to_vec(&tail_open(b, &params).map_err(text)?),
+        Read::TailOpen { params } | Read::TailOpenNegated { params } => {
+            serde_json::to_vec(&tail_open(b, &params).map_err(text)?)
+        }
         Read::TailPoll { id } => serde_json::to_vec(&tail_poll(id)),
         Read::TailClose { id } => {
             tail_sessions().remove(&id);
             serde_json::to_vec(&true)
         }
         Read::Queries {
+            params,
+            from_us,
+            to_us,
+            limit,
+        }
+        | Read::QueriesNegated {
             params,
             from_us,
             to_us,
@@ -267,6 +306,8 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
         Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
         Read::ListHits => serde_json::to_vec(&b.list_hits()),
+        // REQ: OPS-011 (ADR-172) — already compressed bytes, not a JSON value.
+        Read::SupportCollect { req } => return b.support_part(&req).map_err(text),
     }
     .map_err(|e| e.to_string())
 }
@@ -420,6 +461,11 @@ pub(crate) fn rpc_handler(
             let read: Read = serde_json::from_slice(&body).map_err(|e| format!("bad read: {e}"))?;
             if ephemeral && changes_state(&read) {
                 return Err("an ephemeral member can't change this node's state".into());
+            }
+            if ephemeral && matches!(read, Read::SupportCollect { .. }) {
+                // REQ: OPS-011 (ADR-172) — a part is redacted under the asker's key, which lets the
+                // asker undo the address permutation: only a member we trust to ask may have one.
+                return Err("an ephemeral member can't ask for a support package".into());
             }
             tokio::task::spawn_blocking(move || answer(local.as_ref(), read))
                 .await
@@ -601,6 +647,9 @@ async fn remote_tail(
     let mut backoff = Duration::from_secs(1);
     loop {
         let read = match id {
+            None if params.negates() => Read::TailOpenNegated {
+                params: Box::new(params.clone()),
+            },
             None => Read::TailOpen {
                 params: Box::new(params.clone()),
             },
@@ -675,6 +724,35 @@ pub(crate) struct Federated {
     /// REQ: AGT-011, CLU-002 (T7.3) — a read's `scope` narrowed to some nodes; `None` is the
     /// whole cluster.
     only: Option<Only>,
+    /// REQ: CLU-004 (ADR-174) — the bounds its reads share: the process's ([`bridge::WAITS`]);
+    /// a test's own in tests.
+    limiter: &'static bridge::Limiter,
+}
+
+/// REQ: CLU-004 (ADR-174) — `telltale_federated_refused_total{reason}`: the federated reads this
+/// node did not send, or (`bytes`) did not keep whole, since it started.
+pub(crate) fn render_metrics(w: &mut telltale_telemetry::prom::PromWriter) {
+    render_refusals(&bridge::WAITS, w);
+}
+
+fn render_refusals(limiter: &bridge::Limiter, w: &mut telltale_telemetry::prom::PromWriter) {
+    let name = "telltale_federated_refused_total";
+    let help = format!(
+        "Federated reads this node refused since it started, by reason: waits (too many reads \
+         were already waiting for slow nodes), spent (the budget of {} calls was spent), ceiling \
+         (over {} calls, or over {} windows of time a node), bytes (sent, but an answer was \
+         dropped: it would have passed the {} MiB of answers a read may hold or the {} MiB all \
+         may). The nodes they were for are in missingNodes.",
+        bridge::CALL_BUDGET,
+        bridge::MAX_READ_CALLS,
+        federation::TIMESERIES_MAX_WINDOWS,
+        bridge::READ_BYTES >> 20,
+        bridge::HELD_BYTES >> 20,
+    );
+    w.family(name, "counter", &help);
+    for (why, n) in limiter.refusals() {
+        w.sample(name, &[("reason", why.label())], n);
+    }
 }
 
 /// The nodes a scoped read covers.
@@ -699,6 +777,7 @@ impl Federated {
             cluster,
             missing: Mutex::new(Vec::new()),
             only: None,
+            limiter: &bridge::WAITS,
         }
     }
 
@@ -718,6 +797,7 @@ impl Federated {
             cluster: Arc::clone(&self.cluster),
             missing: Mutex::new(Vec::new()),
             only: Some(Only { me, peers }),
+            limiter: self.limiter,
         }
     }
 
@@ -799,7 +879,30 @@ impl Federated {
         WriteRoute::Primary(self.cluster.reachable_primary())
     }
 
-    /// One RPC to one peer from synchronous code; `None` without a runtime.
+    /// REQ: CLU-002, CLU-004 (ADR-174) — starts one RPC per `(peer, body)` as a task on `rt` and
+    /// returns at once; the caller waits with [`bridge::Pending::wait`] on its own thread.
+    fn start_calls(
+        &self,
+        rt: &tokio::runtime::Handle,
+        calls: Vec<(String, Vec<u8>)>,
+        timeout: Duration,
+    ) -> bridge::Pending {
+        let calls = calls
+            .into_iter()
+            .map(|(peer, body)| {
+                let (cluster, to) = (Arc::clone(&self.cluster), peer.clone());
+                (
+                    peer,
+                    async move { cluster.call(&to, KIND, body, timeout).await },
+                )
+            })
+            .collect();
+        bridge::start(self.limiter, rt, calls, timeout)
+    }
+
+    /// One RPC to one peer from synchronous code; `None` without a runtime. REQ: CLU-004
+    /// (ADR-174) — the wait is `timeout` and a grace at most, whatever the runtime is doing, and
+    /// never needs a worker: a peer the runtime couldn't ask in time is "didn't answer".
     fn call_one(
         &self,
         peer: &str,
@@ -808,12 +911,10 @@ impl Federated {
     ) -> Option<Result<Vec<u8>, String>> {
         let body = serde_json::to_vec(read).ok()?;
         let rt = tokio::runtime::Handle::try_current().ok()?;
-        let cluster = Arc::clone(&self.cluster);
-        std::thread::scope(|s| {
-            s.spawn(|| rt.block_on(cluster.call(peer, KIND, body, timeout)))
-                .join()
-                .ok()
-        })
+        self.start_calls(&rt, vec![(peer.to_owned(), body)], timeout)
+            .wait()
+            .pop()
+            .map(|(_, answer)| answer)
     }
 
     fn own_label(&self) -> String {
@@ -830,67 +931,56 @@ impl Federated {
         }
     }
 
-    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Records
-    /// which known nodes didn't answer.
+    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`] and the bridge's
+    /// grace (REQ: CLU-004, ADR-174: on this thread, never on a worker). Records which known
+    /// nodes didn't answer: those not connected, and those the runtime didn't get an answer from
+    /// in time.
     fn gather(&self, reads: Vec<(String, Read)>) -> Vec<(String, Vec<u8>)> {
-        let mut missing: Vec<String> = self
-            .cluster
-            .members()
-            .into_iter()
-            .filter(|m| !m.connected && self.in_scope(&m.node_id))
-            .map(|m| if m.site.is_empty() { m.node_id } else { m.site })
-            .collect();
+        let mut missing = self.unconnected();
         let calls: Vec<(String, Vec<u8>)> = reads
             .into_iter()
             .filter_map(|(peer, r)| serde_json::to_vec(&r).ok().map(|b| (peer, b)))
             .collect();
+        // The calls run as tasks on the runtime and this thread waits on a `std` channel, so it
+        // works from any caller: a blocking-pool thread, a worker (the wait then costs its
+        // deadline: nothing else runs on it), or a current-thread runtime.
         let answers = match tokio::runtime::Handle::try_current() {
-            Ok(rt) if !calls.is_empty() => {
-                let cluster = Arc::clone(&self.cluster);
-                // A plain thread blocks on the runtime, so this works whether the caller is a
-                // blocking worker or not.
-                std::thread::scope(|s| {
-                    s.spawn(|| {
-                        rt.block_on(async {
-                            let tasks: Vec<_> = calls
-                                .into_iter()
-                                .map(|(peer, body)| {
-                                    let c = Arc::clone(&cluster);
-                                    tokio::spawn(async move {
-                                        let r = c.call(&peer, KIND, body, DEADLINE).await;
-                                        (peer, r)
-                                    })
-                                })
-                                .collect();
-                            let mut out = Vec::new();
-                            for t in tasks {
-                                if let Ok(r) = t.await {
-                                    out.push(r);
-                                }
-                            }
-                            out
-                        })
-                    })
-                    .join()
-                    .unwrap_or_default()
-                })
-            }
+            Ok(rt) if !calls.is_empty() => self.start_calls(&rt, calls, DEADLINE).wait(),
             _ => Vec::new(),
         };
         let mut ok = Vec::new();
+        // A peer is labelled once, however many of its calls failed (a refused range of time is
+        // hundreds of calls to each peer, and a label reads the member list).
+        let mut failed = std::collections::BTreeSet::new();
         for (peer, r) in answers {
             match r {
                 Ok(body) => ok.push((peer, body)),
                 Err(e) => {
                     tracing::debug!(peer, error = %e, "federated read failed");
-                    missing.push(self.label_of(&peer));
+                    failed.insert(peer);
                 }
             }
         }
+        missing.extend(failed.iter().map(|peer| self.label_of(peer)));
+        self.record_missing(missing);
+        ok
+    }
+
+    /// The in-scope members that aren't connected, by site (or ID).
+    fn unconnected(&self) -> Vec<String> {
+        self.cluster
+            .members()
+            .into_iter()
+            .filter(|m| !m.connected && self.in_scope(&m.node_id))
+            .map(|m| if m.site.is_empty() { m.node_id } else { m.site })
+            .collect()
+    }
+
+    /// Sets the list of nodes that didn't answer, all at once: a reader never sees half of it.
+    fn record_missing(&self, mut missing: Vec<String>) {
         missing.sort();
         missing.dedup();
         *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing;
-        ok
     }
 
     /// Asks every reachable peer the same read; decoded answers with each peer's label.
@@ -1010,6 +1100,11 @@ impl Federated {
     /// of minutes is over the cluster channel's 1 MiB frame, and was dropped whole. Returns
     /// each answered window's buckets, and each peer that answered any window (`true` when it
     /// answered every one). Windows that fail list the peer in `missingNodes`.
+    ///
+    /// REQ: CLU-004, CLU-002 (ADR-174, final review F1) — a range of more than
+    /// [`federation::TIMESERIES_MAX_WINDOWS`] windows is asked of no peer: they are listed in
+    /// `missingNodes` (this node's own data and shipped minutes still answer), and the log says
+    /// so. The longest range any step documents is under half that.
     fn peer_timeseries(
         &self,
         peers: Vec<String>,
@@ -1017,7 +1112,21 @@ impl Federated {
         from_s: u64,
         to_s: u64,
     ) -> (Vec<Vec<TimeBucket>>, Vec<(String, bool)>) {
-        let windows = federation::timeseries_chunks(step, from_s, to_s);
+        // With nobody to ask there is nothing to chunk.
+        let windows = if peers.is_empty() {
+            Vec::new()
+        } else if let Some(w) = federation::timeseries_chunks(step, from_s, to_s) {
+            w
+        } else {
+            self.limiter.refused(bridge::Refused::TooBig);
+            // REQ: CLU-004 (ADR-174) — lists who isn't connected, as a read does, and the peers
+            // that weren't asked as ones that failed would be, in one step: two writes let
+            // another request's reader see the list without the peers.
+            let mut missing = self.unconnected();
+            missing.extend(peers.iter().map(|p| self.label_of(p)));
+            self.record_missing(missing);
+            return (Vec::new(), Vec::new());
+        };
         let reads = peers
             .iter()
             .flat_map(|p| {
@@ -1075,6 +1184,7 @@ impl Backend for Federated {
             cluster: Arc::clone(&self.cluster),
             missing: Mutex::new(Vec::new()),
             only: Some(only),
+            limiter: self.limiter,
         }))
     }
     fn local(&self) -> Option<Shared> {
@@ -1116,13 +1226,24 @@ impl Backend for Federated {
         self.local.backup()
     }
     // REQ: OPS-011 (ADR-156) — a support package is of this node: its own log and state, redacted on
-    // it (a `--cluster` package, asking each node, is a later phase).
+    // it. With `cluster` (ADR-172) every reachable node makes and redacts its own part under one key
+    // made here, and this node puts them together.
     fn support_package(
         &self,
         req: &telltale_api::model::SupportPackageRequest,
         dry_run: bool,
     ) -> Result<telltale_api::SupportPackageOutput, Problem> {
+        if req.cluster {
+            return self.cluster_support(req, dry_run);
+        }
         self.local.support_package(req, dry_run)
+    }
+    // REQ: OPS-011 (ADR-172) — this node's part, for the node that is putting a package together.
+    fn support_part(
+        &self,
+        req: &telltale_api::model::SupportCollectRequest,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.support_part(req)
     }
     fn support_map(&self, id: &str) -> Option<String> {
         self.local.support_map(id)
@@ -1545,11 +1666,21 @@ impl Backend for Federated {
             .into_iter()
             .filter_map(|p| {
                 let to = until(&p)?;
-                let read = Read::Queries {
-                    params: Box::new(params.clone()),
-                    from_us,
-                    to_us: to,
-                    limit,
+                let (params, from_us, to_us) = (Box::new(params.clone()), from_us, to);
+                let read = if params.negates() {
+                    Read::QueriesNegated {
+                        params,
+                        from_us,
+                        to_us,
+                        limit,
+                    }
+                } else {
+                    Read::Queries {
+                        params,
+                        from_us,
+                        to_us,
+                        limit,
+                    }
                 };
                 Some((p, read))
             })
@@ -2098,15 +2229,17 @@ impl Backend for Federated {
     fn alert_test(
         &self,
         name: &str,
+        by_admin: bool,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::AlertTest, Problem>> {
-        self.local.alert_test(name)
+        self.local.alert_test(name, by_admin)
     }
     // REQ: API-002 (T9.12) — checks run where the request landed.
     fn check_upstream(
         &self,
         body: serde_json::Value,
+        by_admin: bool,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
-        self.local.check_upstream(body)
+        self.local.check_upstream(body, by_admin)
     }
     fn check_list(
         &self,
@@ -2119,8 +2252,9 @@ impl Backend for Federated {
         &self,
         config: serde_json::Value,
         opts: telltale_api::SimulateOpts,
+        by_admin: bool,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::Simulation, Problem>> {
-        self.local.simulate(config, opts)
+        self.local.simulate(config, opts, by_admin)
     }
     fn client_name(&self, ip: IpAddr) -> Option<String> {
         self.local.client_name(ip)
@@ -2753,5 +2887,615 @@ mod name_tests {
             2,
             "each address is looked up once; text that isn't one, never"
         );
+    }
+}
+
+/// REQ: CLU-002, CLU-004 (ADR-174, GitHub issue #7) — what a federated read costs when the runtime
+/// can't help it: at most its deadline, never for ever. Two real nodes, joined over a real
+/// stream, on one runtime with a single worker.
+#[cfg(test)]
+mod bridge_tests {
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    use telltale_cluster::node::{Identity, JoinRequest, TokenGrants};
+    use telltale_cluster::pki;
+
+    use super::*;
+
+    /// The replica's own node: nothing but a configuration version no peer has.
+    struct Local;
+
+    impl Backend for Local {
+        fn system_info(&self) -> SystemInfo {
+            unreachable!("not read here")
+        }
+        fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<TimeBucket> {
+            Vec::new()
+        }
+        fn top(&self, _: TopKind, _: Hour, _: usize, _: Option<IpAddr>) -> Vec<TopItem> {
+            Vec::new()
+        }
+        fn latency(&self, _: LatencyBy, _: Hour) -> Vec<LatencyRow> {
+            Vec::new()
+        }
+        fn queries(&self, _: &QueryParams, _: u64, _: u64, _: usize) -> Result<QueryPage, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn explain(&self, _: &ExplainParams) -> Result<Explanation, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            Vec::new()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            Vec::new()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            Vec::new()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            Vec::new()
+        }
+        fn config_version(&self) -> u64 {
+            7
+        }
+    }
+
+    /// A replica's federated backend, and the primary it asks (which answers one read: its
+    /// configuration version, 4242).
+    struct Nodes {
+        rt: tokio::runtime::Runtime,
+        fed: Arc<Federated>,
+        primary: String,
+        _stop: tokio::sync::watch::Sender<bool>,
+        _dirs: (tempfile::TempDir, tempfile::TempDir),
+    }
+
+    fn two_nodes() -> Nodes {
+        let handler: RpcHandler = Arc::new(|_peer, _kind, body| {
+            Box::pin(async move {
+                match serde_json::from_slice::<Read>(&body) {
+                    Ok(Read::ConfigVersion) => {
+                        serde_json::to_vec(&4242_u64).map_err(|e| e.to_string())
+                    }
+                    _ => Err("a read these tests don't ask".to_owned()),
+                }
+            })
+        });
+        two_nodes_answering(handler)
+    }
+
+    /// As [`two_nodes`], with the primary answering with `handler`.
+    fn two_nodes_answering(handler: RpcHandler) -> Nodes {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(rt.metrics().num_workers(), 1, "the shape of the test");
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let primary_id =
+            Identity::init(a.path(), "home", vec![format!("https://{addr}")], "k8s").unwrap();
+        let token = primary_id
+            .create_token_for(
+                60,
+                None,
+                TokenGrants {
+                    eligible: true,
+                    witness: false,
+                },
+            )
+            .unwrap();
+        let key = pki::new_node_key().unwrap();
+        let joined = primary_id
+            .accept_join(
+                &JoinRequest {
+                    witness: false,
+                    ephemeral: false,
+                    secret: token.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: "pi".into(),
+                    eligible: true,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
+            .unwrap();
+        let replica_id =
+            Identity::save_joined(b.path(), &key.key_pem, &joined, "pi", true, vec![]).unwrap();
+        let (primary, replica) = (
+            Cluster::new(primary_id, "0.1.0"),
+            Cluster::new(replica_id, "0.1.0"),
+        );
+        let primary_node = primary.identity.meta.node_id.clone();
+        primary.set_rpc_handler(handler);
+        // The nodes' tasks run until the runtime is dropped (the sender stays in `Nodes`).
+        let (stop_tx, stop) = tokio::sync::watch::channel(false);
+        drop(rt.spawn(telltale_cluster::net::serve(
+            Arc::clone(&primary),
+            addr,
+            stop.clone(),
+        )));
+        drop(rt.spawn(telltale_cluster::net::dial(Arc::clone(&replica), stop)));
+        let until = Instant::now() + Duration::from_secs(30);
+        while replica.reachable_primary().as_deref() != Some(primary_node.as_str()) {
+            assert!(
+                Instant::now() < until,
+                "the replica never reached the primary"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        Nodes {
+            rt,
+            fed: Arc::new(Federated::new(Arc::new(Local), replica)),
+            primary: primary_node,
+            _stop: stop_tx,
+            _dirs: (a, b),
+        }
+    }
+
+    /// Parks the runtime's only worker on a gate (a send on the returned sender opens it), and
+    /// returns once it is parked: the production wedge.
+    fn wedge(rt: &tokio::runtime::Runtime) -> mpsc::Sender<()> {
+        let (gate, shut) = mpsc::channel::<()>();
+        let (parked_tx, parked) = mpsc::channel::<()>();
+        drop(rt.spawn(async move {
+            let _ = parked_tx.send(());
+            // Blocking on purpose; it gives up after a minute so a failed test leaves nothing.
+            let _ = shut.recv_timeout(Duration::from_secs(60));
+        }));
+        parked.recv_timeout(Duration::from_secs(10)).unwrap();
+        gate
+    }
+
+    /// What `f` returns when run on a plain thread in the runtime's context (as a blocking-pool
+    /// thread is). The guard is a `std` timeout here, never a timer on the wedged runtime: a
+    /// read that never returns fails the test after 10 s instead of hanging it.
+    fn on_a_thread<T: Send + 'static>(
+        n: Nodes,
+        gate: &mpsc::Sender<()>,
+        f: impl FnOnce(&Federated) -> T + Send + 'static,
+    ) -> (T, Duration, Nodes) {
+        let (fed, handle) = (Arc::clone(&n.fed), n.rt.handle().clone());
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        drop(std::thread::spawn(move || {
+            let _in = handle.enter();
+            let _ = tx.send(f(&fed));
+        }));
+        let Ok(v) = rx.recv_timeout(Duration::from_secs(10)) else {
+            // A runtime with a parked worker would hang the test run when dropped.
+            let _ = gate.send(());
+            n.rt.shutdown_background();
+            panic!("the read never returned: it waits on a runtime that can't run");
+        };
+        (v, started.elapsed(), n)
+    }
+
+    // REQ: CLU-002, CLU-004 (ADR-174) — a read from a thread that waits for the runtime, while
+    // every worker is parked, comes back at its deadline (and the grace) with "didn't answer",
+    // and the peer isn't asked. Before: the wait had no bound, and nothing could time it out.
+    #[test]
+    fn clu_002_a_wedged_runtime_costs_a_federated_read_its_deadline() {
+        let n = two_nodes();
+        let gate = wedge(&n.rt);
+        let peer = n.primary.clone();
+        let (r, took, n) = on_a_thread(n, &gate, move |fed| {
+            fed.call_one(&peer, &Read::ConfigVersion, Duration::from_millis(100))
+        });
+        let _ = gate.send(());
+        // Only an upper bound, far above the deadline: no race.
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        let e = r
+            .expect("there is a runtime")
+            .expect_err("nothing could have answered it");
+        assert!(e.contains("didn't answer in time"), "{e}");
+        drop(n);
+    }
+
+    // REQ: CLU-002, CLU-004 (ADR-174) — the same for a read to every peer: the peer is listed
+    // as one that didn't answer, and the answer isn't held up.
+    #[test]
+    fn clu_002_a_wedged_runtime_costs_a_gathered_read_its_deadline() {
+        let n = two_nodes();
+        let gate = wedge(&n.rt);
+        let peer = n.primary.clone();
+        let ((answers, missing, label), took, n) = on_a_thread(n, &gate, move |fed| {
+            let answers = fed.gather(vec![(peer.clone(), Read::ConfigVersion)]);
+            (answers, fed.missing_nodes(), fed.label_of(&peer))
+        });
+        let _ = gate.send(());
+        // `DEADLINE` and the grace are about 2.25 s; the bound only has to be finite.
+        assert!(took < Duration::from_secs(8), "{took:?}");
+        assert!(answers.is_empty(), "{answers:?}");
+        assert_eq!(missing, [label]);
+        drop(n);
+    }
+
+    // REQ: CLU-004 (ADR-174, GitHub issue #7) — a federated read that is made on the runtime's
+    // only worker (a handler that was missed) gives up at its deadline, falls back to this
+    // node's own answer, and gives the worker back: the runtime goes on. Before: the worker
+    // waited for work only it could do, and the node stopped.
+    #[test]
+    fn clu_004_a_read_on_the_only_worker_gives_up_and_frees_it() {
+        let n = two_nodes();
+        let (tx, rx) = mpsc::channel();
+        let fed = Arc::clone(&n.fed);
+        drop(n.rt.spawn(async move {
+            let _ = tx.send(fed.config_version());
+        }));
+        let Ok(version) = rx.recv_timeout(Duration::from_secs(10)) else {
+            n.rt.shutdown_background();
+            panic!("the read parked the runtime's only worker for good");
+        };
+        assert_eq!(
+            version, 7,
+            "this node's own version: the primary couldn't be asked"
+        );
+        // The worker is free again: a task runs, and a timer fires.
+        let (tx, rx) = mpsc::channel();
+        drop(n.rt.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tx.send(());
+        }));
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the runtime is stuck"
+        );
+    }
+
+    // REQ: CLU-002 (ADR-174) — with a runtime that works, the answers are the peer's, whether
+    // asked of one peer, of all (the way a config version, an entry list, or a list is), or
+    // through `config_version`, and nobody is listed as missing.
+    #[test]
+    fn clu_002_a_healthy_runtime_answers_a_federated_read() {
+        let n = two_nodes();
+        let _in = n.rt.enter();
+        let body = n
+            .fed
+            .call_one(&n.primary, &Read::ConfigVersion, Duration::from_secs(5))
+            .expect("there is a runtime")
+            .expect("the primary answers");
+        assert_eq!(serde_json::from_slice::<u64>(&body).unwrap(), 4242);
+        assert_eq!(
+            n.fed.config_version(),
+            4242,
+            "the primary's, not this node's 7"
+        );
+        let answers = n.fed.gather(vec![(n.primary.clone(), Read::ConfigVersion)]);
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].0, n.primary);
+        assert_eq!(serde_json::from_slice::<u64>(&answers[0].1).unwrap(), 4242);
+        assert!(n.fed.missing_nodes().is_empty(), "nobody is missing");
+        // A peer that errors is listed, and its error isn't an answer.
+        let none = n.fed.gather(vec![(n.primary.clone(), Read::CacheStats)]);
+        assert!(none.is_empty(), "an error is no answer");
+        assert_eq!(n.fed.missing_nodes(), [n.fed.label_of(&n.primary)]);
+    }
+
+    /// A primary that answers the time-bucket reads (with no buckets) and the configuration
+    /// version, and keeps every read it was asked.
+    fn recording_peer() -> (RpcHandler, Arc<Mutex<Vec<Read>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&asked);
+        let handler: RpcHandler = Arc::new(move |_peer, _kind, body| {
+            let log = Arc::clone(&log);
+            Box::pin(async move {
+                let r = serde_json::from_slice::<Read>(&body).map_err(|e| e.to_string())?;
+                let answer = match &r {
+                    Read::Timeseries { .. } => serde_json::to_vec(&Vec::<TimeBucket>::new()),
+                    Read::ConfigVersion => serde_json::to_vec(&4242_u64),
+                    _ => return Err("a read these tests don't ask".to_owned()),
+                };
+                log.lock().unwrap_or_else(PoisonError::into_inner).push(r);
+                answer.map_err(|e| e.to_string())
+            })
+        });
+        (handler, asked)
+    }
+
+    /// The time-bucket windows a peer was asked for, oldest first.
+    fn windows_asked(asked: &Mutex<Vec<Read>>) -> Vec<(u64, u64)> {
+        let mut w: Vec<(u64, u64)> = asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(|r| match r {
+                Read::Timeseries { from_s, to_s, .. } => Some((*from_s, *to_s)),
+                _ => None,
+            })
+            .collect();
+        w.sort_unstable();
+        w
+    }
+
+    // REQ: CLU-004, CLU-002 (ADR-174, final review F1) — a time range of more windows than the
+    // cap (256 a peer) is asked of no peer: the peers are listed as not answering and the answer
+    // is this node's own, at once. Before: one read per window and peer, however long the range
+    // (from the epoch at one second a bucket, 7.5 million a peer; to the year 9999, a thousand
+    // million), all under one place of the cap on reads.
+    #[test]
+    fn clu_004_a_timeseries_over_the_window_cap_asks_no_peer() {
+        let (handler, asked) = recording_peer();
+        let n = two_nodes_answering(handler);
+        let _in = n.rt.enter();
+        let label = n.fed.label_of(&n.primary);
+        // 300 windows of 240 seconds: a little over the cap, so the test is small if it fails.
+        let from = 1_791_000_000;
+        let started = Instant::now();
+        let items = n.fed.timeseries(Step::Second, from, from + 300 * 240);
+        assert!(started.elapsed() < Duration::from_secs(5), "{items:?}");
+        assert!(
+            items.is_empty(),
+            "this node's own, which has none: {items:?}"
+        );
+        assert_eq!(windows_asked(&asked), [], "no peer was asked");
+        assert_eq!(n.fed.missing_nodes(), std::slice::from_ref(&label));
+        // The cases the report was about: from the epoch, and to the year 9999.
+        for (from, to) in [(0, 1_791_072_000), (1_791_072_000, 253_402_300_799)] {
+            let started = Instant::now();
+            let _ = n.fed.timeseries(Step::Second, from, to);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(windows_asked(&asked), [], "no peer was asked");
+            assert_eq!(n.fed.missing_nodes(), std::slice::from_ref(&label));
+        }
+    }
+
+    // REQ: CLU-002 (ADR-174, final review F1) — what the cap must not touch: the longest range
+    // each step documents is asked of a peer window by window, all of it, and nobody is listed
+    // as missing. `step=second` covers 15 minutes (4 windows), `minute` 7 days (43), `hour` 400
+    // days (41), `day` everything, here since 1970 (87).
+    #[test]
+    fn clu_002_the_documented_ranges_are_asked_of_a_peer_in_full() {
+        let (handler, asked) = recording_peer();
+        let n = two_nodes_answering(handler);
+        let _in = n.rt.enter();
+        let now = 1_791_072_000;
+        let cases = [
+            (Step::Second, now - 900, now + 1, 4),
+            (Step::Minute, now - 7 * 86_400, now + 1, 43),
+            (Step::Hour, now - 400 * 86_400, now + 1, 41),
+            (Step::Day, 0, now + 1, 87),
+        ];
+        for (step, from, to, count) in cases {
+            asked.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            let _ = n.fed.timeseries(step, from, to);
+            let w = windows_asked(&asked);
+            assert_eq!(w.len(), count, "{step:?}");
+            assert_eq!(w.first().map(|x| x.0), Some(from), "{step:?}");
+            assert_eq!(w.last().map(|x| x.1), Some(to), "{step:?}");
+            assert!(w.windows(2).all(|p| p[0].1 == p[1].0), "{step:?}: {w:?}");
+            assert_eq!(n.fed.missing_nodes(), Vec::<String>::new(), "{step:?}");
+        }
+    }
+
+    // REQ: CLU-004 (ADR-174, final review F1) — the bridge's own bound covers any other caller: a
+    // gathered read of over 4,096 calls asks nobody and lists the peer as not answering.
+    #[test]
+    fn clu_004_a_gathered_read_over_the_ceiling_asks_no_peer() {
+        let (handler, asked) = recording_peer();
+        let n = two_nodes_answering(handler);
+        let _in = n.rt.enter();
+        let reads: Vec<(String, Read)> = (0..=bridge::MAX_READ_CALLS)
+            .map(|_| (n.primary.clone(), Read::ConfigVersion))
+            .collect();
+        let answers = n.fed.gather(reads);
+        assert!(answers.is_empty(), "{} answers", answers.len());
+        assert!(
+            asked
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "no peer was asked"
+        );
+        assert_eq!(n.fed.missing_nodes(), [n.fed.label_of(&n.primary)]);
+    }
+
+    // REQ: CLU-004 (ADR-174) — a range that is refused lists the peers it did not ask in one step:
+    // a thread that reads `missingNodes` while another refuses ranges never sees the list
+    // half made (the nodes that are not connected, and not yet the peers that weren't asked).
+    // Before: the list was written, then added to under a second lock, so a watcher sometimes
+    // saw the list without the peer. The watcher can only pass by never seeing a half list; it
+    // proves nothing by one pass on its own, so it also has to have seen the whole one.
+    #[test]
+    fn clu_004_a_refused_range_lists_the_peers_in_one_step() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        // Tells the watcher to stop when this test ends, a failed assertion included.
+        struct StopOnDrop(Arc<AtomicBool>);
+        impl Drop for StopOnDrop {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let n = two_nodes();
+        let _in = n.rt.enter();
+        let label = n.fed.label_of(&n.primary);
+        let peers = n.fed.peers();
+        assert_eq!(peers.len(), 1, "the shape of the test");
+        // A range of 300 windows at one second a bucket: over the cap, so it is refused.
+        let (from, to) = (1_791_000_000, 1_791_000_000 + 300 * 240);
+        let refuse = |fed: &Federated| {
+            let (parts, answered) = fed.peer_timeseries(peers.clone(), Step::Second, from, to);
+            assert!(parts.is_empty() && answered.is_empty(), "nobody was asked");
+        };
+        refuse(&n.fed);
+        assert_eq!(n.fed.missing_nodes(), std::slice::from_ref(&label));
+        let watching = Arc::new(AtomicBool::new(true));
+        let _stop = StopOnDrop(Arc::clone(&watching));
+        let seen = Arc::new(AtomicU64::new(0));
+        let watcher = {
+            let (fed, watching, seen) =
+                (Arc::clone(&n.fed), Arc::clone(&watching), Arc::clone(&seen));
+            let label = label.clone();
+            std::thread::spawn(move || {
+                let mut torn = 0_u64;
+                while watching.load(Ordering::SeqCst) {
+                    if fed.missing_nodes() == [label.clone()] {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                    } else {
+                        torn += 1;
+                    }
+                }
+                torn
+            })
+        };
+        // The watcher is reading before the refusals start, and keeps reading while they run.
+        let until = Instant::now() + Duration::from_secs(10);
+        while seen.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < until, "the watcher never saw the list");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        for _ in 0..20_000 {
+            refuse(&n.fed);
+        }
+        watching.store(false, Ordering::SeqCst);
+        let torn = watcher.join().unwrap();
+        assert_eq!(
+            torn, 0,
+            "{torn} reads saw a list that was not the whole one"
+        );
+    }
+
+    /// A primary that answers each time-bucket window with one bucket at the window's start, and
+    /// the window that starts at `big_from` with a bucket of `groups` groups: a big answer.
+    fn peer_with_one_big_window(big_from: u64, groups: usize) -> RpcHandler {
+        Arc::new(move |_peer, _kind, body| {
+            Box::pin(async move {
+                let Ok(Read::Timeseries { from_s, .. }) = serde_json::from_slice::<Read>(&body)
+                else {
+                    return Err("a read these tests don't ask".to_owned());
+                };
+                let mut b = TimeBucket {
+                    start_unix_seconds: from_s,
+                    total: 1,
+                    ..TimeBucket::default()
+                };
+                if from_s == big_from {
+                    b.by_group = (0..groups).map(|g| (format!("group-{g:04}"), 1)).collect();
+                }
+                serde_json::to_vec(&vec![b]).map_err(|e| e.to_string())
+            })
+        })
+    }
+
+    /// A replica's federated backend over `n`'s cluster, with bounds of its own.
+    fn with_limiter(n: &Nodes, limiter: &'static bridge::Limiter) -> Federated {
+        Federated {
+            limiter,
+            ..Federated::new(Arc::new(Local), Arc::clone(&n.fed.cluster))
+        }
+    }
+
+    // REQ: CLU-004, CLU-002 (ADR-174) — over the real cluster channel: a peer whose answer for one
+    // window would take the read past its cap on bytes is listed in `missingNodes`, the same as a
+    // peer that didn't answer, and the read keeps the peer's other windows. This test's read may
+    // hold 4,096 bytes; the big window's answer is about 6 KB, the others under 200 bytes each.
+    // Before: every answer was kept, however big, and nobody was listed.
+    #[test]
+    fn clu_004_a_peer_whose_answer_is_over_the_cap_on_bytes_is_listed_as_missing() {
+        let from = 1_791_000_000;
+        let n = two_nodes_answering(peer_with_one_big_window(from + 240, 400));
+        let _in = n.rt.enter();
+        let limiter: &'static bridge::Limiter = Box::leak(Box::new(bridge::Limiter::with_caps(
+            8,
+            1_000,
+            64 * 1024,
+            4 * 1024,
+        )));
+        let fed = with_limiter(&n, limiter);
+        let label = fed.label_of(&n.primary);
+        // Four windows of 240 seconds; the second is the big one.
+        let items = fed.timeseries(Step::Second, from, from + 4 * 240);
+        let starts: Vec<u64> = items.iter().map(|b| b.start_unix_seconds).collect();
+        assert_eq!(
+            starts,
+            [from, from + 480, from + 720],
+            "the peer's other windows are kept"
+        );
+        assert_eq!(
+            fed.missing_nodes(),
+            [label],
+            "the peer is listed as one that didn't answer"
+        );
+    }
+
+    // REQ: CLU-004 (ADR-174) — the refusals are a counter with a closed set of reasons, one
+    // sample each from the start (0 until something is refused), and each refusal counts under
+    // its own: a read over the ceiling (`ceiling`), one with no place left (`waits`), one the
+    // budget of calls has no room for (`spent`), and one that lost an answer to a cap on bytes
+    // (`bytes`). Peers' names and what a user asked are never labels.
+    #[test]
+    fn clu_004_refused_reads_are_a_metric_with_a_closed_set_of_reasons() {
+        let render = |l: &bridge::Limiter| {
+            let mut w = telltale_telemetry::prom::PromWriter::new();
+            render_refusals(l, &mut w);
+            w.finish()
+        };
+        let reasons = |text: &str| -> Vec<(String, u64)> {
+            text.lines()
+                .filter(|l| l.starts_with("telltale_federated_refused_total{"))
+                .filter_map(|l| {
+                    let (labels, n) = l.rsplit_once(' ')?;
+                    let reason =
+                        labels.strip_prefix("telltale_federated_refused_total{reason=\"")?;
+                    Some((reason.strip_suffix("\"}")?.to_owned(), n.parse().ok()?))
+                })
+                .collect()
+        };
+        let n = two_nodes_answering(peer_with_one_big_window(1_791_000_240, 400));
+        let _in = n.rt.enter();
+        // One place, room for 4 calls, and 4,096 bytes a read.
+        let limiter: &'static bridge::Limiter = Box::leak(Box::new(bridge::Limiter::with_caps(
+            1,
+            4,
+            64 * 1024,
+            4 * 1024,
+        )));
+        let text = render(limiter);
+        assert!(text.contains("# TYPE telltale_federated_refused_total counter\n"));
+        let zero: Vec<(String, u64)> = ["waits", "spent", "ceiling", "bytes"]
+            .iter()
+            .map(|r| ((*r).to_owned(), 0))
+            .collect();
+        assert_eq!(reasons(&text), zero, "every reason, from the start");
+        let fed = with_limiter(&n, limiter);
+        // Over the ceiling: a range of more windows than a read may have.
+        let _ = fed.timeseries(Step::Second, 1_791_000_000, 1_791_000_000 + 300 * 240);
+        // Over the budget of calls: five windows, with room for four.
+        let _ = fed.timeseries(Step::Second, 1_791_000_000, 1_791_000_000 + 5 * 240);
+        // Over a cap on bytes: four windows, the second one big.
+        let _ = fed.timeseries(Step::Second, 1_791_000_000, 1_791_000_000 + 4 * 240);
+        // No place left: a read waits on a call the runtime can't run, and the next is refused.
+        // (The last read's place goes back as its last task ends, a moment after it answered.)
+        let until = Instant::now() + Duration::from_secs(10);
+        while limiter.in_flight() > 0 {
+            assert!(
+                Instant::now() < until,
+                "the last read's place never came back"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let gate = wedge(&n.rt);
+        let waiting = fed.start_calls(
+            n.rt.handle(),
+            vec![(n.primary.clone(), b"{}".to_vec())],
+            Duration::from_secs(5),
+        );
+        let _ = fed.gather(vec![(n.primary.clone(), Read::ConfigVersion)]);
+        // Its call isn't sent: nobody waits for it when the runtime runs it.
+        drop(waiting);
+        let _ = gate.send(());
+        let got = reasons(&render(limiter));
+        let want: Vec<(String, u64)> = ["waits", "spent", "ceiling", "bytes"]
+            .iter()
+            .map(|r| ((*r).to_owned(), 1))
+            .collect();
+        assert_eq!(got, want);
     }
 }

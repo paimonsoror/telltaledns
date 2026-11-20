@@ -121,6 +121,15 @@ pub trait Backend: Send + Sync + 'static {
             "support packages aren't available on this node",
         ))
     }
+    /// REQ: OPS-011 (ADR-172) — this node's part of a cluster support package, made and redacted
+    /// here under the asking node's key: gzip-compressed JSON that fits one cluster answer
+    /// (about a mebibyte). May take a few seconds; called on a blocking thread.
+    fn support_part(&self, req: &model::SupportCollectRequest) -> Result<Vec<u8>, Problem> {
+        let _ = req;
+        Err(Problem::unavailable(
+            "support packages aren't available on this node",
+        ))
+    }
     /// REQ: OPS-011 — the pseudonym map of the package `id`, once, if it is still held.
     fn support_map(&self, id: &str) -> Option<String> {
         let _ = id;
@@ -204,17 +213,26 @@ pub trait Backend: Send + Sync + 'static {
         model::AlertsStatus::default()
     }
     /// REQ: OBS-010 (T9.6) — sends a test alert to destination `name` from this node.
-    fn alert_test(&self, name: &str) -> BoxFuture<Result<model::AlertTest, Problem>> {
-        let _ = name;
+    /// REQ: OBS-010 (ADR-180) — `by_admin`: the caller is an administrator, who alone is told what
+    /// went wrong reading the destination's private CA file.
+    fn alert_test(
+        &self,
+        name: &str,
+        by_admin: bool,
+    ) -> BoxFuture<Result<model::AlertTest, Problem>> {
+        let _ = (name, by_admin);
         Box::pin(async { Err(Problem::unavailable("alerts aren't available on this node")) })
     }
     /// REQ: API-002 (T9.12) — a draft upstream (the `PUT /upstreams/{name}` body) asked a
     /// probe from this node, before it's saved.
+    /// REQ: API-002 (ADR-180) — `by_admin`: the caller is an administrator, who alone is told
+    /// what went wrong reading a TLS file the draft names.
     fn check_upstream(
         &self,
         body: serde_json::Value,
+        by_admin: bool,
     ) -> BoxFuture<Result<model::CheckResult, Problem>> {
-        let _ = body;
+        let _ = (body, by_admin);
         Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
     }
     /// REQ: API-002 (T9.12) — a draft list (the `PUT /lists/{name}` body) downloaded and
@@ -541,12 +559,15 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: OBS-024 (T13.1) — what the shared configuration `config` (JSON) would have done to
     /// the logged queries over `opts`' window, compared with the configuration in effect
     /// (`POST /api/v1/simulate`).
+    /// REQ: OBS-024 (ADR-180) — `by_admin`: the caller is an administrator; anyone else's
+    /// candidate names no local file, program or socket the configuration in effect doesn't.
     fn simulate(
         &self,
         config: serde_json::Value,
         opts: SimulateOpts,
+        by_admin: bool,
     ) -> BoxFuture<Result<model::Simulation, Problem>> {
-        let _ = (config, opts);
+        let _ = (config, opts, by_admin);
         Box::pin(async {
             Err(Problem::unavailable(
                 "simulation isn't available on this node",
@@ -812,7 +833,21 @@ pub enum ManagedKind {
     /// REQ: FLT-017 (T15.1) — a `[[kubernetes.map]]` rule (`/kubernetes/map/{namespace}/{kind}/{name}`,
     /// `*` for any): the group of the workloads it matches. API rules come before the files'.
     KubernetesMap,
+    /// REQ: T8.2, API-002 — a router integration (`/routers/{name}`): a UniFi console or an
+    /// OPNsense box whose clients name devices. Its key, secret, or password may come in the
+    /// body; they're written to files in the data directory, never stored or returned (ADR-181).
+    Router,
 }
+
+/// REQ: T8.2, API-002 (ADR-181) — the credentials of a router, as a body pastes them, and the
+/// `[[router]]` field naming the file each is saved to: the one list the API layer (hashing a
+/// pasted value for the idempotency record, what a caller below admin is shown) and the backend
+/// (saving, using and removing the files) both use.
+pub const ROUTER_CREDENTIALS: [(&str, &str); 3] = [
+    ("api_key", "api_key_file"),
+    ("api_secret", "api_secret_file"),
+    ("password", "password_file"),
+];
 
 /// A write to a local name or a forwarded domain.
 #[derive(Debug, Clone)]
@@ -828,6 +863,12 @@ pub struct ManagedWrite {
     pub by: String,
     /// REQ: OBS-024 — with `dry_run`: also replay the query log (`simulation`).
     pub simulate: Option<SimulateOpts>,
+    /// REQ: OBS-010, API-002 (ADR-179) — the caller is an administrator: an admin's own sign-in,
+    /// HTTP Basic, or API token, not an agent token. Only an administrator adds or changes an
+    /// alert destination that names a credential file, or writes a router (ADR-181). Writes the
+    /// server makes itself, and a forwarded write that doesn't say (from an older node), are not
+    /// an administrator's.
+    pub by_admin: bool,
 }
 
 /// REQ: OBS-024 (T13.1) — a dry run's `simulate` and `simulateUntil` parameters.
@@ -1017,6 +1058,11 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             blocking_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
+        // REQ: T8.2 (ADR-181) — routers hold credentials and say where they're sent: admin.
+        .merge(
+            config_api::router_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
         // REQ: CLU-013 — the rollout settings decide what every node serves: admin (agents:
         // cluster:admin).
         .merge(
@@ -1121,7 +1167,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_router, config_api::delete_router, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
@@ -1134,7 +1180,8 @@ async fn fallback(
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
         auth::routes::TotpCode, auth::routes::PasswordConfirm, auth::routes::RecoveryCodes,
         auth::routes::TokenInfo, auth::routes::TokenKind, auth::routes::CreateToken, auth::routes::NewToken, auth::routes::DisplayInfo, auth::routes::CreateDisplay, auth::routes::NewDisplay, auth::routes::OpenDisplay, auth::routes::DisplayOpened,
-        auth::routes::UserInfo, auth::routes::CreateUser, auth::routes::UpdateUser,
+        auth::routes::UserInfo, auth::routes::UserList, auth::PasswordLogin,
+        auth::routes::CreateUser, auth::routes::UpdateUser,
         auth::routes::AuditInfo, auth::routes::AuditPage, auth::routes::AuditVerify,
         auth::routes::OidcButton, auth::routes::LogoutResult
     )),
@@ -1538,7 +1585,9 @@ async fn stats_slo(
 ///
 /// Buckets by status, query type, and response code, plus upstream exchanges. `step=second`
 /// covers the last 15 minutes, `step=minute` 7 days (48 hours live), `step=hour` 400 days,
-/// `step=day` everything. Buckets without queries are omitted. Example:
+/// `step=day` everything. On a cluster the longest ranges can come back partial: the nodes
+/// whose answers were left out are in `missingNodes`. Buckets without queries are omitted.
+/// Example:
 /// `GET /api/v1/stats/timeseries?from=-30d&step=hour`.
 #[utoipa::path(get, path = "/api/v1/stats/timeseries", tag = "stats", params(TimeseriesParams),
     responses((status = 200, body = Items<TimeBucket>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
@@ -1570,7 +1619,8 @@ async fn stats_timeseries(
 /// Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
 /// fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
 /// skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-/// connection open. Filters are applied on the server. In a browser:
+/// connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
+/// applied on the server. In a browser:
 /// `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
 /// in). Honors the query-log privacy level; at most 16 streams per node.
 #[utoipa::path(get, path = "/api/v1/queries/stream", tag = "queries", params(TailParams),
@@ -1588,6 +1638,17 @@ async fn queries_stream(
     if p.rate.is_some_and(|r| !(1..=2000).contains(&r)) {
         return Err(Problem::invalid("`rate`: 1 to 2000 events per second"));
     }
+    check_negations(&[
+        ("nameNot", p.name_not, "name", p.name.is_some()),
+        ("clientNot", p.client_not, "client", p.client.is_some()),
+        (
+            "statusNot",
+            p.status_not,
+            "status",
+            listed(p.status.as_ref()),
+        ),
+        ("qtypeNot", p.qtype_not, "qtype", listed(p.qtype.as_ref())),
+    ])?;
     let rx = b.tail(&p)?;
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         let event = match rx.recv().await? {
@@ -1711,12 +1772,34 @@ async fn stats_latency(
     }))
 }
 
+/// REQ: OBS-003 (ADR-171) — a `…Not` flag keeps what its filter does not match, so it needs
+/// that filter.
+fn check_negations(flags: &[(&str, Option<bool>, &str, bool)]) -> Result<(), Problem> {
+    for &(flag, on, filter, given) in flags {
+        if on == Some(true) && !given {
+            return Err(Problem::invalid(format!("`{flag}` needs `{filter}`")).hint(format!(
+                "`{flag}=true` keeps the rows that do not match `{filter}`: give `{filter}` too, or drop `{flag}`."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a comma-separated filter names anything.
+fn listed(v: Option<&String>) -> bool {
+    v.is_some_and(|s| s.split(',').any(|x| !x.trim().is_empty()))
+}
+
 /// Search the query log.
 ///
 /// Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
 /// glob|regex`), client, status, query type, response code, upstream, minimum latency, and
 /// time range. Pass `nextCursor` back as `cursor` for older rows. Example:
-/// `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
+/// `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a
+/// filter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`
+/// (`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose
+/// name does not contain `doubleclick`. A negated search reads every block the time range and
+/// the other filters leave, so give a time range or another filter on a long log.
 #[utoipa::path(get, path = "/api/v1/queries", tag = "queries", params(QueryParams),
     responses((status = 200, body = QueryPage, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it."),
         (status = 503, body = Problem, description = "The query log is off.")))]
@@ -1732,6 +1815,18 @@ async fn queries(
     if p.name_match.is_some_and(|m| m != NameMatch::Substring) && p.name.is_none() {
         return Err(Problem::invalid("`match` needs `name`"));
     }
+    check_negations(&[
+        ("nameNot", p.name_not, "name", p.name.is_some()),
+        ("clientNot", p.client_not, "client", p.client.is_some()),
+        (
+            "statusNot",
+            p.status_not,
+            "status",
+            listed(p.status.as_ref()),
+        ),
+        ("qtypeNot", p.qtype_not, "qtype", listed(p.qtype.as_ref())),
+        ("rcodeNot", p.rcode_not, "rcode", listed(p.rcode.as_ref())),
+    ])?;
     // REQ: OBS-017 (ADR-110) — a trace ID names the microsecond its query started; of the rows
     // logged then, the one whose fields give the same ID. Checked here, after every node
     // answered, so nodes that don't know `trace` still help.
@@ -1780,10 +1875,15 @@ async fn explain(
 ///
 /// Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
 /// `pending`) and last error, size, and how many names it contributes to the active snapshot.
-/// `hits` adds up every node's in a cluster.
+/// `hits` adds up every node's in a cluster. For a list read from a local file, the error is
+/// shown in full to an administrator; anyone else sees a generic reason (ADR-180).
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
-async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
+async fn lists(
+    State(b): State<Shared>,
+    ext: axum::http::Extensions,
+) -> Result<Json<Items<ListInfo>>, Problem> {
+    let admin = auth::routes::principal(&ext).is_ok_and(|p| config_api::by_admin(&p));
     let bk = Arc::clone(&b);
     // REQ: OBS-009 (T7.14) — hits from every node: in a cluster the API's node may answer
     // few or no queries itself.
@@ -1792,6 +1892,11 @@ async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem
         let mut items = bk.lists();
         for l in &mut items {
             l.hits = hits.get(&l.name).copied().unwrap_or(0);
+            // REQ: FLT-004, API-002 (ADR-180) — what went wrong reading a local file (a line of
+            // it, whether it is there) is an administrator's to see; the node's log has it too.
+            if !admin && l.error.is_some() && l.local {
+                l.error = Some(LOCAL_LIST_ERROR.to_owned());
+            }
         }
         Ok(items)
     })
@@ -1801,6 +1906,10 @@ async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem
         items,
     }))
 }
+
+/// REQ: FLT-004 (ADR-180) — what a caller below admin sees of a failing list read from a local
+/// file.
+const LOCAL_LIST_ERROR: &str = "the list's local file couldn't be used; an administrator sees why here, and the node's log says";
 
 /// Blockable services.
 ///
@@ -1835,27 +1944,37 @@ async fn groups(State(b): State<Shared>) -> Json<Items<GroupInfo>> {
 /// priority order (the first group's settings apply). Unknown devices use the `default` group.
 #[utoipa::path(get, path = "/api/v1/clients", tag = "config",
     responses((status = 200, body = Items<ClientInfo>, description = "The result.")))]
-async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl IntoResponse {
-    // The config version for `If-Match` on writes (ADR-040).
-    let etag = format!("\"{}\"", b.config_version());
-    let mut items = b.clients();
+async fn clients(
+    State(b): State<Shared>,
+    ext: axum::http::Extensions,
+) -> Result<impl IntoResponse, Problem> {
     // REQ: AGT-004 — a group-restricted agent sees its group's devices only.
-    if let Some(g) = ext
+    let group = ext
         .get::<auth::Principal>()
         .and_then(|p| p.agent.as_ref())
-        .and_then(|a| a.group.as_deref())
-    {
-        items.retain(|c| {
-            c.groups.iter().any(|x| x == g) || c.effective_groups.iter().any(|x| x == g)
-        });
-    }
-    (
-        [(axum::http::header::ETAG, etag)],
+        .and_then(|a| a.group.clone());
+    // REQ: CLU-004 (ADR-174) — both reads can wait for the cluster (a replica asks the primary
+    // for the version, and every node for the identities): off the runtime's worker, in one
+    // closure so they hold one pool thread.
+    let (version, items) = blocking(move || {
+        // The config version for `If-Match` on writes (ADR-040).
+        let version = b.config_version();
+        let mut items = b.clients();
+        if let Some(g) = &group {
+            items.retain(|c| {
+                c.groups.iter().any(|x| x == g) || c.effective_groups.iter().any(|x| x == g)
+            });
+        }
+        Ok((version, items))
+    })
+    .await?;
+    Ok((
+        [(axum::http::header::ETAG, format!("\"{version}\""))],
         Json(Items {
             missing_nodes: Vec::new(),
             items,
         }),
-    )
+    ))
 }
 
 /// Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).
@@ -2011,15 +2130,16 @@ async fn zones(State(b): State<Shared>) -> Json<Items<ZoneInfo>> {
 /// editable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/records", tag = "config",
     responses((status = 200, body = Items<LocalName>, description = "The result.")))]
-async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
-    (
-        [(axum::http::header::ETAG, etag)],
+async fn local_names(State(b): State<Shared>) -> Result<impl IntoResponse, Problem> {
+    // REQ: CLU-004 (ADR-174) — the version can wait for the primary: off the worker.
+    let (version, items) = blocking(move || Ok((b.config_version(), b.local_names()))).await?;
+    Ok((
+        [(axum::http::header::ETAG, format!("\"{version}\""))],
         Json(Items {
             missing_nodes: Vec::new(),
-            items: b.local_names(),
+            items,
         }),
-    )
+    ))
 }
 
 /// Domains sent to other DNS servers (conditional forwarding).
@@ -2028,15 +2148,16 @@ async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
 /// with where it's defined (`file` or `api`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/forwards", tag = "config",
     responses((status = 200, body = Items<ForwardInfo>, description = "The result.")))]
-async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
-    (
-        [(axum::http::header::ETAG, etag)],
+async fn forwards(State(b): State<Shared>) -> Result<impl IntoResponse, Problem> {
+    // REQ: CLU-004 (ADR-174) — the version can wait for the primary: off the worker.
+    let (version, items) = blocking(move || Ok((b.config_version(), b.forwards()))).await?;
+    Ok((
+        [(axum::http::header::ETAG, format!("\"{version}\""))],
         Json(Items {
             missing_nodes: Vec::new(),
-            items: b.forwards(),
+            items,
         }),
-    )
+    ))
 }
 
 /// The configuration's upstreams, upstream groups, lists, and groups, with their sources.
@@ -2045,18 +2166,93 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
 /// from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
 /// config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
 /// it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-/// files' version back. Secrets aren't part of these sections.
+/// files' version back. Secrets aren't part of these sections. A router's key-file paths and
+/// `username` are shown to an administrator only (their own sign-in or an admin API token);
+/// everyone gets each router's `credentials` status.
 #[utoipa::path(get, path = "/api/v1/config/entries", tag = "config",
     params(EntriesQuery),
     responses((status = 200, body = Items<ConfigEntry>, description = "The entries, by kind and name.")))]
 async fn config_entries(
     State(b): State<Shared>,
     Query(q): Query<EntriesQuery>,
-) -> Json<Items<ConfigEntry>> {
-    Json(Items {
+    ext: axum::http::Extensions,
+) -> Result<Json<Items<ConfigEntry>>, Problem> {
+    // REQ: API-002, T8.2 (ADR-181) — F7: who may see where a router's keys are.
+    let admin = auth::routes::principal(&ext).is_ok_and(|p| config_api::by_admin(&p));
+    // REQ: CLU-004 (ADR-174) — a replica asks the primary for the entries: off the worker.
+    let mut items = blocking(move || Ok(b.config_entries(q.kind.as_deref()))).await?;
+    if !admin {
+        items.iter_mut().for_each(redact_router);
+    }
+    Ok(Json(Items {
         missing_nodes: Vec::new(),
-        items: b.config_entries(q.kind.as_deref()),
-    })
+        items,
+    }))
+}
+
+/// The router fields a caller below admin isn't shown: where its keys are, who it signs in as.
+fn router_hidden(field: &str) -> bool {
+    field == "username" || ROUTER_CREDENTIALS.iter().any(|(_, f)| *f == field)
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — security F3: a pin's diff (JSON Patch over the shared
+/// configuration) as a caller below admin sees it. A router's key-file paths and `username` read
+/// "(hidden)", in an operation on one of those fields and inside an added or replaced router (or
+/// list of routers); every other operation is as it was. Before this change the same diff showed
+/// them for routers in the config files.
+pub(crate) fn mask_router_diff(ops: &mut [serde_json::Value]) {
+    fn hide_in(v: &mut serde_json::Value) {
+        if let Some(o) = v.as_object_mut() {
+            for (k, x) in o.iter_mut() {
+                if router_hidden(k) {
+                    *x = "(hidden)".into();
+                }
+            }
+        }
+    }
+    for op in ops {
+        let path = op
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        if parts.first() != Some(&"router") {
+            continue;
+        }
+        let Some(value) = op.get_mut("value") else {
+            continue;
+        };
+        match parts.get(2) {
+            None if parts.len() == 1 => match value.as_array_mut() {
+                Some(a) => a.iter_mut().for_each(hide_in),
+                None => hide_in(value),
+            },
+            None => hide_in(value),
+            Some(field) if router_hidden(field) => *value = "(hidden)".into(),
+            Some(_) => {}
+        }
+    }
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — F7: a router as a caller below admin sees it (a viewer, an
+/// operator, any agent token, an MCP resource read): without where its keys are (the `*_file`
+/// fields) and who it signs in as (`username`). Its `credentials` status stays. Applied where
+/// the answer leaves the node, so a replica's copy of the primary's entries is redacted too.
+fn redact_router(e: &mut ConfigEntry) {
+    if e.kind != "router" {
+        return;
+    }
+    if let Some(o) = e
+        .definition
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (_, file_field) in ROUTER_CREDENTIALS {
+            o.remove(file_field);
+        }
+        o.remove("username");
+    }
 }
 
 /// Quick rules: per-device and per-group allow and block (T6.12, ADR-067).
@@ -2067,15 +2263,16 @@ async fn config_entries(
 /// `If-Match`.
 #[utoipa::path(get, path = "/api/v1/rules", tag = "config",
     responses((status = 200, body = Items<crate::model::RuleInfo>, description = "The result.")))]
-async fn rules(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
-    (
-        [(axum::http::header::ETAG, etag)],
+async fn rules(State(b): State<Shared>) -> Result<impl IntoResponse, Problem> {
+    // REQ: CLU-004 (ADR-174) — the version can wait for the primary: off the worker.
+    let (version, items) = blocking(move || Ok((b.config_version(), b.rules()))).await?;
+    Ok((
+        [(axum::http::header::ETAG, format!("\"{version}\""))],
         Json(Items {
             missing_nodes: Vec::new(),
-            items: b.rules(),
+            items,
         }),
-    )
+    ))
 }
 
 /// Upstream servers with health and latency.

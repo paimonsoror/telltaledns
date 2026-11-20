@@ -245,11 +245,18 @@ fn ops_012_the_restart_limit_turns_a_restart_into_a_dump() {
     let mut ev = Recorder::default();
     let outcomes = rounds(&mut wd, &mut ev, t0, 1_000_000, 100);
     assert!(
-        matches!(outcomes[0].1, Outcome::Dumped(Some(_))),
+        matches!(outcomes[0].1, Outcome::CapReached { dump: Some(_), .. }),
         "{outcomes:?}"
     );
     assert!(!ev.dumps[0].restart);
-    assert!(ev.dumps[0].note.is_some_and(|n| n.contains("limit")));
+    assert_eq!(
+        ev.dumps[0].cap,
+        Some(Cap {
+            restarts: 2,
+            max: 2
+        }),
+        "the dump knows it is the limit that held the node back"
+    );
 
     // The same limit an hour later lets it restart again.
     let mut wd = Watchdog::new(
@@ -277,7 +284,7 @@ fn ops_012_zero_restarts_per_hour_never_restarts() {
         t0,
     );
     let outcomes = rounds(&mut wd, &mut Recorder::default(), t0, 1_000_000, 100);
-    assert!(matches!(outcomes[0].1, Outcome::Dumped(_)));
+    assert!(matches!(outcomes[0].1, Outcome::CapReached { .. }));
 }
 
 #[test]
@@ -341,6 +348,348 @@ fn ops_012_the_thread_exits_with_status_70_and_stops_at_shutdown() {
         code.store(c, Ordering::Relaxed);
     });
     assert_eq!(code.load(Ordering::Relaxed), 0);
+}
+
+// ---- the restart cap (ADR-163, amended) -------------------------------------------------------
+//
+// A node that is still stuck after `max_restarts_per_hour` restarts is not restarted again. That
+// used to be quiet: one dump with a generic line, and then nothing for as long as it lasted. These
+// tests pin what is said now, with an injected clock and a log the test reads: the dump's first
+// line, one ERROR line when the limit is found used up and one an hour while the stall lasts, one
+// line when it ends by itself, and a counter. Nothing here changes when a node is restarted.
+
+const CAP_LINE: &str = "restart cap reached; not restarting";
+
+/// What a test subscriber saw: each event's level and its whole text (message, then fields).
+#[derive(Clone, Default)]
+struct Seen(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Seen {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        use std::fmt::Write as _;
+        #[derive(Default)]
+        struct Text {
+            message: String,
+            fields: String,
+        }
+        impl tracing::field::Visit for Text {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.message = format!("{value:?}");
+                } else {
+                    let _ = write!(self.fields, " {}={value:?}", field.name());
+                }
+            }
+        }
+        let mut t = Text::default();
+        event.record(&mut t);
+        if let Ok(mut v) = self.0.lock() {
+            v.push((
+                *event.metadata().level(),
+                format!("{}{}", t.message, t.fields),
+            ));
+        }
+    }
+}
+
+/// Runs `body` with a subscriber that records what is logged, and returns it with the lines.
+fn logged<T>(body: impl FnOnce() -> T) -> (T, Vec<(tracing::Level, String)>) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let seen = Seen::default();
+    let sub = tracing_subscriber::registry().with(seen.clone());
+    let out = tracing::subscriber::with_default(sub, body);
+    let lines = seen.0.lock().map(|v| v.clone()).unwrap_or_default();
+    (out, lines)
+}
+
+/// Rounds 5 s apart from `t0` to `until` seconds, as `run` makes them: each outcome is announced.
+/// The outcomes that weren't quiet, with the second they came at.
+fn announced_rounds(
+    wd: &mut Watchdog<Stub>,
+    ev: &mut Recorder,
+    t0: Instant,
+    unix0: u64,
+    from: u64,
+    until: u64,
+) -> Vec<(u64, Outcome)> {
+    (from / 5..=until / 5)
+        .filter_map(|n| {
+            let at = n * 5;
+            let outcome = wd.tick(t0 + secs(at), unix0 + at, ev);
+            announce(&outcome);
+            (!matches!(outcome, Outcome::Quiet)).then_some((at, outcome))
+        })
+        .collect()
+}
+
+fn stuck_with_cap(dir: &Path, max: u32, t0: Instant) -> Watchdog<Stub> {
+    Watchdog::new(
+        Stub {
+            runtime: false,
+            listener: None,
+        },
+        settings(dir, true, max),
+        t0,
+    )
+}
+
+#[test]
+fn ops_012_at_the_restart_cap_the_dump_says_so_in_its_first_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let t0 = Instant::now();
+    let mut ev = Recorder::default();
+    let mut wd = stuck_with_cap(dir.path(), 0, t0);
+    rounds(&mut wd, &mut ev, t0, 1_000_000, 100);
+    let mut writer = Writer {
+        dir: dir.path().join("watchdog"),
+        started: Instant::now(),
+        runtime: None,
+    };
+    let text = std::fs::read_to_string(writer.dump(&ev.dumps[0], 1_800_000_000).unwrap()).unwrap();
+    let first = text.lines().next().unwrap();
+    assert!(first.contains(CAP_LINE), "the first line is `{first}`");
+    assert!(
+        text.contains("0 restarts in the last hour, [watchdog] max_restarts_per_hour = 0"),
+        "the numbers are in the action line:\n{text}"
+    );
+
+    // A dump of a node that is about to be restarted is as it was.
+    let mut ev = Recorder::default();
+    let mut wd = stuck_with_cap(dir.path(), 6, t0);
+    rounds(&mut wd, &mut ev, t0, 2_000_000, 100);
+    let text = std::fs::read_to_string(writer.dump(&ev.dumps[0], 1_800_003_600).unwrap()).unwrap();
+    assert_eq!(text.lines().next(), Some("TelltaleDNS watchdog dump"));
+    assert!(!text.contains(CAP_LINE), "{text}");
+}
+
+#[test]
+fn ops_012_at_the_restart_cap_the_log_says_so_then_once_an_hour_while_the_stall_lasts() {
+    let dir = tempfile::tempdir().unwrap();
+    let t0 = Instant::now();
+    let mut ev = Recorder::default();
+    let mut wd = stuck_with_cap(dir.path(), 0, t0);
+    // Two and a half hours stuck, a round every 5 s.
+    let (outcomes, lines) = logged(|| announced_rounds(&mut wd, &mut ev, t0, 1_000_000, 5, 9000));
+    let said: Vec<&(tracing::Level, String)> =
+        lines.iter().filter(|(_, l)| l.contains(CAP_LINE)).collect();
+    assert_eq!(
+        said.len(),
+        3,
+        "once when the limit is found used up (60 s), then at 3660 s and 7260 s: {lines:?}"
+    );
+    assert!(
+        said.iter()
+            .all(|(level, _)| *level == tracing::Level::ERROR),
+        "{said:?}"
+    );
+    let at: Vec<u64> = outcomes.iter().map(|(s, _)| *s).collect();
+    assert_eq!(at, [60, 3660, 7260], "an hour apart, never closer");
+    assert_eq!(lines.len(), 3, "and nothing else is said: {lines:?}");
+    assert!(
+        said[0].1.contains("max_restarts_per_hour = 0"),
+        "the first line says why: {}",
+        said[0].1
+    );
+    assert!(
+        said[1].1.contains("has not answered for 3660 s"),
+        "a repeat says how long: {}",
+        said[1].1
+    );
+    // One dump, not one an hour: the rotation keeps five, and a repeat would push out the ones that
+    // show how it began.
+    assert_eq!(ev.dumps.len(), 1);
+}
+
+#[test]
+fn ops_012_a_stall_that_ends_by_itself_after_the_cap_says_so_once_and_the_next_one_starts_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let t0 = Instant::now();
+    let mut ev = Recorder::default();
+    let mut wd = stuck_with_cap(dir.path(), 0, t0);
+    let (outcomes, lines) = logged(|| {
+        let mut all = announced_rounds(&mut wd, &mut ev, t0, 1_000_000, 5, 100);
+        // The node comes back (the listener check, if any, passes with it).
+        wd.probes.runtime = true;
+        all.extend(announced_rounds(&mut wd, &mut ev, t0, 1_000_000, 105, 400));
+        // And sticks again: a new stall, found at the cap again.
+        wd.probes.runtime = false;
+        all.extend(announced_rounds(&mut wd, &mut ev, t0, 1_000_000, 405, 600));
+        all
+    });
+    let at: Vec<u64> = outcomes.iter().map(|(s, _)| *s).collect();
+    assert_eq!(
+        at,
+        [60, 105, 460],
+        "found, ended, found again: {outcomes:?}"
+    );
+    let said: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(said[0].contains(CAP_LINE), "{said:?}");
+    // It was reported after 60 s of silence and answered again 45 s later: the line says both and
+    // that the outage was about 105 s (a report comes `stall_secs` into the outage; final review F2).
+    for want in [
+        "the node answers again",
+        "45 s after it was reported",
+        "had not answered for 60 s",
+        "about 105 s without answering",
+    ] {
+        assert!(said[1].contains(want), "no `{want}` in {said:?}");
+    }
+    assert_eq!(lines[1].0, tracing::Level::INFO, "it is good news");
+    assert!(said[2].contains(CAP_LINE), "{said:?}");
+    assert_eq!(wd.cap_episodes, 2, "two stalls reached the limit");
+    assert_eq!(ev.dumps.len(), 2, "one dump for each");
+}
+
+#[test]
+fn ops_012_below_the_cap_and_in_dump_only_mode_the_cap_is_never_mentioned() {
+    let t0 = Instant::now();
+    // A node that is restarted (the limit is not reached): the ordinary line, and no recovery
+    // line, since it never stayed stuck.
+    let dir = tempfile::tempdir().unwrap();
+    let mut wd = stuck_with_cap(dir.path(), 6, t0);
+    let (outcomes, lines) =
+        logged(|| announced_rounds(&mut wd, &mut Recorder::default(), t0, 1_000_000, 5, 200));
+    assert!(matches!(outcomes[0].1, Outcome::Restart(_)), "{outcomes:?}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(!lines[0].1.contains(CAP_LINE), "{lines:?}");
+
+    // `action = "dump"` never restarts, so the limit isn't what holds it back: as before, one line
+    // for the stall, nothing for a recovery, and the counter stays at zero.
+    let dir = tempfile::tempdir().unwrap();
+    let mut wd = Watchdog::new(
+        Stub {
+            runtime: false,
+            listener: None,
+        },
+        settings(dir.path(), false, 0),
+        t0,
+    );
+    let mut ev = Recorder::default();
+    let ((), lines) = logged(|| {
+        announced_rounds(&mut wd, &mut ev, t0, 1_000_000, 5, 8000);
+        wd.probes.runtime = true;
+        announced_rounds(&mut wd, &mut ev, t0, 1_000_000, 8005, 8100);
+    });
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].1.contains("the node keeps running"), "{lines:?}");
+    assert_eq!(wd.cap_episodes, 0);
+}
+
+#[test]
+fn ops_012_the_cap_is_counted_once_per_stall_and_shown_in_the_metrics() {
+    let dir = tempfile::tempdir().unwrap();
+    let t0 = Instant::now();
+    let mut ev = Recorder::default();
+    let mut wd = stuck_with_cap(dir.path(), 0, t0);
+    logged(|| announced_rounds(&mut wd, &mut ev, t0, 1_000_000, 5, 8000));
+    assert_eq!(wd.cap_episodes, 1, "two repeats are the same stall");
+    // `tick` publishes to the process-wide value, which parallel tests also write, so only a lower
+    // bound can be said of it here: a stall that reached the cap left it at one or more.
+    assert!(
+        shared().cap_reached.load(Ordering::Relaxed) >= 1,
+        "tick published the count (a plain store: the test thread stands in for the watchdog's)"
+    );
+
+    // What a scrape shows is checked on a `Shared` of this test's own: what `publish_cap_to`
+    // stores is what `render_from` says (final review F4).
+    let local = Shared::new();
+    local.enabled.store(true, Ordering::Relaxed);
+    let scrape = |episodes: u64| {
+        publish_cap_to(&local, episodes);
+        let mut w = PromWriter::default();
+        render_from(&local, &mut w);
+        w.finish()
+    };
+    let text = scrape(wd.cap_episodes);
+    assert!(
+        text.contains("\ntelltale_watchdog_restart_cap_reached_total 1\n"),
+        "the count this watchdog reached is what the scrape shows: {text}"
+    );
+    let text = scrape(2);
+    assert!(
+        text.contains("# TYPE telltale_watchdog_restart_cap_reached_total counter"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\ntelltale_watchdog_restart_cap_reached_total 2\n"),
+        "{text}"
+    );
+    assert!(
+        scrape(0).contains("\ntelltale_watchdog_restart_cap_reached_total 0\n"),
+        "it is there from the start, so a rate or an increase works"
+    );
+}
+
+// REQ: OPS-012 — `TT_WEDGE_SECS` (wedge-test builds only) is read from the environment: a value too
+// big for an `Instant` must make a very long wedge, not panic the thread that starts it (final
+// review F5). Runs with `cargo test -p telltale --features wedge-test`.
+#[cfg(feature = "wedge-test")]
+#[test]
+fn ops_012_a_huge_wedge_time_is_a_long_wedge_not_a_panic() {
+    let now = Instant::now();
+    assert_eq!(wedge_deadline(now, 45), now + secs(45));
+    assert_eq!(wedge_deadline(now, 0), now);
+    let ten_years = now + secs(10 * 365 * 24 * 3600);
+    for hold in [u64::MAX, u64::MAX / 2, u64::MAX / 1_000_000_000] {
+        assert!(
+            wedge_deadline(now, hold) > ten_years,
+            "{hold} s is a very long wedge"
+        );
+    }
+}
+
+#[test]
+fn ops_012_the_cap_line_is_logged_by_the_plain_thread_with_no_runtime() {
+    // No Tokio runtime exists in this test: the line comes from `run`, the watchdog thread's loop.
+    struct StopAfter {
+        rounds: usize,
+        stop: tokio::sync::watch::Sender<bool>,
+    }
+    impl Probes for StopAfter {
+        fn runtime(&mut self, _wait: Duration) -> bool {
+            self.rounds = self.rounds.saturating_sub(1);
+            if self.rounds == 0 {
+                let _ = self.stop.send(true);
+            }
+            false
+        }
+        fn listener(&mut self, _wait: Duration) -> Option<bool> {
+            None
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let mut wd = Watchdog::new(
+        StopAfter {
+            rounds: 6,
+            stop: tx,
+        },
+        Settings {
+            stall: Duration::from_millis(1),
+            ..settings(dir.path(), true, 0)
+        },
+        Instant::now(),
+    );
+    let exits = std::sync::atomic::AtomicUsize::new(0);
+    let ((), lines) = logged(|| {
+        run(
+            &mut wd,
+            &mut Recorder::default(),
+            &rx,
+            Duration::from_millis(10),
+            |_| {
+                exits.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+    });
+    assert_eq!(
+        exits.load(Ordering::Relaxed),
+        0,
+        "at the cap the node stays"
+    );
+    let said = lines.iter().filter(|(_, l)| l.contains(CAP_LINE)).count();
+    assert_eq!(said, 1, "{lines:?}");
 }
 
 // ---- the probe --------------------------------------------------------------------------------
@@ -522,6 +871,7 @@ fn ops_012_the_thread_table_lists_this_process_threads() {
 
 fn sample_report() -> Report {
     Report {
+        capped: false,
         time: "2026-11-16T13:37:00.000Z".to_owned(),
         reason: vec![
             "runtime: the runtime did not run a task for 61 s (limit 60 s)".to_owned(),
@@ -606,9 +956,14 @@ fn ops_012_dumps_are_private_and_only_the_newest_five_stay() {
 #[test]
 fn ops_012_the_writer_makes_a_real_dump_of_this_process() {
     let dir = tempfile::tempdir().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .build()
+        .unwrap();
     let mut writer = Writer {
         dir: dir.path().join("watchdog"),
         started: Instant::now(),
+        runtime: Some(rt.handle().clone()),
     };
     let why = Reason {
         stall: Stall {
@@ -618,7 +973,7 @@ fn ops_012_the_writer_makes_a_real_dump_of_this_process() {
         ages: vec![(Check::Runtime, secs(61))],
         limit: STALL,
         restart: true,
-        note: None,
+        cap: None,
     };
     let path = writer.dump(&why, 1_800_000_000).unwrap();
     let text = std::fs::read_to_string(path).unwrap();
@@ -629,6 +984,48 @@ fn ops_012_the_writer_makes_a_real_dump_of_this_process() {
     assert!(text.contains("exits with status 70"), "{text}");
     assert!(text.contains(crate::build_info::VERSION), "{text}");
     assert!(text.contains("== threads"), "{text}");
+    // REQ: OPS-012 (ADR-174) — the runtime's own numbers are in the process section.
+    assert!(
+        text.contains("runtime workers: 2, tasks alive: 0, waiting in the global queue: 0"),
+        "{text}"
+    );
+}
+
+// REQ: OPS-012 (ADR-174) — a stuck runtime still reports itself: its one worker is blocked, a
+// task is running (alive) and two more wait in the global queue. The numbers need no worker, so
+// "workers, tasks waiting, none running" reads at a glance next to the thread table.
+#[test]
+fn ops_012_the_dump_counts_the_tasks_of_a_stuck_runtime() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+    rt.spawn(async move {
+        let _ = entered_tx.send(());
+        let _ = held.recv(); // blocks the one worker
+    });
+    entered.recv_timeout(secs(5)).unwrap();
+    for _ in 0..2 {
+        rt.spawn(async {});
+    }
+    assert_eq!(
+        runtime_line(rt.handle()),
+        "runtime workers: 1, tasks alive: 3, waiting in the global queue: 2"
+    );
+    let lines = process_lines(Some(rt.handle()));
+    assert!(
+        lines.iter().any(|l| l.starts_with("runtime workers: 1,")),
+        "{lines:?}"
+    );
+    assert!(
+        process_lines(None)
+            .iter()
+            .all(|l| !l.starts_with("runtime ")),
+        "no handle, no line"
+    );
+    release.send(()).unwrap();
 }
 
 // ---- settings and metrics ---------------------------------------------------------------------

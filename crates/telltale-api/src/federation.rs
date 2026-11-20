@@ -17,13 +17,29 @@ use crate::model::{
 /// chunk stays well under the cluster channel's 1 MiB answer.
 pub const TIMESERIES_CHUNK: u64 = 240;
 
+/// REQ: CLU-004, CLU-002 (ADR-174, final review F1) — the most windows ([`timeseries_chunks`]) one
+/// peer is asked for in one read. The longest range any step documents is 87 (`day`, since
+/// 1970; 43 for 7 days of minutes, 41 for 400 days of hours, 4 for 15 minutes of seconds), so
+/// this is nearly three times that; what it bounds is a request's reach: one window is one
+/// call to each peer.
+pub const TIMESERIES_MAX_WINDOWS: u64 = 256;
+
 /// REQ: CLU-002 (regression 2026-11-16) — `[from_s, to_s)` split into consecutive windows of
 /// at most [`TIMESERIES_CHUNK`] buckets of `step`, each asked of a peer on its own: a busy
 /// node's 24 hours of minutes is over the cluster channel's 1 MiB frame, and a peer whose
 /// answer is too large is dropped as "didn't answer". Ranges are half-open, so the windows
 /// partition the buckets: none is counted twice.
+///
+/// REQ: CLU-004 (ADR-174, final review F1) — `None` when the range is more than
+/// [`TIMESERIES_MAX_WINDOWS`] windows: the count is worked out first, so a range of any length
+/// (a `from` long before the data, a `to` years ahead) costs a division, not a list as long as it.
+/// The range is not clipped: the caller doesn't ask the peers at all.
 #[must_use]
-pub fn timeseries_chunks(step: crate::model::Step, from_s: u64, to_s: u64) -> Vec<(u64, u64)> {
+pub fn timeseries_chunks(
+    step: crate::model::Step,
+    from_s: u64,
+    to_s: u64,
+) -> Option<Vec<(u64, u64)>> {
     use crate::model::Step;
     let width = match step {
         Step::Second => 1,
@@ -32,6 +48,9 @@ pub fn timeseries_chunks(step: crate::model::Step, from_s: u64, to_s: u64) -> Ve
         Step::Day => 86_400,
     };
     let span = width * TIMESERIES_CHUNK;
+    if to_s.saturating_sub(from_s).div_ceil(span) > TIMESERIES_MAX_WINDOWS {
+        return None;
+    }
     let mut out = Vec::new();
     let mut at = from_s;
     while at < to_s {
@@ -39,7 +58,7 @@ pub fn timeseries_chunks(step: crate::model::Step, from_s: u64, to_s: u64) -> Ve
         out.push((at, end));
         at = end;
     }
-    out
+    Some(out)
 }
 
 /// Sums buckets with the same start.
@@ -401,20 +420,89 @@ mod tests {
     fn clu_002_timeseries_windows_partition_the_range() {
         use crate::model::Step;
         let from = 1_791_072_030;
-        let w = timeseries_chunks(Step::Minute, from, from + 48 * 3600);
+        let w = timeseries_chunks(Step::Minute, from, from + 48 * 3600).unwrap();
         assert_eq!(w.len(), 12);
         assert_eq!(w[0], (from, from + 4 * 3600));
         assert!(w.windows(2).all(|p| p[0].1 == p[1].0));
         assert_eq!(w.last().map(|x| x.1), Some(from + 48 * 3600));
         assert_eq!(
             timeseries_chunks(Step::Minute, from, from + 3600),
-            [(from, from + 3600)]
+            Some(vec![(from, from + 3600)])
         );
         assert_eq!(
-            timeseries_chunks(Step::Hour, from, from + 400 * 86_400).len(),
+            timeseries_chunks(Step::Hour, from, from + 400 * 86_400)
+                .unwrap()
+                .len(),
             40
         );
-        assert_eq!(timeseries_chunks(Step::Second, from, from), []);
+        assert_eq!(timeseries_chunks(Step::Second, from, from), Some(vec![]));
+    }
+
+    // REQ: CLU-002, CLU-004 (final review, F1) — a time range of any length is at most 256
+    // windows a peer: a range over that is not chunked at all (and so nothing proportional to it
+    // is allocated). Before: a range from the epoch at one second a bucket made 7.5 million
+    // windows a peer, and one to the year 9999 a thousand million.
+    #[test]
+    fn clu_002_timeseries_windows_stop_at_the_cap() {
+        use crate::model::Step;
+        let now = 1_791_072_000;
+        // The request that was the report: from the epoch, a second at a time.
+        assert_eq!(timeseries_chunks(Step::Second, 0, now), None);
+        // And the ends of the line: the whole of time, to the year 9999 or to the end of the
+        // counter, answers at once and without overflowing.
+        for step in [Step::Second, Step::Minute, Step::Hour, Step::Day] {
+            assert_eq!(timeseries_chunks(step, 0, u64::MAX), None, "{step:?}");
+            assert_eq!(
+                timeseries_chunks(step, 0, 253_402_300_799),
+                None,
+                "{step:?}"
+            );
+        }
+        // A range that ends at the end of time but is short is still chunked, without a wrap.
+        assert_eq!(
+            timeseries_chunks(Step::Second, u64::MAX - 100, u64::MAX),
+            Some(vec![(u64::MAX - 100, u64::MAX)])
+        );
+        // The cap is exact: 256 windows are chunked, 257 are not, at every step.
+        for (step, window) in [
+            (Step::Second, 240),
+            (Step::Minute, 14_400),
+            (Step::Hour, 864_000),
+            (Step::Day, 20_736_000),
+        ] {
+            let from = 1_000_000;
+            let at_cap = timeseries_chunks(step, from, from + 256 * window).unwrap();
+            assert_eq!(at_cap.len(), 256, "{step:?}");
+            assert_eq!(
+                timeseries_chunks(step, from, from + 256 * window + 1),
+                None,
+                "{step:?}"
+            );
+        }
+        // No range, or a backwards one, is no window.
+        assert_eq!(timeseries_chunks(Step::Hour, 50, 40), Some(vec![]));
+    }
+
+    // REQ: CLU-002 (final review, F1) — what the cap must not touch: the longest range each step
+    // documents (`step=second` 15 minutes, `minute` 7 days, `hour` 400 days, `day` everything,
+    // here since 1970), each as the exact windows it always was, partitioning the range.
+    #[test]
+    fn clu_002_the_documented_ranges_are_chunked_in_full() {
+        use crate::model::Step;
+        let now = 1_791_072_000;
+        let cases = [
+            (Step::Second, now - 900, now + 1, 4),
+            (Step::Minute, now - 7 * 86_400, now + 1, 43),
+            (Step::Hour, now - 400 * 86_400, now + 1, 41),
+            (Step::Day, 0, now + 1, 87),
+        ];
+        for (step, from, to, n) in cases {
+            let w = timeseries_chunks(step, from, to).unwrap();
+            assert_eq!(w.len(), n, "{step:?}");
+            assert_eq!(w.first().map(|x| x.0), Some(from), "{step:?}");
+            assert_eq!(w.last().map(|x| x.1), Some(to), "{step:?}");
+            assert!(w.windows(2).all(|p| p[0].1 == p[1].0), "{step:?}");
+        }
     }
 
     // REQ: OBS-018 — two nodes' shadow counts add up by list, top names by name, the earliest

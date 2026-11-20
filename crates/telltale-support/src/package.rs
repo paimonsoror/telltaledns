@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::Level;
 use crate::archive::{Tar, gzip};
 use crate::classify::config_view;
+use crate::cluster::{Part, PartFile};
 use crate::manifest::{FileEntry, Manifest, Status};
 use crate::pseudo::Pseudonyms;
 use crate::redact::{Known, Redactor};
@@ -26,6 +27,10 @@ pub struct Options {
     pub created: String,
     /// The most bytes of file content (the largest files are truncated first).
     pub max_bytes: usize,
+    /// REQ: OPS-011 (ADR-172) — names get labels from a keyed hash (`device-a3f9c2e1`), the same
+    /// in every package under this key, instead of numbers by first encounter. The nodes of a
+    /// cluster package use it, so one device has one label in every node's files.
+    pub keyed_labels: bool,
 }
 
 struct Item {
@@ -69,7 +74,10 @@ pub struct Finished {
 impl Package {
     /// Starts a package. Fails (with a reason) only if there are too many names to search for.
     pub fn new(opts: Options, known: &Known) -> Result<Self, String> {
-        let pseudo = Pseudonyms::new(opts.key).with_reveal(opts.reveal.clone());
+        let mut pseudo = Pseudonyms::new(opts.key).with_reveal(opts.reveal.clone());
+        if opts.keyed_labels {
+            pseudo = pseudo.with_keyed_labels();
+        }
         let mut red = Redactor::new(opts.level, pseudo);
         red.set_known(known)?;
         Ok(Self {
@@ -199,9 +207,8 @@ impl Package {
         }
     }
 
-    /// Finishes the package: fits the cap, writes the manifest and README, and builds the archive.
-    #[must_use]
-    pub fn finish(mut self) -> Finished {
+    /// Fits the cap and builds the manifest ([`Self::finish`] and [`Self::finish_part`] share it).
+    fn seal(&mut self) -> Manifest {
         self.fit();
         let mut files: Vec<FileEntry> = self.files.iter().map(|f| f.entry.clone()).collect();
         files.extend(self.missing.iter().cloned());
@@ -223,7 +230,7 @@ impl Package {
              package over before you attach it."
                 .to_owned(),
         );
-        let manifest = Manifest {
+        Manifest {
             package: "telltale-support",
             format: 1,
             created: self.opts.created.clone(),
@@ -234,7 +241,57 @@ impl Package {
             config_fields_removed: self.removed.clone(),
             config_fields_unclassified: self.unclassified.clone(),
             notes,
-        };
+        }
+    }
+
+    /// REQ: OPS-011 (ADR-172) — finishes this node's contribution to a cluster package: its files
+    /// and manifest as text, for the node that is putting the package together. Everything in
+    /// it has been through this node's redactor.
+    #[must_use]
+    pub fn finish_part(mut self, node: String) -> Part {
+        self.part_now(node)
+    }
+
+    /// REQ: OPS-011 (ADR-172) — [`Self::finish_part`], cutting the files further (the largest
+    /// first) until the part, compressed as it travels, fits `wire_limit` bytes (the cluster
+    /// channel carries about a mebibyte per answer). Returns the part and its bytes; if even the
+    /// smallest cut doesn't fit, the part as small as it gets (the caller sees the size).
+    #[must_use]
+    pub fn finish_part_for_wire(mut self, node: &str, wire_limit: usize) -> (Part, Vec<u8>) {
+        loop {
+            let part = self.part_now(node.to_owned());
+            let wire = part.to_wire();
+            let total: usize = self.files.iter().map(|f| f.data.len()).sum();
+            if wire.len() <= wire_limit || total / 2 < FLOOR {
+                return (part, wire);
+            }
+            self.opts.max_bytes = total / 2;
+        }
+    }
+
+    fn part_now(&mut self, node: String) -> Part {
+        let manifest = self.seal();
+        let mut files: Vec<PartFile> = self
+            .files
+            .iter()
+            .map(|it| PartFile {
+                path: it.entry.path.clone(),
+                text: String::from_utf8_lossy(&it.data).into_owned(),
+            })
+            .collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Part {
+            node,
+            manifest: manifest.to_json(),
+            redactions: manifest.redactions,
+            files,
+        }
+    }
+
+    /// Finishes the package: fits the cap, writes the manifest and README, and builds the archive.
+    #[must_use]
+    pub fn finish(mut self) -> Finished {
+        let manifest = self.seal();
         let mut tar = Tar::new();
         let t = self.opts.created_unix;
         // The paths are this crate's callers' own fixed names; `Tar::add` refuses a bad one, and the

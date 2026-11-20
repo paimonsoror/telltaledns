@@ -623,7 +623,7 @@
       "summary": "Messages to ntfy, Gotify, Slack-compatible channels, or a webhook when an upstream is down, a node drops out, a list fails, SERVFAILs climb, a device behaves oddly, or an update is out.",
       "when": "You want to hear about problems without watching the dashboard.",
       "example": "An ntfy push to your phone when Quad9 has been unreachable for a minute, and another when it's back.",
-      "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in token_file, not in the config.",
+      "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in token_file, not in the config; in the UI an administrator sets which file a destination reads, under /run/secrets, /etc/telltale-secrets or the data directory's secrets folder.",
       "docs": "alerts",
       "general": true
     },

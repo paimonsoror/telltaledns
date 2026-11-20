@@ -101,7 +101,7 @@ telltale cluster witness -c witness.toml        # run it as a service
 # On the primary, then restart it
 telltale cluster set-failover auto</code></pre>
       <ul>
-        <li>The primary holds a 15-second lease with a majority of voters. If it disappears, an eligible node is elected in a new epoch, typically within 15 to 25 seconds.</li>
+        <li>The primary holds a 15-second lease with a majority of voters. If it disappears, an eligible node is elected in a new epoch, typically within 15 to 25 seconds. When two nodes are free to stand at the same moment, the one whose node ID sorts first goes first and the other gives way. With three voters that means they don't split the vote, short of a lost or badly delayed message, a restart, or a disagreement over the epoch; with more voters (two witnesses, say) a split is rarer than it used to be but still possible. A split costs one more lease.</li>
         <li>There are never two primaries writing: a primary that loses its majority stops taking changes before anyone else can be elected. Clock jumps (a Pi setting its time after boot) don't matter.</li>
         <li>With fewer than three voters, <code>auto</code> acts as manual, and the Cluster page says so. <code>telltale cluster set-failover manual</code> switches back.</li>
       </ul>
@@ -125,8 +125,8 @@ telltale cluster set-failover auto</code></pre>
   <ul>
     <li><b>The Cluster page:</b> the summary on top, then <b>Nodes</b> (topology and every node's state), <b>Health</b> (checks with what to do when one fails), <b>Rollouts</b>, and <b>Events</b>. A tab with something wrong shows a count.</li>
     <li><b>The health icon</b> at the bottom of the menu turns amber when a node is unreachable or behind on configuration for a minute.</li>
-    <li><b>Metrics</b> on every node: <code>telltale_cluster_peer_up</code>, <code>telltale_cluster_peer_config_lag</code>, <code>telltale_cluster_behind_seconds</code>, and <code>telltale_cluster_cert_expiry_timestamp_seconds</code>. The Helm chart's alert rules cover a peer down, configuration behind, failing syncs, and expiring certificates.</li>
-    <li><b>Certificates renew themselves:</b> each node's lasts 90 days and is renewed with 30 left. To replace the cluster's certificate authority, run <code>telltale cluster rotate-ca</code> on the primary; DNS keeps answering while it runs.</li>
+    <li><b>Metrics</b> on every node: <code>telltale_cluster_peer_up</code>, <code>telltale_cluster_peer_config_lag</code>, <code>telltale_cluster_behind_seconds</code>, and <code>telltale_cluster_cert_expiry_timestamp_seconds</code>. A replica's <code>telltale_cluster_peer_up</code> lists the primary, the voters under automatic failover, and the peers it is connected to or heard from in the last 15 seconds; the primary lists every node, so scrape it to see a replica that is down. The Helm chart's alert rules cover a peer down, configuration behind, failing syncs, and expiring certificates. <code>telltale_federated_refused_total{reason}</code> counts the cluster reads a node refused, or kept only part of, when too many were waiting, too many calls or bytes were held, or one asked for too much at once: while it grows, the dashboard shows partial results.</li>
+    <li><b>Certificates renew themselves:</b> each node's lasts 90 days and is renewed with 30 left. To replace the cluster's certificate authority, run <code>telltale cluster rotate-ca</code> on the primary; DNS keeps answering while it runs. Trust only moves forward: a step of an older version sent again can't bring the retired authority back. One rare case is left: a primary that crashes right after publishing a step can publish that version number again with other content. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">The docs</a> have the details.</li>
   </ul>
 </section>
 
@@ -140,6 +140,7 @@ telltale cluster set-failover auto</code></pre>
       <tr><td>The second node can't join</td><td>Make sure it can reach the first node's cluster port (8443 by default) at one of the <code>--advertise</code> URLs, and that the token hasn't expired (<code>telltale cluster token list</code>).</td></tr>
       <tr><td>Changes are refused with <b>503</b></td><td>There's no primary right now: promote one, or wait for automatic failover. DNS isn't affected.</td></tr>
       <tr><td>A node can't connect after a CA rotation</td><td>It was away for the whole rotation: join it again with a new token.</td></tr>
+      <tr><td>Configuration and a CA rotation stop reaching the other nodes after the primary lost <code>cluster/published.json</code> (a full disk and a restart) or its data came back from an older copy</td><td>Its version went backwards, so the others wait for it to pass theirs; DNS isn't affected. Promote another node (a new epoch beats any version). If none can be promoted, stop each other node, delete its <code>cluster/ca.version</code> and start it again; configuration still waits for the primary to catch up.</td></tr>
     </tbody>
   </table></div>
 </section>

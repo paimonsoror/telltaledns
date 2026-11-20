@@ -84,9 +84,15 @@
     return () => clearTimeout(t);
   });
   // A new address or a new layout starts each slot from its first panel.
+  // REQ: OBS-035 (#69) — keyed on strings, not on `layout`: the layout object is made again
+  // whenever the area is measured again (a resize, or the title appearing in one-panel mode),
+  // and that must not send a slot back to its first panel; only a different address or a
+  // different set of panels per slot does.
+  const slotKey = $derived(layout.slots.map((s) => s.panels.join()).join('|'));
+  const paramsKey = $derived(route.params.toString());
   $effect(() => {
-    void route.params.toString();
-    void layout.slots.map((s) => s.panels.join()).join('|');
+    void paramsKey;
+    void slotKey;
     untrack(() => {
       idx = layout.slots.map(() => 0);
       turn++;

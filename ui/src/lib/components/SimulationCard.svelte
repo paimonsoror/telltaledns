@@ -48,6 +48,10 @@
       "The query log keeps names hashed or hidden at this node's privacy level, so this change can't be replayed. Moving a device between groups with the same lists still can be.",
     no_query_log: 'The query log is off on this node, so there is nothing to replay.',
     busy: 'Another simulation is running on this node. Try again in a few seconds.',
+    // REQ: OBS-024 (ADR-180)
+    local_file: "This change names a local file the configuration doesn't read yet, so only an administrator can replay it.",
+    download_limit:
+      'This change adds or changes more lists than one simulation reads on this node (at most 4 by URL or from a file, within 4 times its list size limit). Simulate fewer list changes at a time.',
   };
   const notes: Record<string, string> = {
     identity_from_event:

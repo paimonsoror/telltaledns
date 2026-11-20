@@ -3,12 +3,16 @@
 //! first-run setup token in `<data_dir>/setup-token`, and ends stale sessions.
 
 use std::io::{self, Write as _};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use telltale_api::auth::{Auth, Role, Settings, crypto};
-use telltale_config::{Config, UserRole};
+use telltale_api::auth::{
+    Auth, Role, Settings, covers_whole_networks, crypto, includes_loopback, is_loopback_network,
+    loopback_is_trusted_proxy,
+};
+use telltale_config::{Cidr, Config, OidcConfig, UserRole};
 use telltale_store::state::State;
 use tracing::{error, info, warn};
 
@@ -45,6 +49,83 @@ fn settings(cfg: &Config) -> Settings {
             .iter()
             .map(|c| (c.addr, c.prefix))
             .collect(),
+    }
+}
+
+/// REQ: API-004 (issue #63) — what start-up says when `disable_local_login` is on, and how loudly.
+/// A list that covers whole networks (the default does: private networks and loopback) leaves
+/// password sign-in open to every admin there, and the form is still shown: that is a warning,
+/// because the flag's name says otherwise. A list of this machine and single hosts (`/32`,
+/// `/128`: the machines you manage from, as the guide recommends) is information. A list that
+/// names this machine gets a pointer to `trusted_proxies` unless loopback is already a trusted
+/// proxy (a proxy on this host makes every browser look like loopback). An empty list means
+/// nobody can use a password: a warning. Returns whether it is a warning, and the line.
+///
+/// REQ: API-004 (ADR-175) — "covers whole networks", "names this machine" and "loopback is a
+/// trusted proxy" are `telltale_api::auth::{covers_whole_networks, includes_loopback,
+/// loopback_is_trusted_proxy}`, the rules the Settings note (`GET /users`, `passwordLogin`) is
+/// built from too, so the log line and the page can't disagree.
+fn break_glass_notice(networks: &[Cidr], trusted_proxies: &[Cidr]) -> (bool, String) {
+    if networks.is_empty() {
+        return (
+            true,
+            "disable_local_login is on and allowed_admin_networks is empty, so password sign-in is off for everyone: if the sign-in provider is down, nobody can sign in with a password".to_owned(),
+        );
+    }
+    let list = networks
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let pairs: Vec<(IpAddr, u8)> = networks.iter().map(|n| (n.addr, n.prefix)).collect();
+    if !covers_whole_networks(&pairs) {
+        let proxies: Vec<(IpAddr, u8)> =
+            trusted_proxies.iter().map(|n| (n.addr, n.prefix)).collect();
+        let proxy = if includes_loopback(&pairs) && !loopback_is_trusted_proxy(&proxies) {
+            "; if a reverse proxy on this machine serves the UI, list it in [api] trusted_proxies (127.0.0.1/32): otherwise every browser it serves looks like loopback and may use a password"
+        } else {
+            ""
+        };
+        let only = if pairs.iter().all(|(n, p)| is_loopback_network(*n, *p)) {
+            "loopback".to_owned()
+        } else {
+            let n = pairs.len();
+            format!("{n} host{}", if n == 1 { "" } else { "s" })
+        };
+        return (
+            false,
+            format!(
+                "disable_local_login is on: password sign-in is restricted to {only} ({list}){proxy}"
+            ),
+        );
+    }
+    let which = if networks == OidcConfig::default().allowed_admin_networks {
+        "the default allowed_admin_networks"
+    } else {
+        "allowed_admin_networks"
+    };
+    (
+        true,
+        format!(
+            "disable_local_login is on, but password sign-in is still open to admins from {list} ({which}), and the sign-in form is still shown there: narrow allowed_admin_networks to the machines you manage from (one address each, such as 192.168.1.10/32), or set it to [] to turn password sign-in off"
+        ),
+    )
+}
+
+/// REQ: API-004 (issue #63) — says the break-glass state at start-up, whether or not a provider
+/// could be set up (that is exactly when it matters). A resolver pod of a Helm cluster has no way
+/// to sign in (its API has no Service port), so it only gets information.
+fn log_break_glass(cfg: &Config) {
+    let o = &cfg.auth.oidc;
+    if !o.disable_local_login {
+        return;
+    }
+    let (is_warning, line) =
+        break_glass_notice(&o.allowed_admin_networks, &cfg.api.trusted_proxies);
+    if is_warning && !cfg.cluster.ephemeral {
+        warn!("{line}");
+    } else {
+        info!("{line}");
     }
 }
 
@@ -152,10 +233,96 @@ fn write_secret(path: &Path, token: &str) -> io::Result<()> {
     f.write_all(b"\n")
 }
 
+/// REQ: API-002, AGT-003 (ADR-181) — where this node's request key is (`Auth::request_digest`):
+/// in the data directory's `secrets/` folder, so it is neither in state.db nor in a backup.
+const REQUEST_KEY_FILE: &str = "secrets/.request-key";
+
+/// This node's request key: read from `<data_dir>/secrets/.request-key` (64 hex digits), or
+/// made there on the first start (random, readable by this user only, the folder by this user
+/// only). A file that isn't a key is an error: it is left as it is. Review round 2 (security
+/// N6): the key appears whole or not at all: it is written to a temporary file of a random
+/// name (created exclusively, synced), linked into place without replacing a key that is there
+/// already, and the folder synced; a start racing another reads the one that won.
+fn request_key(dir: &Path) -> io::Result<[u8; 32]> {
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    let file = dir.join(REQUEST_KEY_FILE);
+    let parse = |t: &str| -> Option<[u8; 32]> {
+        let t = t.trim();
+        let mut k = [0u8; 32];
+        if t.len() != 64 {
+            return None;
+        }
+        for (i, b) in k.iter_mut().enumerate() {
+            *b = u8::from_str_radix(t.get(i * 2..i * 2 + 2)?, 16).ok()?;
+        }
+        Some(k)
+    };
+    let read = |file: &Path| -> io::Result<[u8; 32]> {
+        let t = std::fs::read_to_string(file)?;
+        parse(&t).ok_or_else(|| {
+            io::Error::other(format!(
+                "{}: not a request key (64 hex digits); remove it and restart to make a new one",
+                file.display()
+            ))
+        })
+    };
+    match read(&file) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        other => return other,
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    let mut key = [0u8; 32];
+    let mut tag = [0u8; 8];
+    let random = ring::rand::SystemRandom::new();
+    ring::rand::SecureRandom::fill(&random, &mut key)
+        .and_then(|()| ring::rand::SecureRandom::fill(&random, &mut tag))
+        .map_err(|_| io::Error::other("the system's random source failed"))?;
+    let tmp = file.with_file_name(format!(".request-key.{}.tmp", crypto::hex(&tag)));
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    let wrote = f
+        .write_all(crypto::hex(&key).as_bytes())
+        .and_then(|()| f.sync_all());
+    drop(f);
+    // `link` never replaces a file that is there: a start that lost the race reads the winner's.
+    // A crash between the link and the removal below leaves the temporary name as a second name
+    // for the key in use (the folder is 0700); the sweep removes it once it is ten minutes old.
+    let placed = wrote.and_then(|()| std::fs::hard_link(&tmp, &file));
+    let _ = std::fs::remove_file(&tmp);
+    match placed {
+        Ok(()) => {
+            if let Some(parent) = file.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+            Ok(key)
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => read(&file),
+        Err(e) => Err(e),
+    }
+}
+
 /// Opens the auth service for the server. Blocking (Argon2 for a bootstrap password).
 pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
     let auth = Arc::new(Auth::new(Arc::new(open_state(cfg)?), settings(cfg)));
-    // A broken provider setup (say, a missing secret file) leaves password sign-in working.
+    match request_key(&data_dir(cfg)) {
+        Ok(k) => auth.set_request_key(k),
+        Err(e) => warn!(
+            "the request key couldn't be read or made ({e}): a router change with a pasted key, retried with its Idempotency-Key after a restart, is refused rather than replayed"
+        ),
+    }
+    // REQ: API-004 (issue #63) — before the providers, so it is said even when they fail.
+    log_break_glass(cfg);
+    // A broken provider setup (say, a missing secret file) changes nothing about password
+    // sign-in: with `disable_local_login` on, the break-glass networks still decide who may use
+    // one (`settings` above already applied them).
     match oidc(cfg) {
         Ok(Some(o)) => auth.set_oidc(o),
         Ok(None) => {}

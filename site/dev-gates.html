@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How we work: the gates — TelltaleDNS</title>
+<meta name="description" content="What CI and your own machine check before a change to TelltaleDNS lands: the jobs, the generated files and the commands that regenerate them, how tests are named, and how ADRs and the roadmap are kept.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="dev-gates">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Developers</p>
+  <h1>How we work: the gates</h1>
+  <p class="lede">A change lands when CI says so. This page lists what CI checks, how to run the same checks yourself first, which files are generated and how to regenerate them, and how tests, ADRs, and the roadmap are kept.</p>
+  <ul class="onpage">
+    <li><a href="#rules">The rules</a></li>
+    <li><a href="#ci">What CI runs</a></li>
+    <li><a href="#local">On your machine</a></li>
+    <li><a href="#generated">Generated files</a></li>
+    <li><a href="#names">Tests and names</a></li>
+    <li><a href="#paper">ADRs and the roadmap</a></li>
+    <li><a href="#flaky">A flaky test</a></li>
+    <li><a href="#done">Before you push</a></li>
+  </ul>
+</section>
+
+<section id="rules">
+  <h2>The rules</h2>
+  <ul>
+    <li><b>Done means the acceptance criteria pass in CI</b>, clippy is clean, the docs are updated (the user docs under <code>docs/</code> and the matching page on this site), the OpenAPI document is regenerated if the API changed, and the roadmap box is ticked. That is <a href="https://github.com/paimonsoror/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>'s rule 10, and the rest of this page is how to meet it.</li>
+    <li><b>Say what you did not check.</b> A task's <i>Done</i> note in the roadmap names what was verified and what was not (a cluster you did not run, an architecture you did not test). A later reader trusts the note.</li>
+    <li><b>Never edit a generated file by hand.</b> Change its source and regenerate. CI fails on drift.</li>
+  </ul>
+</section>
+
+<section id="ci">
+  <h2>What CI runs</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Job</th><th>What it catches</th></tr></thead>
+    <tbody>
+      <tr><td><code>fmt</code>, <code>clippy</code></td><td>Formatting, and clippy with warnings denied. The project enables the pedantic lints, so a function over 100 lines, a struct with more than three <code>bool</code> fields, or two variables with similar names fails the build.</td></tr>
+      <tr><td><code>test</code></td><td>The whole workspace, on x86-64 and on arm64 (an arm-only timing flake has been seen).</td></tr>
+      <tr><td><code>deny</code></td><td><code>cargo-deny</code>: advisories, licences, banned crates, sources. An advisory can be ignored in <code>deny.toml</code> only with a reason written beside it, and only for something that is not a vulnerability to us (an unmaintained crate we use only to read tokens, say).</td></tr>
+      <tr><td><code>bench-smoke</code></td><td>The benchmark harness, end to end (<code>make bench-smoke</code>). Hosted runners are too noisy for the 5% regression gate, which needs a fixed machine, so CI fails only on lost queries or errors: judging speed is your job. See <a href="dev-budgets.html">Size and performance budgets</a>.</td></tr>
+      <tr><td><code>site</code></td><td>This site builds, every link and asset resolves, and the pages generated from the repo (the configuration reference, the architecture page) agree with it. The same job checks that the Grafana dashboard is current, and that every P0 requirement has a test or evidence and <code>docs/v1-requirements.md</code> is current (<code>spec/trace.py --check</code>).</td></tr>
+      <tr><td><code>ui</code>, <code>oidc</code></td><td>The UI's API types match the OpenAPI document (a diff fails), the OpenAPI document passes the agent-readiness lint (<code>.spectral.yaml</code>), svelte-check with warnings failing, every "?" in the UI has a help topic, the build stays within the 400 KiB budget, and the Playwright suite passes against the real binary. <code>oidc</code> runs the suite against real Keycloak and Authentik. See <a href="dev-ui-tests.html">Write UI tests</a>.</td></tr>
+      <tr><td><code>helm</code></td><td>The chart lints and installs on kind (amd64) and k3d (arm64), DNS works through a LoadBalancer with the client's address in the query log, and the alert rules fire on bad values and stay quiet on good ones.</td></tr>
+      <tr><td><code>native</code></td><td>The Pi and Linux paths on a disposable runner (the Compose bundle, the installer and its systemd unit), and the end-to-end cluster scripts under <code>deploy/cluster/</code> on real processes. See <a href="dev-cluster.html">Extend the cluster protocol</a>.</td></tr>
+      <tr><td><code>migration</code></td><td>The importers against the real Pi-hole and Technitium images, backup and restore across two nodes, agent tokens, and the MCP server end to end.</td></tr>
+      <tr><td><code>image</code> (own workflow)</td><td>Builds every platform, enforces the 15 MiB size limit, runs a smoke test of each image, then publishes <code>edge</code>.</td></tr>
+      <tr><td><code>codeql</code>, <code>fuzz</code>, <code>pages</code></td><td>Code scanning, the nightly fuzzers, and the publishing of this site.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="local">
+  <h2>On your machine</h2>
+  <p>Run the cheap checks before you push; a CI round trip costs minutes.</p>
+<pre><code>make check                      # fmt, clippy, test, deny
+make bench-smoke                # before you finish a change to the DNS path
+
+cd ui
+npm run check                   # svelte-check, warnings fail
+npm run check:help              # every help button has a topic, and the reverse
+npm run build                   # also enforces the 400 KiB budget
+npm run test:e2e                # the Playwright suite (needs a built binary)</code></pre>
+  <div class="callout"><p><b>Run the heavy parts on a build machine.</b> A full workspace test and the Playwright suite take real memory and minutes. Use whatever fast Linux box you have for them; the repository does not assume one.</p></div>
+</section>
+
+<section id="generated">
+  <h2>Generated files</h2>
+  <p>These are written by tools, committed, and checked for drift. Change the source column, regenerate, commit both.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>File</th><th>Made from</th><th>Regenerate</th></tr></thead>
+    <tbody>
+      <tr><td><code>docs/api/openapi.json</code></td><td>The <code>utoipa</code> annotations and the models in <code>crates/telltale-api</code></td><td><code>UPDATE_OPENAPI=1 cargo test -p telltale-api api_001_committed_openapi</code></td></tr>
+      <tr><td><code>docs/api/mcp-tools.json</code></td><td>The tool definitions in <code>crates/telltale-api/src/mcp.rs</code></td><td><code>UPDATE_MCP=1 cargo test -p telltale-api agt_006_committed</code></td></tr>
+      <tr><td><code>ui/src/lib/api-types.ts</code></td><td><code>docs/api/openapi.json</code></td><td><code>cd ui &amp;&amp; npm run types</code></td></tr>
+      <tr><td><code>docs/config-schema.json</code>, and the <a href="config.html">configuration reference</a></td><td>The doc comments in <code>crates/telltale-config/src/schema.rs</code></td><td><code>UPDATE_SCHEMA=1 cargo test -p telltale-config doc_002_committed_schema</code></td></tr>
+      <tr><td><code>docs/v1-requirements.md</code></td><td>The requirement IDs in code and test names, the roadmap, and <code>spec/trace-evidence.toml</code></td><td><code>python3 spec/trace.py</code> (<code>--check</code> verifies)</td></tr>
+      <tr><td>The Grafana dashboard and the alert rules</td><td>The generators under <code>deploy/grafana</code> and <code>deploy/prometheus</code></td><td><code>python3 deploy/grafana/build.py</code>, <code>bash deploy/prometheus/build.sh</code> (<code>--check</code> verifies)</td></tr>
+      <tr><td><code>ui/src/lib/icons/brands.ts</code>, <code>map.data.ts</code></td><td>The curated list and the two icon packs</td><td>See <a href="dev-icons.html">Extend the domain icons</a></td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout warn"><p><b>Regenerate the requirements trace last.</b> It reads what the other generators wrote, so after you change an API or a test name, <code>python3 spec/trace.py --check</code> can say the file is stale even though you ran it earlier. Run it again, then re-run the gate.</p></div>
+</section>
+
+<section id="names">
+  <h2>Tests and names</h2>
+  <ul>
+    <li><b>A Rust test is named <code>&lt;requirement&gt;_&lt;number&gt;_what_it_checks</code></b>, for instance <code>api_004_disable_local_login_keeps_a_break_glass_admin</code>. A Playwright test title starts with the ID: <code>obs_039 domain icons</code>.</li>
+    <li><b>The code carries the ID where the requirement is implemented</b>: <code>// REQ: API-004 — …</code>. The trace reads both, so a requirement with no test and no comment shows up as unproven in <code>docs/v1-requirements.md</code>.</li>
+    <li><b>A test compares with something independent.</b> The query-log negation tests compare each search with a scan of every row; the cluster tests check that no real name survives in a part. A test that repeats the code's own logic proves little.</li>
+    <li><b>Write the test that fails first.</b> For a bug, put the broken code back and watch the new test fail before you trust it (the two-factor fix was checked this way).</li>
+  </ul>
+</section>
+
+<section id="paper">
+  <h2>ADRs and the roadmap</h2>
+  <ul>
+    <li><b>An ADR</b> is an entry in <code>spec/11-decisions.md</code>, newest first, with its status in the heading: <code>(Proposed)</code> or <code>(Accepted)</code>. You propose; the owner accepts. It records the context, the decision, the alternatives you rejected, and the numbers behind the choice.</li>
+    <li><b>Two branches that each add an ADR</b> conflict at the top of the list. Keep both, the higher number first, and renumber yours if the other landed first.</li>
+    <li><b>The roadmap</b> is <code>spec/10-roadmap-and-tasks.md</code>: a milestone, then tasks like <code>T24.1</code> with their acceptance criteria, a <i>Done</i> note, and an <i>Open</i> note for what is left or waiting for the owner. Tick a task when its criteria pass, not before.</li>
+    <li><b>User-visible behaviour gets user docs</b> in <code>docs/</code> and the matching page here, and a requirement in <code>spec/01</code> if it is new.</li>
+  </ul>
+</section>
+
+<section id="flaky">
+  <h2>A flaky test</h2>
+  <p>A test that fails once and passes on a re-run is a bug in the test or the code, not noise.</p>
+  <ul>
+    <li>Re-run only the failed job to get a green run, and say that you did.</li>
+    <li>Open an issue with the run, the assertion, and your theory, as <a href="https://github.com/paimonsoror/telltaledns/issues/69">#69</a> does for two UI tests. A test that cannot be trusted hides real failures.</li>
+    <li>The Playwright suite runs with <b>no retries</b> on purpose: one failure in the serial group would otherwise make a retry fail somewhere else and hide the cause. See <a href="dev-ui-tests.html">Write UI tests</a>.</li>
+  </ul>
+</section>
+
+<section id="done">
+  <h2>Before you push</h2>
+  <ol class="steps">
+    <li class="step"><b>The criteria pass</b> and you can say how you checked each.</li>
+    <li class="step"><b>The gate is green</b> on your machine: <code>make check</code>, the UI checks if you touched the UI, <code>make bench-smoke</code> if you touched the DNS path.</li>
+    <li class="step"><b>Generated files are regenerated</b>, the trace last.</li>
+    <li class="step"><b>Docs and the roadmap are updated</b>, with what you did not verify.</li>
+    <li class="step"><b>The budgets hold</b>: see <a href="dev-budgets.html">Size and performance budgets</a>.</li>
+  </ol>
+  <div class="guide-nav">
+    <a class="btn" href="developers.html">← Working on TelltaleDNS</a>
+    <a class="btn primary" href="dev-budgets.html">Next: Size and performance budgets →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

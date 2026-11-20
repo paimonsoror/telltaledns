@@ -3,7 +3,9 @@
 //! the node that created the cluster (or any node holding it) `ca.key` and `tokens.json`
 //! (hashes of the join-token secrets, never the secrets). Keys are written owner-only.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -143,6 +145,38 @@ pub struct JoinResponse {
     pub primary_urls: Vec<String>,
 }
 
+/// REQ: CLU-001, CLU-005 (ADR-177) — the file beside `ca.crt` that says which manifest this
+/// node last took its trusted CAs from ([`TrustVersion`]).
+const TRUST_MARK: &str = "ca.version";
+
+/// REQ: CLU-001, CLU-005 (ADR-177) — the version of the manifest a trust step comes from. Trust
+/// follows manifests in order: [`Identity::adopt_trust`] takes nothing from a manifest older
+/// (epoch first, then seq) than the one it last took the CAs from, and keeps that version in
+/// `ca.version`. A mark of another cluster is no mark.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustVersion {
+    pub cluster_id: String,
+    pub epoch: u64,
+    pub seq: u64,
+}
+
+impl TrustVersion {
+    fn order(&self) -> (u64, u64) {
+        (self.epoch, self.seq)
+    }
+}
+
+/// What [`Identity::adopt_trust`] did with a manifest's CA bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustStep {
+    /// The bundle is this node's trust now (`ca.crt` was replaced).
+    Changed,
+    /// This node trusts that bundle already (or the bundle holds no certificate).
+    Unchanged,
+    /// The manifest is older than the one this node last took its CAs from: nothing changed.
+    Older,
+}
+
 /// A node's loaded identity.
 #[derive(Debug, Clone)]
 pub struct Identity {
@@ -160,7 +194,7 @@ fn now() -> u64 {
 }
 
 /// Writes `data` to `path` atomically; owner-only when `secret`.
-fn write(path: &Path, data: &[u8], secret: bool) -> std::io::Result<()> {
+pub(crate) fn write(path: &Path, data: &[u8], secret: bool) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     // A name per write: two streams can store the same thing at once (a key share arrives on
@@ -187,6 +221,39 @@ fn write(path: &Path, data: &[u8], secret: bool) -> std::io::Result<()> {
         return Err(e);
     }
     std::fs::rename(&tmp, path)
+}
+
+/// REQ: CLU-001, CLU-005 (ADR-066) — the lock for the CA key files of the cluster directory
+/// `dir` (`ca.key`, `ca-next.key`, `ca-pending.key`, `ca-old.key`). A replica changes them from
+/// two tasks, the key-share handler ([`Identity::store_ca_key`]) and the manifest trust path
+/// ([`Identity::adopt_trust`]), and both look at a file before they change it. Each holds this
+/// lock for its whole run, so one never sees the other half done. It is per directory, and kept
+/// here and not in [`Identity`] because every `reload()` returns a new value (a lock on the
+/// struct wouldn't be shared by the two callers).
+pub(crate) fn key_files_lock(dir: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(locks.entry(dir.to_owned()).or_default())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test seam: what to run inside [`Identity::adopt_trust`] on this thread, after the key
+    /// files moved and before the new bundle is written (the window a key share could slip into).
+    static AFTER_KEY_MOVES: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn after_key_moves() {
+    AFTER_KEY_MOVES.with(|h| {
+        if let Some(f) = h.borrow_mut().as_mut() {
+            f();
+        }
+    });
 }
 
 /// The host part of each URL (`https://pi.lan:8443` → `pi.lan`), for certificate names.
@@ -316,6 +383,10 @@ impl Identity {
     /// rotation the other CA's as `ca-next.key` (T5.4c).
     pub fn store_ca_key(&self, key_pem: &str) -> Result<bool, String> {
         let public = crate::sync::public_of(key_pem)?;
+        // REQ: CLU-001, CLU-005 — not while a trust change moves the key files (see
+        // `key_files_lock`): the check below and the write after it must see one state.
+        let lock = key_files_lock(&self.dir);
+        let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let cas = pki::certs_of(&self.reload().ca_pem);
         let Some(pos) = cas
             .iter()
@@ -342,15 +413,38 @@ impl Identity {
         Ok(true)
     }
 
-    /// Replaces the trusted CAs (`ca.crt`) with `bundle` from a verified manifest (T5.4c). The
-    /// new bundle must keep a CA this node trusts now, so trust only ever moves step by step.
-    /// When a CA held as `ca-next.key` becomes the signing one, its key becomes `ca.key`.
-    /// Returns whether anything changed.
-    pub fn adopt_trust(&self, bundle: &str) -> Result<bool, String> {
+    /// Replaces the trusted CAs (`ca.crt`) with `bundle` from a verified manifest of version
+    /// `at` (T5.4c). The new bundle must keep a CA this node trusts now, so trust only ever moves
+    /// step by step. When a CA held as `ca-next.key` becomes the signing one, its key becomes
+    /// `ca.key`.
+    ///
+    /// REQ: CLU-001, CLU-005 (ADR-177) — and trust only moves forward: a manifest older than the
+    /// one this node last took its CAs from changes nothing ([`TrustStep::Older`]). The same
+    /// version is taken again (sent again, it finishes a step a crash cut short). The version is
+    /// recorded in `ca.version` after `ca.crt`, also when the bundle doesn't change, so a node
+    /// with no mark (upgraded from a build without one) or with one a crash left behind has the
+    /// current one after its next manifest.
+    pub fn adopt_trust(&self, bundle: &str, at: &TrustVersion) -> Result<TrustStep, String> {
+        // REQ: CLU-001, CLU-005 — one change of the key files at a time (see `key_files_lock`).
+        // The mark is read and written under the same lock.
+        let lock = key_files_lock(&self.dir);
+        let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        // REQ: CLU-001 (ADR-177) — a mark another cluster left in this directory is no mark.
+        let mark = self.trust_mark().filter(|m| m.cluster_id == at.cluster_id);
+        if mark.as_ref().is_some_and(|m| at.order() < m.order()) {
+            return Ok(TrustStep::Older);
+        }
+        let moves_on = mark.as_ref().is_none_or(|m| at.order() > m.order());
         let me = self.reload();
         let new = pki::certs_of(bundle);
-        if new.is_empty() || bundle.trim() == me.ca_pem.trim() {
-            return Ok(false);
+        if new.is_empty() {
+            return Ok(TrustStep::Unchanged);
+        }
+        if bundle.trim() == me.ca_pem.trim() {
+            if moves_on {
+                self.save_trust_mark(at);
+            }
+            return Ok(TrustStep::Unchanged);
         }
         let old: Vec<[u8; 32]> = pki::certs_of(&me.ca_pem)
             .iter()
@@ -384,25 +478,59 @@ impl Identity {
         // The signing CA changed to the one whose key this node received ahead of time.
         if held(&next).is_some_and(|k| k == signer) {
             let cur = self.dir.join("ca.key");
-            if cur.exists() {
-                let _ = std::fs::rename(&cur, self.dir.join("ca-old.key"));
+            if held(&cur).is_some_and(|k| k == signer) {
+                // REQ: CLU-001, CLU-005 — `ca.key` already is the signing CA's key, so `next`
+                // is a second copy of it (a key share stored it after an earlier switch moved
+                // it). Rotating `ca.key` into `ca-old.key` would keep that key as the "old"
+                // one for good: its CA stays trusted, so nothing would ever remove it.
+                let _ = std::fs::remove_file(&next);
+            } else {
+                if cur.exists() {
+                    let _ = std::fs::rename(&cur, self.dir.join("ca-old.key"));
+                }
+                std::fs::rename(&next, &cur).map_err(|e| e.to_string())?;
             }
-            std::fs::rename(&next, &cur).map_err(|e| e.to_string())?;
         }
-        // A CA key whose certificate left the bundle is no longer needed.
+        // A CA key whose certificate left the bundle is no longer needed, and neither is a
+        // second copy of the signing key (REQ: CLU-001, CLU-005: a key share that raced an
+        // earlier step can leave one; the lock above stops new ones, this repairs a leftover).
+        let signing = held(&self.dir.join("ca.key"));
         for f in ["ca-old.key", "ca-next.key", "ca-pending.key"] {
             let p = self.dir.join(f);
             if let Some(k) = held(&p)
-                && !new
-                    .iter()
-                    .any(|c| crate::sync::ca_public_key(c).is_ok_and(|x| x == k))
+                && (signing.as_ref() == Some(&k)
+                    || !new
+                        .iter()
+                        .any(|c| crate::sync::ca_public_key(c).is_ok_and(|x| x == k)))
             {
                 let _ = std::fs::remove_file(&p);
             }
         }
+        #[cfg(test)]
+        after_key_moves();
         write(&self.dir.join("ca.crt"), new.concat().as_bytes(), false)
             .map_err(|e| e.to_string())?;
-        Ok(true)
+        if moves_on {
+            self.save_trust_mark(at);
+        }
+        Ok(TrustStep::Changed)
+    }
+
+    /// REQ: CLU-001, CLU-005 (ADR-177) — the version of the manifest this node last took its
+    /// trusted CAs from (`ca.version`), if it has one. An unreadable file is no mark.
+    pub fn trust_mark(&self) -> Option<TrustVersion> {
+        std::fs::read(self.dir.join(TRUST_MARK))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+    }
+
+    /// Records `at` as the version this node last took its CAs from. Best effort: a mark that
+    /// can't be written is as if absent (order is enforced again from the next one written),
+    /// which never stops trust from moving.
+    fn save_trust_mark(&self, at: &TrustVersion) {
+        if let Ok(b) = serde_json::to_vec(at) {
+            let _ = write(&self.dir.join(TRUST_MARK), &b, false);
+        }
     }
 
     /// Whether this node holds the key of the CA that signs now (the bundle's first): after a
@@ -579,6 +707,8 @@ impl Identity {
             failover: default_failover(),
         };
         let e = |e: std::io::Error| e.to_string();
+        // REQ: CLU-001 (ADR-177) — a trust mark left here belongs to an identity before this one.
+        let _ = std::fs::remove_file(dir.join(TRUST_MARK));
         write(&dir.join("ca.key"), ca.key_pem.as_bytes(), true).map_err(e)?;
         write(&dir.join("ca.crt"), ca.cert_pem.as_bytes(), false).map_err(e)?;
         write(&dir.join("node.key"), key.key_pem.as_bytes(), true).map_err(e)?;
@@ -795,6 +925,8 @@ impl Identity {
             failover: default_failover(),
         };
         let e = |e: std::io::Error| e.to_string();
+        // REQ: CLU-001 (ADR-177) — a trust mark left here belongs to an identity before this one.
+        let _ = std::fs::remove_file(dir.join(TRUST_MARK));
         write(&dir.join("ca.crt"), r.ca_pem.as_bytes(), false).map_err(e)?;
         write(&dir.join("node.key"), key_pem.as_bytes(), true).map_err(e)?;
         write(&dir.join("node.crt"), r.cert_pem.as_bytes(), false).map_err(e)?;
@@ -891,6 +1023,48 @@ mod tests {
         }
     }
 
+    // REQ: CLU-001 (ADR-177) — a new identity (created, or joined) starts without a trust mark:
+    // one left in the directory by an identity before it belongs to that one.
+    #[test]
+    fn clu_001_a_new_identity_starts_without_a_trust_mark() {
+        let stale = br#"{"cluster_id":"0123456789abcdef","epoch":9,"seq":999}"#;
+        let a = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir_of(a.path())).unwrap();
+        std::fs::write(dir_of(a.path()).join("ca.version"), stale).unwrap();
+        let p = Identity::init(a.path(), "home", vec!["https://p:8443".into()], "x").unwrap();
+        assert!(
+            !p.dir.join("ca.version").exists(),
+            "init kept another identity's mark"
+        );
+        let t = p
+            .create_token_for(60, None, TokenGrants::default())
+            .unwrap();
+        let key = pki::new_node_key().unwrap();
+        let resp = p
+            .accept_join(
+                &JoinRequest {
+                    witness: false,
+                    ephemeral: false,
+                    secret: t.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: "r".into(),
+                    eligible: false,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
+            .unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir_of(b.path())).unwrap();
+        std::fs::write(dir_of(b.path()).join("ca.version"), stale).unwrap();
+        let r = Identity::save_joined(b.path(), &key.key_pem, &resp, "r", false, vec![]).unwrap();
+        assert!(
+            !r.dir.join("ca.version").exists(),
+            "join kept another identity's mark"
+        );
+    }
+
     #[test]
     fn clu_001_hosts_from_urls() {
         assert_eq!(
@@ -901,5 +1075,303 @@ mod tests {
             ]),
             ["pi.lan", "fd00::1", "10.0.0.1"]
         );
+    }
+}
+
+/// REQ: CLU-001, CLU-005 (T5.4c, ADR-066) — a replica's CA key files (`ca.key`, `ca-next.key`,
+/// `ca-pending.key`, `ca-old.key`) are changed by two tasks: the key-share handler
+/// ([`Identity::store_ca_key`]) and the manifest trust path ([`Identity::adopt_trust`]). They
+/// must not interleave, and a stray copy of the signing key must not outlive a step.
+#[cfg(test)]
+mod rotation_race_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::{Barrier, mpsc};
+    use std::thread::JoinHandle;
+    use std::time::Duration;
+
+    /// A replica being rotated: its own CA `old` (`Identity::init` makes the files a replica
+    /// that holds the key would have), and the `new` CA a rotation adds.
+    struct Replica {
+        _dir: tempfile::TempDir,
+        id: Identity,
+        old_cert: String,
+        new: Ca,
+    }
+
+    impl Replica {
+        /// The bundle of the trust phase: the old CA signs, the new one is trusted.
+        fn trusting(&self) -> String {
+            format!("{}{}", self.old_cert, self.new.cert_pem)
+        }
+        /// The bundle of the switch phase: the new CA signs, the old one is still trusted.
+        fn switched(&self) -> String {
+            format!("{}{}", self.new.cert_pem, self.old_cert)
+        }
+        fn has(&self, file: &str) -> bool {
+            self.id.dir.join(file).exists()
+        }
+        /// The public key of a key file in the cluster directory.
+        fn key(&self, file: &str) -> Option<Vec<u8>> {
+            std::fs::read_to_string(self.id.dir.join(file))
+                .ok()
+                .and_then(|k| crate::sync::public_of(&k).ok())
+        }
+        fn new_key(&self) -> Vec<u8> {
+            crate::sync::public_of(&self.new.key_pem).unwrap()
+        }
+        /// Takes `bundle` as from the rotation's manifest number `step` (ADR-177's version):
+        /// 1 the trust phase, 2 the switch, 3 the retire. Returns whether trust changed.
+        fn adopt(&self, bundle: &str, step: u64) -> bool {
+            self.id.adopt_trust(bundle, &at(&self.id, step)).unwrap() == TrustStep::Changed
+        }
+    }
+
+    /// The version of the rotation's manifest number `step` in `id`'s cluster.
+    fn at(id: &Identity, step: u64) -> TrustVersion {
+        TrustVersion {
+            cluster_id: id.meta.cluster_id.clone(),
+            epoch: 1,
+            seq: step,
+        }
+    }
+
+    fn replica() -> Replica {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "lab",
+        )
+        .unwrap();
+        let new = pki::new_ca_labeled("home", "next").unwrap();
+        Replica {
+            old_cert: id.ca_pem.clone(),
+            _dir: dir,
+            id,
+            new,
+        }
+    }
+
+    /// Before the primary's trust manifest: one CA, and the new key already received.
+    fn before_trust() -> Replica {
+        let r = replica();
+        assert!(!r.id.store_ca_key(&r.new.key_pem).unwrap());
+        assert!(r.has("ca-pending.key"));
+        r
+    }
+
+    /// After the trust phase: both CAs trusted, the old one signs, the new key is `ca-next.key`.
+    fn after_trust() -> Replica {
+        let r = before_trust();
+        assert!(r.adopt(&r.trusting(), 1));
+        assert!(r.has("ca-next.key") && !r.has("ca-pending.key"));
+        r
+    }
+
+    /// What every run must end with: one CA, its key as `ca.key`, and no other key file.
+    fn assert_retired(r: &Replica) {
+        let cas = pki::certs_of(&r.id.reload().ca_pem);
+        assert_eq!(cas.len(), 1, "one CA is trusted");
+        assert_eq!(
+            r.key("ca.key"),
+            Some(r.new_key()),
+            "ca.key is the new CA's key"
+        );
+        for f in ["ca-old.key", "ca-next.key", "ca-pending.key"] {
+            assert!(!r.has(f), "{f} is left behind");
+        }
+    }
+
+    /// Runs `during` (on a second thread, started inside) at the point in `adopt_trust` where
+    /// the key files have moved and the bundle isn't written yet, waiting up to a second for it
+    /// to finish: unserialised, it finishes right there; serialised, it waits for the adoption.
+    /// Returns the thread's handle, to join after the adoption.
+    fn interleave(
+        r: &Replica,
+        during: impl Fn(&Identity) + Send + Clone + 'static,
+    ) -> Rc<RefCell<Option<JoinHandle<()>>>> {
+        let handle = Rc::new(RefCell::new(None));
+        let (id, slot) = (r.id.clone(), Rc::clone(&handle));
+        AFTER_KEY_MOVES.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                let (id, during) = (id.clone(), during.clone());
+                let (tx, rx) = mpsc::channel();
+                let t = std::thread::spawn(move || {
+                    during(&id);
+                    let _ = tx.send(());
+                });
+                let _ = rx.recv_timeout(Duration::from_secs(1));
+                *slot.borrow_mut() = Some(t);
+            }));
+        });
+        handle
+    }
+
+    fn join(handle: &Rc<RefCell<Option<JoinHandle<()>>>>) {
+        AFTER_KEY_MOVES.with(|h| *h.borrow_mut() = None);
+        handle.borrow_mut().take().unwrap().join().unwrap();
+    }
+
+    // The end state of the interleaving (a plain sequence): the key share stored the new key
+    // as `ca-next.key` after the switch moved it to `ca.key`. The retire must not turn that
+    // copy into a permanent `ca-old.key` (found as `FAIL: r kept ca-old.key`).
+    #[test]
+    fn clu_001_retire_drops_a_stray_copy_of_the_new_key() {
+        let r = after_trust();
+        assert!(r.adopt(&r.switched(), 2));
+        assert_eq!(r.key("ca.key"), Some(r.new_key()));
+        assert!(r.has("ca-old.key"), "the old key stays until the retire");
+        // What the losing key share writes.
+        write(
+            &r.id.dir.join("ca-next.key"),
+            r.new.key_pem.as_bytes(),
+            true,
+        )
+        .unwrap();
+        assert!(r.adopt(&r.new.cert_pem, 3));
+        assert_retired(&r);
+    }
+
+    // The trust phase's sibling: a second copy of the new key as `ca-pending.key`, left after
+    // the first was promoted. The switch must not keep it.
+    #[test]
+    fn clu_001_switch_drops_a_stray_pending_copy_of_the_new_key() {
+        let r = after_trust();
+        write(
+            &r.id.dir.join("ca-pending.key"),
+            r.new.key_pem.as_bytes(),
+            true,
+        )
+        .unwrap();
+        assert!(r.adopt(&r.switched(), 2));
+        assert!(!r.has("ca-pending.key"), "a copy of ca.key is kept");
+        assert!(!r.has("ca-next.key"));
+        assert_eq!(r.key("ca.key"), Some(r.new_key()));
+        assert!(r.has("ca-old.key"));
+        assert!(r.adopt(&r.new.cert_pem, 3));
+        assert_retired(&r);
+    }
+
+    // The switch, with the key share (the new key, as the primary sends it after switching)
+    // arriving between the key move and the bundle write.
+    #[test]
+    fn clu_001_a_key_share_cannot_slip_into_a_switch() {
+        let r = after_trust();
+        let key = r.new.key_pem.clone();
+        let share = interleave(&r, move |id| {
+            let _ = id.store_ca_key(&key);
+        });
+        assert!(r.adopt(&r.switched(), 2));
+        join(&share);
+        assert!(
+            !r.has("ca-next.key"),
+            "the share stored a copy of the signing key as the next key"
+        );
+        assert!(r.has("ca-old.key") && r.key("ca.key") == Some(r.new_key()));
+        assert!(r.adopt(&r.new.cert_pem, 3));
+        assert_retired(&r);
+    }
+
+    // The trust phase: the next key arrives a second time (on the other stream) while the first
+    // copy, held as pending, is promoted.
+    #[test]
+    fn clu_001_a_key_share_cannot_slip_into_a_trust_step() {
+        let r = before_trust();
+        let key = r.new.key_pem.clone();
+        let share = interleave(&r, move |id| {
+            let _ = id.store_ca_key(&key);
+        });
+        assert!(r.adopt(&r.trusting(), 1));
+        join(&share);
+        assert!(
+            !r.has("ca-pending.key"),
+            "the share was held as pending after the promotion"
+        );
+        assert!(r.has("ca-next.key"));
+        assert!(r.adopt(&r.switched(), 2));
+        assert!(r.adopt(&r.new.cert_pem, 3));
+        assert_retired(&r);
+    }
+
+    /// Copies a replica's cluster directory into a new data directory.
+    fn clone_of(from: &Replica) -> (tempfile::TempDir, Identity) {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("cluster");
+        std::fs::create_dir_all(&to).unwrap();
+        for e in std::fs::read_dir(&from.id.dir).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+        let id = Identity::load(dir.path()).unwrap().unwrap();
+        (dir, id)
+    }
+
+    /// One round of the race: the key share (the new key) and the trust step (`bundle`) are
+    /// released together; one of them is held back by `lag` spins. Returns the files that
+    /// shouldn't exist afterwards.
+    fn race(start: &Replica, bundle: &str, lag: usize, share_lags: bool) -> Vec<&'static str> {
+        let (_dir, id) = clone_of(start);
+        let key = start.new.key_pem.clone();
+        let barrier = Arc::new(Barrier::new(2));
+        let spin = |n: usize| {
+            for _ in 0..n {
+                std::hint::spin_loop();
+            }
+        };
+        let t = {
+            let (id, barrier) = (id.clone(), Arc::clone(&barrier));
+            std::thread::spawn(move || {
+                barrier.wait();
+                if share_lags {
+                    spin(lag);
+                }
+                let _ = id.store_ca_key(&key);
+            })
+        };
+        barrier.wait();
+        if !share_lags {
+            spin(lag);
+        }
+        let step = if bundle == start.trusting() { 1 } else { 2 };
+        let _ = id.adopt_trust(bundle, &at(&id, step));
+        t.join().unwrap();
+        ["ca-next.key", "ca-pending.key"]
+            .into_iter()
+            .filter(|f| {
+                // After a trust step the next key is expected; after a switch, neither is.
+                id.dir.join(f).exists() && !(*f == "ca-next.key" && bundle == start.trusting())
+            })
+            .collect()
+    }
+
+    // Many rounds of the real race: the two steps released together, one lagging by a varying
+    // number of spins (so the windows overlap at many offsets). `TT_RACE_ROUNDS` raises the count
+    // for a hunt; the count and the survivors are printed.
+    #[test]
+    fn clu_001_key_share_and_trust_step_race_leaves_no_stray_key() {
+        let rounds: usize = std::env::var("TT_RACE_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        let trust = before_trust();
+        let switch = after_trust();
+        let (mut after_trust_step, mut after_switch) = (0usize, 0usize);
+        for round in 0..rounds {
+            let lag = (round % 64) * 40;
+            if !race(&trust, &trust.trusting(), lag, round % 2 == 0).is_empty() {
+                after_trust_step += 1;
+            }
+            if !race(&switch, &switch.switched(), lag, round % 2 == 1).is_empty() {
+                after_switch += 1;
+            }
+        }
+        eprintln!(
+            "rotation race: {rounds} rounds of each step; stray key after a trust step: \
+             {after_trust_step}, after a switch: {after_switch}"
+        );
+        assert_eq!((after_trust_step, after_switch), (0, 0));
     }
 }

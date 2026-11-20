@@ -1,7 +1,8 @@
 <script lang="ts">
   // REQ: OBS-039 (ADR-167) — a small mark left of a domain name, drawn from what the UI already
   // knows: no request is made for it, so nothing about a person's queries leaves the page.
-  //  - A name the brand map knows gets the brand's colour and glyph (Simple Icons, CC0).
+  //  - A name the brand map knows gets the brand's colour and glyph (Simple Icons, CC0; Bootstrap Icons, MIT,
+  //    for the marks Simple Icons dropped: its glyphs sit on a 16 grid, the others on 24).
   //  - Every other name gets a monogram in a stable colour: the same owner is always the same
   //    colour. "Monogram only" gives every name one, and never loads the brand glyphs.
   //  - A name of the network itself (.arpa, .lan, .local, Kubernetes) gets a quiet house.
@@ -31,6 +32,7 @@
   const letter = $derived(letterOf(reg));
   const hex = $derived(glyph?.[0] ?? '000000');
   const dim = $derived(!!glyph && luminance(hex) < 0.05);
+  const grid = $derived(glyph?.[2] ?? 24);
 
   type Kind = 'brand' | 'wait' | 'house' | 'mono';
   const kind = $derived.by((): Kind => {
@@ -56,7 +58,7 @@
     aria-hidden="true"
   >
     {#if kind === 'brand' && glyph}
-      <svg viewBox="0 0 24 24" width={inner} height={inner} fill="currentColor"><path d={glyph[1]} /></svg>
+      <svg viewBox="0 0 {grid} {grid}" width={inner} height={inner} fill="currentColor"><path d={glyph[1]} /></svg>
     {:else if kind === 'house'}
       <svg viewBox="0 0 24 24" width={inner} height={inner} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z" /></svg>
     {:else if kind === 'mono'}

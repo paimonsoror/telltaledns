@@ -17,6 +17,8 @@ struct Fake {
     notes: Mutex<Vec<crate::model::Annotation>>,
     /// REQ: OPS-011 — the fake's one pseudonym map has been handed out.
     map_taken: std::sync::atomic::AtomicBool,
+    /// REQ: OBS-010 (ADR-179) — each managed write's name and whether an admin made it.
+    by_admin: Mutex<Vec<(String, bool)>>,
 }
 
 /// The one finding the fake reports.
@@ -35,6 +37,10 @@ impl Backend for Fake {
         &self,
         w: crate::ManagedWrite,
     ) -> crate::BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        self.by_admin
+            .lock()
+            .unwrap()
+            .push((w.name.clone(), w.by_admin));
         self.seen.lock().unwrap().push(format!(
             "managed {:?} {} {}",
             w.kind,
@@ -286,6 +292,7 @@ impl Backend for Fake {
             enabled: true,
             mode: "enforce".into(),
             source: "inline".into(),
+            local: false,
             state: "ok".into(),
             error: None,
             bytes: 0,
@@ -559,6 +566,11 @@ async fn get(app: &TestApp, uri: &str) -> (StatusCode, String, serde_json::Value
 
 fn app() -> (TestApp, Arc<Fake>) {
     let fake = Arc::new(Fake::default());
+    (app_over(Arc::clone(&fake) as Shared), fake)
+}
+
+/// [`app`] over another backend.
+fn app_over(backend: Shared) -> TestApp {
     let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
     let auth = Arc::new(auth::Auth::new(state, auth::Settings::default()));
     let admin = auth
@@ -585,17 +597,14 @@ fn app() -> (TestApp, Arc<Fake>) {
     let sess = auth
         .start_session(&admin, "127.0.0.1".parse().unwrap(), auth_now())
         .unwrap();
-    let router = router(Arc::clone(&fake) as Shared, Arc::clone(&auth));
-    (
-        TestApp {
-            router,
-            bearer: format!("tt_{id}_{secret}"),
-            cookie: format!("{}={}", auth::routes::COOKIE, sess.cookie),
-            csrf: sess.csrf,
-            auth,
-        },
-        fake,
-    )
+    let router = router(backend, Arc::clone(&auth));
+    TestApp {
+        router,
+        bearer: format!("tt_{id}_{secret}"),
+        cookie: format!("{}={}", auth::routes::COOKIE, sess.cookie),
+        csrf: sess.csrf,
+        auth,
+    }
 }
 // REQ: OBS-014, OBS-015 — acknowledging anomalies over HTTP: an operator's change, audited,
 // reflected in the list and its filter; a viewer can't; health is a plain read.
@@ -1597,7 +1606,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 113 with CLU-001's /cluster/nodes/{id}.
     // 114 with OBS-038's /anomaly-mutes/{name}; 116 with OPS-011's /system/support-package and
     // /system/support-package/{id}/map.
-    assert_eq!(paths.len(), 116);
+    assert_eq!(paths.len(), 117);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -2448,6 +2457,37 @@ fn obs_024_simulate_parameters() {
     assert!(simulate_opts(&opts(true, Some("24h"), Some("soon")), NOW).is_err());
 }
 
+// REQ: OBS-024 (T13.1) — issue #69: an end of `now` (or an empty one) is no end at all, so the
+// backend's default applies: the end of the request's own second. Read as the whole second
+// `now`, it ended at the start of that second and left out what had just been logged. Any other
+// end stays exactly what it says.
+#[test]
+fn obs_024_until_now_is_the_default() {
+    use crate::config_api::{WriteOpts, simulate_opts};
+    let until_of = |until: Option<&str>| {
+        simulate_opts(
+            &WriteOpts {
+                dry_run: true,
+                simulate: Some("24h".to_owned()),
+                simulate_until: until.map(str::to_owned),
+            },
+            NOW,
+        )
+        .unwrap()
+        .unwrap()
+        .until_s
+    };
+    for given in [None, Some("now"), Some(" now "), Some("")] {
+        assert_eq!(until_of(given), None, "{given:?}");
+    }
+    assert_eq!(until_of(Some("-1h")), Some(NOW - 3600));
+    let at = "2026-10-03T12:00:00Z";
+    assert_eq!(
+        until_of(Some(at)),
+        Some(crate::time::parse_time(at, NOW).unwrap())
+    );
+}
+
 // REQ: AGT-005 — a change made through MCP is audited with the agent's address: the REST
 // call behind the tool runs in-process and has no peer address of its own.
 #[tokio::test]
@@ -3088,4 +3128,1002 @@ async fn clu_014_drill_requests_over_http() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let (s, _, v) = send(&app, get("/api/v1/nodes/local/drill")).await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+}
+
+/// REQ: CLU-004, CLU-002 (ADR-174) — a backend whose federated reads wait on a gate, the way a
+/// replica's read waits for the primary's answer (which needs the runtime, as the gate's opening
+/// does here). Everything else is [`Fake`]'s.
+struct ParkingBackend {
+    inner: Fake,
+    /// Federated reads that started.
+    reads: std::sync::atomic::AtomicUsize,
+    /// Told whenever a federated read starts: the handler is inside the backend.
+    entered: Mutex<std::sync::mpsc::Sender<()>>,
+    /// True once the test's probe task has run on the runtime.
+    open: (Mutex<bool>, std::sync::Condvar),
+}
+
+impl ParkingBackend {
+    fn new() -> (Arc<Self>, std::sync::mpsc::Receiver<()>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let me = Self {
+            inner: Fake::default(),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            entered: Mutex::new(tx),
+            open: (Mutex::new(false), std::sync::Condvar::new()),
+        };
+        (Arc::new(me), rx)
+    }
+
+    fn open_gate(&self) {
+        *self.open.0.lock().unwrap() = true;
+        self.open.1.notify_all();
+    }
+
+    /// One federated read: true when the gate opened. It gives up after 30 s, so a failing test
+    /// doesn't leave a thread behind for long.
+    fn federated_read(&self) -> bool {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.entered.lock().unwrap().send(());
+        let guard = self.open.0.lock().unwrap();
+        let (guard, _) = self
+            .open
+            .1
+            .wait_timeout_while(guard, std::time::Duration::from_secs(30), |open| !*open)
+            .unwrap();
+        *guard
+    }
+}
+
+impl Backend for ParkingBackend {
+    fn now_unix_seconds(&self) -> u64 {
+        NOW
+    }
+    fn system_info(&self) -> SystemInfo {
+        self.inner.system_info()
+    }
+    fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
+        self.inner.timeseries(step, from_s, to_s)
+    }
+    fn top(&self, kind: TopKind, hour: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem> {
+        self.inner.top(kind, hour, limit, client)
+    }
+    fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
+        self.inner.latency(by, hour)
+    }
+    fn queries(
+        &self,
+        q: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> Result<QueryPage, Problem> {
+        self.inner.queries(q, from_us, to_us, limit)
+    }
+    fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
+        self.inner.explain(p)
+    }
+    fn lists(&self) -> Vec<ListInfo> {
+        self.inner.lists()
+    }
+    fn groups(&self) -> Vec<GroupInfo> {
+        self.inner.groups()
+    }
+    fn upstreams(&self) -> Vec<UpstreamInfo> {
+        self.inner.upstreams()
+    }
+    // The reads a replica federates (or forwards to the primary): each waits for the gate.
+    fn clients(&self) -> Vec<ClientInfo> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn local_names(&self) -> Vec<LocalName> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn forwards(&self) -> Vec<ForwardInfo> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn rules(&self) -> Vec<crate::model::RuleInfo> {
+        self.federated_read();
+        Vec::new()
+    }
+    fn config_entries(&self, kind: Option<&str>) -> Vec<ConfigEntry> {
+        let _ = kind;
+        self.federated_read();
+        vec![ConfigEntry {
+            kind: "list".into(),
+            name: "from-the-gate".into(),
+            source: "added".into(),
+            definition: None,
+            credentials: None,
+        }]
+    }
+    /// 4242 when the gate opened (the primary's version), 0 otherwise (a replica's own).
+    fn config_version(&self) -> u64 {
+        if self.federated_read() { 4242 } else { 0 }
+    }
+    fn write_client(
+        &self,
+        w: ClientWrite,
+    ) -> BoxFuture<Result<crate::model::ClientChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Ok(serde_json::from_value(serde_json::json!({
+                "applied": true, "configVersion": 1, "before": null, "after": null,
+                "recentQueries": 0, "impact": "", "warnings": []
+            }))
+            .unwrap())
+        })
+    }
+    fn write_managed(
+        &self,
+        w: ManagedWrite,
+    ) -> BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Ok(serde_json::from_value(serde_json::json!({
+                "applied": true, "configVersion": 1, "before": null, "after": null,
+                "warnings": []
+            }))
+            .unwrap())
+        })
+    }
+}
+
+/// One request of `clu_004_direct_handlers_never_park_a_runtime_worker`.
+struct Route {
+    name: &'static str,
+    method: &'static str,
+    uri: &'static str,
+    body: &'static str,
+    /// Made with a token restricted to the group `kids` (AGT-004), not the admin's.
+    agent: bool,
+    /// The federated reads the handler makes in all (the fake was reached the way a replica is).
+    reads: usize,
+    /// The answer carries the backend's version in the `ETag` (else: its one entry).
+    etag: bool,
+}
+
+/// Sends `route` through the router on a runtime with one worker, from a thread that is not a
+/// worker. The backend's reads wait for a gate that only a task on that runtime opens: a handler
+/// that waits on its own worker never lets the task run (the production wedge: a replica's wait
+/// for the primary needs a worker too). The guard is a `std` timeout on this thread; a timer on
+/// the wedged runtime could never fire.
+fn route_never_parks(route: &Route) -> Result<(), String> {
+    const GUARD: std::time::Duration = std::time::Duration::from_secs(10);
+    let fail = |what: &str| Err(format!("{}: {what}", route.name));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    assert_eq!(rt.metrics().num_workers(), 1, "the shape of the test");
+    let (backend, entered) = ParkingBackend::new();
+    let app = app_over(Arc::clone(&backend) as Shared);
+    let bearer = if route.agent {
+        let (s, _, v) = rt.block_on(send(
+            &app,
+            app.signed_in(
+                "POST",
+                "/api/v1/tokens",
+                serde_json::json!({"name": "kids-helper", "kind": "agent", "group": "kids",
+                    "scopes": ["querylog:read", "analytics:read", "config:read", "config:write:clients"]}),
+            ),
+        ));
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        v["token"].as_str().unwrap().to_owned()
+    } else {
+        app.bearer.clone()
+    };
+    let req = Request::builder()
+        .method(route.method)
+        .uri(route.uri)
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .header("x-telltale-reason", "test")
+        .body(Body::from(route.body))
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let router = app.router.clone();
+    drop(rt.spawn(async move {
+        let resp = router.oneshot(req).await.unwrap();
+        let (status, headers) = (resp.status(), resp.headers().clone());
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let _ = tx.send((status, headers, bytes));
+    }));
+    // Only once the handler is inside the backend does the probe run: a handler that had not
+    // started yet could not tell the two cases apart.
+    if entered.recv_timeout(GUARD).is_err() {
+        backend.open_gate();
+        rt.shutdown_background();
+        return fail("never reached the backend");
+    }
+    let opener = Arc::clone(&backend);
+    drop(rt.spawn(async move { opener.open_gate() }));
+    let Ok((status, headers, bytes)) = rx.recv_timeout(GUARD) else {
+        // Dropping a runtime whose worker is parked would hang the test run.
+        backend.open_gate();
+        rt.shutdown_background();
+        return fail("the handler waited on the runtime's only worker (the probe task never ran)");
+    };
+    drop(rt);
+    let reads = backend.reads.load(std::sync::atomic::Ordering::SeqCst);
+    if reads != route.reads {
+        return fail(&format!(
+            "{reads} federated reads, expected {}",
+            route.reads
+        ));
+    }
+    if status != StatusCode::OK {
+        return fail(&format!(
+            "status {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ));
+    }
+    if route.etag {
+        if headers.get("etag").and_then(|v| v.to_str().ok()) != Some("\"4242\"") {
+            return fail(&format!(
+                "ETag {:?}, not the backend's version",
+                headers.get("etag")
+            ));
+        }
+    } else {
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        if v["items"][0]["name"] != "from-the-gate" {
+            return fail(&format!("the entries are {v}"));
+        }
+    }
+    Ok(())
+}
+
+// REQ: CLU-004, CLU-002 (ADR-174, GitHub issue #7) — a handler whose backend call federates (a
+// replica asks the primary, and the answer needs a runtime worker) must not run that call on a
+// worker: with every worker parked nothing can answer it, nothing can time it out, and the API,
+// the metrics and the cluster stream all stop. On a runtime of one worker a single request
+// shows it. The rows are the direct handlers' routes (the ones that read the config version for
+// the `ETag`, or federate their list), including a config write and a group-restricted agent's.
+#[test]
+fn clu_004_direct_handlers_never_park_a_runtime_worker() {
+    let client = r#"{"match": ["192.168.1.9"], "groups": ["default"]}"#;
+    let kids = r#"{"match": ["192.168.1.9"], "groups": ["kids"]}"#;
+    let route = |name, method, uri, body, agent, reads, etag| Route {
+        name,
+        method,
+        uri,
+        body,
+        agent,
+        reads,
+        etag,
+    };
+    let routes = [
+        route("GET clients", "GET", "/api/v1/clients", "", false, 2, true),
+        route(
+            "GET clients (agent)",
+            "GET",
+            "/api/v1/clients",
+            "",
+            true,
+            2,
+            true,
+        ),
+        route("GET records", "GET", "/api/v1/records", "", false, 2, true),
+        route(
+            "GET forwards",
+            "GET",
+            "/api/v1/forwards",
+            "",
+            false,
+            2,
+            true,
+        ),
+        route("GET rules", "GET", "/api/v1/rules", "", false, 2, true),
+        route(
+            "GET config/entries",
+            "GET",
+            "/api/v1/config/entries?kind=list",
+            "",
+            false,
+            1,
+            false,
+        ),
+        route(
+            "PUT clients",
+            "PUT",
+            "/api/v1/clients/tablet",
+            client,
+            false,
+            1,
+            true,
+        ),
+        route(
+            "PUT clients (agent)",
+            "PUT",
+            "/api/v1/clients/tablet",
+            kids,
+            true,
+            2,
+            true,
+        ),
+        route(
+            "DELETE records",
+            "DELETE",
+            "/api/v1/records/x.lan",
+            "",
+            false,
+            1,
+            true,
+        ),
+    ];
+    let failed: Vec<String> = routes
+        .iter()
+        .filter_map(|r| route_never_parks(r).err())
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "these requests did not complete on a runtime of one worker:\n{}",
+        failed.join("\n")
+    );
+}
+
+/// REQ: OBS-010, API-002 (ADR-179) — a configuration write tells the backend whether an
+/// administrator made it: an admin's session or admin-scoped token is; an operator, an admin's
+/// token capped below admin, and any agent token (an admin's, even with `cluster:admin`) aren't.
+#[tokio::test]
+async fn obs_010_a_write_says_whether_an_administrator_made_it() {
+    let (app, fake) = app();
+    let olga = app
+        .auth
+        .create_user(
+            "olga",
+            "an operator password",
+            auth::Role::Operator,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let root = app.auth.state().user_by_name("root").unwrap().unwrap();
+    let token = |user: i64, scope: &str, agent: Option<&str>| {
+        let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+        app.auth
+            .state()
+            .create_token(
+                &id,
+                user,
+                "t",
+                &auth::crypto::secret_hash(&secret),
+                scope,
+                None,
+                NOW,
+            )
+            .unwrap();
+        if let Some(s) = agent {
+            app.auth
+                .state()
+                .set_token_agent(&id, s, None, None)
+                .unwrap();
+        }
+        format!("tt_{id}_{secret}")
+    };
+    let body = serde_json::json!({ "type": "webhook", "url": "https://hooks.example.com/x" });
+    let put = |bearer: String, name: &str| {
+        Request::put(format!("/api/v1/alerts/destinations/{name}"))
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-telltale-reason", "tests")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    for (name, req) in [
+        ("admin-token", put(app.bearer.clone(), "admin-token")),
+        (
+            "admin-session",
+            app.signed_in(
+                "PUT",
+                "/api/v1/alerts/destinations/admin-session",
+                body.clone(),
+            ),
+        ),
+        ("operator", put(token(olga.id, "write", None), "operator")),
+        (
+            "admin-write-scope",
+            put(token(root.id, "write", None), "admin-write-scope"),
+        ),
+        (
+            "admin-agent",
+            put(
+                token(root.id, "write", Some("config:write:alerts cluster:admin")),
+                "admin-agent",
+            ),
+        ),
+        (
+            "operator-agent",
+            put(
+                token(olga.id, "write", Some("config:write:alerts")),
+                "operator-agent",
+            ),
+        ),
+    ] {
+        let (s, _, v) = send(&app, req).await;
+        assert_eq!(
+            s,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{name}: reached the backend: {v}"
+        );
+    }
+    let seen = fake.by_admin.lock().unwrap().clone();
+    let admin: Vec<(&str, bool)> = seen.iter().map(|(n, a)| (n.as_str(), *a)).collect();
+    assert_eq!(
+        admin,
+        [
+            ("admin-token", true),
+            ("admin-session", true),
+            ("operator", false),
+            ("admin-write-scope", false),
+            ("admin-agent", false),
+            ("operator-agent", false),
+        ]
+    );
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — security F3: a pinned primary whose routers differ from the
+/// pinned version. The rollout status and a write's `409 cluster_pinned` carry the diff the pin
+/// holds back. Everything else is [`Fake`]'s.
+struct PinnedBackend {
+    inner: Fake,
+}
+
+/// A pin's diff that touches routers (key files, a username) and an upstream.
+fn pin_ops() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({"op": "replace", "path": "/router/0/api_key_file",
+            "value": "/data/secrets/router-udm.api_key.0123456789abcdef"}),
+        serde_json::json!({"op": "add", "path": "/router/1", "value": {
+            "name": "fw", "type": "opnsense", "url": "https://fw.example.test",
+            "api_key_file": "/data/secrets/router-fw.api_key.fedcba9876543210",
+            "api_secret_file": "/data/secrets/router-fw.api_secret.fedcba9876543210",
+            "username": "reader-one"}}),
+        serde_json::json!({"op": "add", "path": "/router", "value": [
+            {"name": "ctl", "type": "unifi", "url": "https://ctl.example.test",
+             "username": "reader-two", "password_file": "/data/secrets/router-ctl.password.0"}]}),
+        serde_json::json!({"op": "replace", "path": "/router/2/username", "value": "reader-three"}),
+        serde_json::json!({"op": "replace", "path": "/upstream/0/url", "value": "tls://9.9.9.9"}),
+    ]
+}
+
+/// The required [`Backend`] methods, answered by the backend's `inner` [`Fake`].
+macro_rules! fake_reads {
+    () => {
+        fn now_unix_seconds(&self) -> u64 {
+            NOW
+        }
+        fn system_info(&self) -> SystemInfo {
+            self.inner.system_info()
+        }
+        fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
+            self.inner.timeseries(step, from_s, to_s)
+        }
+        fn top(
+            &self,
+            kind: TopKind,
+            hour: Hour,
+            limit: usize,
+            client: Option<IpAddr>,
+        ) -> Vec<TopItem> {
+            self.inner.top(kind, hour, limit, client)
+        }
+        fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
+            self.inner.latency(by, hour)
+        }
+        fn queries(
+            &self,
+            q: &QueryParams,
+            from_us: u64,
+            to_us: u64,
+            limit: usize,
+        ) -> Result<QueryPage, Problem> {
+            self.inner.queries(q, from_us, to_us, limit)
+        }
+        fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
+            self.inner.explain(p)
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            self.inner.lists()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            self.inner.groups()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            self.inner.clients()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            self.inner.upstreams()
+        }
+    };
+}
+
+impl Backend for PinnedBackend {
+    fake_reads!();
+    fn rollout_command(
+        &self,
+        w: crate::RolloutWrite,
+    ) -> BoxFuture<Result<crate::model::RolloutAction, Problem>> {
+        let dry_run = w.dry_run();
+        Box::pin(async move {
+            Ok(crate::model::RolloutAction {
+                done: "would pin".into(),
+                dry_run,
+                diff: pin_ops(),
+                changes: vec!["router: changed".into()],
+                config_version: 7,
+            })
+        })
+    }
+    fn rollout_status(&self) -> BoxFuture<Result<crate::model::RolloutStatus, Problem>> {
+        Box::pin(async {
+            Ok(crate::model::RolloutStatus {
+                stage: "pinned".into(),
+                pinned: Some(crate::model::ClusterPin {
+                    to: "3.124".into(),
+                    diff: pin_ops(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        })
+    }
+    fn write_managed(
+        &self,
+        w: ManagedWrite,
+    ) -> BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Err(
+                Problem::new(crate::problem::Code::ClusterPinned, "the cluster is pinned")
+                    .diff(serde_json::Value::Array(pin_ops())),
+            )
+        })
+    }
+}
+
+/// A bearer token for a new user of `role`.
+fn bearer_for(app: &TestApp, name: &str, role: auth::Role, scope: &str) -> String {
+    let user = app
+        .auth
+        .create_user(name, "a long enough password", role, false, NOW)
+        .unwrap();
+    let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &id,
+            user.id,
+            "tests",
+            &auth::crypto::secret_hash(&secret),
+            scope,
+            None,
+            auth_now(),
+        )
+        .unwrap();
+    format!("tt_{id}_{secret}")
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — security F3: the diff a pin holds back names no router key
+/// file or username to a caller below admin (the rollout status, which viewers read, and the
+/// `409 cluster_pinned` an operator's write gets); the rest of the diff is as it was, and an
+/// administrator sees all of it.
+#[tokio::test]
+async fn api_002_a_pin_diff_names_no_router_key_file() {
+    let app = app_over(Arc::new(PinnedBackend {
+        inner: Fake::default(),
+    }));
+    let viewer = bearer_for(&app, "vic", auth::Role::Viewer, "read");
+    let operator = bearer_for(&app, "olga", auth::Role::Operator, "write");
+    let hidden = [
+        "router-udm.api_key",
+        "router-fw.api_key",
+        "router-fw.api_secret",
+        "router-ctl.password",
+        "reader-one",
+        "reader-two",
+        "reader-three",
+    ];
+    let call = |bearer: &str, method: &str, uri: &str| {
+        let mut r = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"));
+        let body = if method == "PUT" {
+            r = r.header("content-type", "application/json");
+            Body::from(serde_json::json!({"url": "udp://9.9.9.9"}).to_string())
+        } else {
+            Body::empty()
+        };
+        r.body(body).unwrap()
+    };
+    for (who, bearer) in [("viewer", &viewer), ("operator", &operator)] {
+        let (s, _, v) = send(&app, call(bearer, "GET", "/api/v1/cluster/rollout")).await;
+        assert_eq!(s, StatusCode::OK, "{who}: {v}");
+        let text = v.to_string();
+        for h in hidden {
+            assert!(!text.contains(h), "{who} sees {h}: {text}");
+        }
+        assert!(
+            text.contains("tls://9.9.9.9"),
+            "{who}: the rest stays: {text}"
+        );
+        assert!(text.contains("https://fw.example.test"), "{who}: {text}");
+    }
+    let (s, _, v) = send(&app, call(&operator, "PUT", "/api/v1/upstreams/up")).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let text = v.to_string();
+    for h in hidden {
+        assert!(!text.contains(h), "the operator's 409 shows {h}: {text}");
+    }
+    assert!(text.contains("tls://9.9.9.9"), "{text}");
+    // An administrator sees the whole diff.
+    let (s, _, v) = send(&app, call(&app.bearer, "GET", "/api/v1/cluster/rollout")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let text = v.to_string();
+    for h in hidden {
+        assert!(text.contains(h), "the admin sees {h}: {text}");
+    }
+}
+
+// ---- Review round 2.
+
+/// A token of `kind` (`agent`, with `scopes`) made by the admin's session; its bearer.
+async fn agent_token(app: &TestApp, name: &str, scopes: &[&str]) -> String {
+    let body = serde_json::json!({"name": name, "kind": "agent", "scopes": scopes});
+    let (s, _, v) = send(app, app.signed_in("POST", "/api/v1/tokens", body)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    v["token"].as_str().unwrap().to_owned()
+}
+
+/// One MCP `tools/call` as `bearer`; the result.
+async fn mcp_call(
+    app: &TestApp,
+    bearer: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let req = Request::post("/mcp")
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .body(Body::from(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": tool, "arguments": args}})
+            .to_string(),
+        ))
+        .unwrap();
+    send(app, req).await.2
+}
+
+/// REQ: API-002, T8.2, AGT-007 (ADR-181) — security N1: the diff a pin or an unpin command
+/// answers with names no router key file or username below admin: an agent's dry run (an agent
+/// is never an administrator), and so the MCP plans made from those dry runs, which every operator
+/// reads through `GET /api/v1/plans` (a viewer sees only its own). An administrator's own dry run
+/// shows them.
+#[tokio::test]
+async fn api_002_a_pin_command_diff_names_no_router_key_file_below_admin() {
+    let app = app_over(Arc::new(PinnedBackend {
+        inner: Fake::default(),
+    }));
+    app.auth.agents().set_require_approval(true);
+    let agent = agent_token(&app, "pinner", &["cluster:admin"]).await;
+    let hidden = [
+        "router-udm.api_key",
+        "router-fw.api_key",
+        "router-ctl.password",
+        "reader-one",
+        "reader-two",
+        "reader-three",
+    ];
+    let pin = |bearer: &str, uri: &str, method: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "a test of the pin preview")
+            .body(Body::from(
+                serde_json::json!({"reason": "a test of the pin preview"}).to_string(),
+            ))
+            .unwrap()
+    };
+    // The agent's own dry runs.
+    for (method, uri) in [
+        ("POST", "/api/v1/cluster/versions/3.124/pin?dryRun=true"),
+        ("DELETE", "/api/v1/cluster/pin?dryRun=true"),
+    ] {
+        let (s, _, v) = send(&app, pin(&agent, uri, method)).await;
+        assert_eq!(s, StatusCode::OK, "{method} {uri}: {v}");
+        let text = v.to_string();
+        for h in hidden {
+            assert!(
+                !text.contains(h),
+                "the agent's {method} answer shows {h}: {text}"
+            );
+        }
+        assert!(text.contains("tls://9.9.9.9"), "the rest stays: {text}");
+    }
+    // Plans made through MCP, read by an operator and a viewer.
+    for (tool, args) in [
+        (
+            "plan_pin_version",
+            serde_json::json!({"epoch": 3, "seq": 124, "reason": "a test of the pin preview"}),
+        ),
+        (
+            "plan_unpin",
+            serde_json::json!({"reason": "a test of the pin preview"}),
+        ),
+    ] {
+        let v = mcp_call(&app, &agent, tool, args).await;
+        assert_eq!(v["result"]["isError"], false, "{tool}: {v}");
+    }
+    let operator = bearer_for(&app, "olga", auth::Role::Operator, "write");
+    let viewer = bearer_for(&app, "vic", auth::Role::Viewer, "read");
+    for (who, bearer) in [("operator", &operator), ("viewer", &viewer)] {
+        let req = Request::get("/api/v1/plans")
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap();
+        let (s, _, v) = send(&app, req).await;
+        assert_eq!(s, StatusCode::OK, "{who}: {v}");
+        let text = v.to_string();
+        // Operators see every plan (they approve them); a viewer sees only its own.
+        let listed = text.contains("plan_pin_version") && text.contains("plan_unpin");
+        assert_eq!(listed, who == "operator", "{who}: {text}");
+        for h in hidden {
+            assert!(!text.contains(h), "the {who} sees {h} in a plan: {text}");
+        }
+    }
+    // An administrator's own dry run shows the whole diff.
+    let (s, _, v) = send(
+        &app,
+        pin(
+            &app.bearer,
+            "/api/v1/cluster/versions/3.124/pin?dryRun=true",
+            "POST",
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let text = v.to_string();
+    for h in hidden {
+        assert!(text.contains(h), "the admin sees {h}: {text}");
+    }
+}
+
+/// A backend whose configuration writes wait for `gate` (a dry run, or a body with `"fail"`,
+/// answers at once), or panic; it counts the writes waiting.
+struct GatedBackend {
+    inner: Fake,
+    gate: Arc<tokio::sync::Semaphore>,
+    waiting: Arc<std::sync::atomic::AtomicUsize>,
+    panics: bool,
+}
+
+impl GatedBackend {
+    fn new(panics: bool) -> Self {
+        Self {
+            inner: Fake::default(),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            waiting: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            panics,
+        }
+    }
+}
+
+impl Backend for GatedBackend {
+    fake_reads!();
+    fn write_managed(
+        &self,
+        w: ManagedWrite,
+    ) -> BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        let (gate, waiting, panics) = (
+            Arc::clone(&self.gate),
+            Arc::clone(&self.waiting),
+            self.panics,
+        );
+        Box::pin(async move {
+            let change = crate::model::ConfigChange {
+                applied: !w.dry_run,
+                config_version: 2,
+                before: None,
+                after: w.body.clone(),
+                recent_queries: 0,
+                impact: String::new(),
+                warnings: Vec::new(),
+                keep_in_git: None,
+                simulation: None,
+            };
+            if w.dry_run {
+                return Ok(change);
+            }
+            assert!(
+                !panics,
+                "a test write that panics with an internal detail: /secret/path"
+            );
+            if w.body.as_ref().is_some_and(|b| b.get("fail").is_some()) {
+                return Err(Problem::new(crate::problem::Code::InvalidConfig, "refused"));
+            }
+            waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(p) = gate.acquire().await {
+                p.forget();
+            }
+            waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(change)
+        })
+    }
+}
+
+/// An admin's `PUT /api/v1/upstreams/{name}` with `body`, a dry run or not.
+#[allow(clippy::needless_pass_by_value)] // called with `json!(..)` like the other helpers
+fn put_upstream(app: &TestApp, name: &str, dry: bool, body: serde_json::Value) -> Request<Body> {
+    let uri = format!(
+        "/api/v1/upstreams/{name}{}",
+        if dry { "?dryRun=true" } else { "" }
+    );
+    Request::put(uri)
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// REQ: API-002, NFR-005 (ADR-181) — security N3: at most 32 configuration changes run at once
+/// (each in a task of its own, which a client that goes away no longer cancels); one more gets
+/// 503 with `Retry-After`. Dry runs aren't counted. A change that fails, or finishes, gives its
+/// place back.
+#[tokio::test]
+async fn api_002_configuration_changes_running_at_once_are_bounded() {
+    let backend = Arc::new(GatedBackend::new(false));
+    let app = app_over(Arc::clone(&backend) as Shared);
+    let up = serde_json::json!({"url": "udp://192.0.2.53"});
+    // Changes that fail give their place back: more of them than there are places, one by one.
+    for i in 0..40 {
+        let (s, _, v) = send(
+            &app,
+            put_upstream(
+                &app,
+                &format!("f{i}"),
+                false,
+                serde_json::json!({"fail": true}),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{i}: {v}");
+    }
+    // 32 changes waiting.
+    let mut running = Vec::new();
+    for i in 0..32 {
+        let router = app.router.clone();
+        let req = put_upstream(&app, &format!("u{i}"), false, up.clone());
+        running.push(tokio::spawn(async move {
+            router.oneshot(req).await.unwrap().status()
+        }));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while backend.waiting.load(std::sync::atomic::Ordering::SeqCst) < 32 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the 32 changes didn't start"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // One more: refused, not queued.
+    let (s, h, v) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        send(&app, put_upstream(&app, "one-more", false, up.clone())),
+    )
+    .await
+    .expect("refused at once, not queued");
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(h.get("retry-after").is_some(), "{h:?}");
+    // A dry run isn't counted.
+    let (s, _, v) = send(&app, put_upstream(&app, "dry", true, up.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // They finish, and give their places back.
+    backend.gate.add_permits(32);
+    for r in running {
+        assert_eq!(r.await.unwrap(), StatusCode::OK);
+    }
+    backend.gate.add_permits(1);
+    let (s, _, v) = send(&app, put_upstream(&app, "after", false, up)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+/// REQ: API-002 (ADR-181) — correctness R6: a change whose task fails (a panic) answers a fixed
+/// 500, never the runtime's text about the task or the panic's message.
+#[tokio::test]
+async fn api_002_a_change_whose_task_fails_answers_a_fixed_500() {
+    let app = app_over(Arc::new(GatedBackend::new(true)));
+    let (s, _, v) = send(
+        &app,
+        put_upstream(
+            &app,
+            "up",
+            false,
+            serde_json::json!({"url": "udp://192.0.2.53"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    let text = v.to_string();
+    for leak in ["panicked", "task", "/secret/path", "JoinError"] {
+        assert!(!text.contains(leak), "{leak}: {text}");
+    }
+    assert!(
+        v["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("server log")),
+        "{v}"
+    );
+}
+
+// ---- Review round 3.
+
+/// REQ: AGT-007, AGT-003 (ADR-181) — review round 3 (F3): an MCP `apply_plan` that finds the node
+/// busy (every place for a change taken: 503) or the plan's first apply still running (409
+/// `change_in_progress`) doesn't spend the plan: it is `ready` again and the agent is told to
+/// apply it again. Once the node is free, the plan is applied.
+#[tokio::test]
+async fn agt_007_a_busy_apply_leaves_the_plan_to_apply_again() {
+    let backend = Arc::new(GatedBackend::new(false));
+    let app = app_over(Arc::clone(&backend) as Shared);
+    let agent = agent_token(&app, "planner", &["config:write:records"]).await;
+    let made = mcp_call(
+        &app,
+        &agent,
+        "plan_set_local_name",
+        serde_json::json!({"name": "nas.home.arpa", "records": [{"type": "A", "value": "192.168.1.10"}],
+            "reason": "a test of a busy apply"}),
+    )
+    .await;
+    assert_eq!(made["result"]["isError"], false, "{made}");
+    let id = made["result"]["structuredContent"]["planId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let apply = || {
+        mcp_call(
+            &app,
+            &agent,
+            "apply_plan",
+            serde_json::json!({"planId": id}),
+        )
+    };
+    let busy = |v: &serde_json::Value, why: &str| {
+        assert_eq!(v["result"]["isError"], true, "{why}: {v}");
+        assert_eq!(
+            v["result"]["structuredContent"]["state"], "ready",
+            "{why}: {v}"
+        );
+        assert!(
+            v["result"]["structuredContent"]["hint"]
+                .as_str()
+                .is_some_and(|h| h.contains("again")),
+            "{why}: {v}"
+        );
+    };
+    // Every place taken.
+    let all = app.auth.write_gate().take_every_place().unwrap();
+    busy(&apply().await, "503");
+    drop(all);
+    // The plan's first apply still running (its Idempotency-Key is the plan's ID).
+    let root = app.auth.state().user_by_name("root").unwrap().unwrap();
+    let key = format!("{}:{id}", root.id);
+    app.auth.write_gate().hold_key(&key, true);
+    busy(&apply().await, "409");
+    app.auth.write_gate().hold_key(&key, false);
+    // Free: applied.
+    backend.gate.add_permits(1);
+    let v = apply().await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    assert_eq!(v["result"]["structuredContent"]["state"], "applied", "{v}");
 }

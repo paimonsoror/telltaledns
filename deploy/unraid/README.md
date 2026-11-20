@@ -42,9 +42,10 @@
 - **Added in the web UI** (admins: **Clients → Discovered → Routers → Add router**): paste the
   key and TelltaleDNS saves it under `secrets/` in the data folder, which on Unraid is
   `/mnt/user/appdata/telltale/data/secrets/`. That's the writable mount, so the keys survive
-  updates and are backed up with appdata. To use a key file of your own for a router added in
-  the UI, put it in that same folder and name it there: the UI only accepts key files under
-  `secrets/`. Changing a router's address, type, or TLS settings asks for the key again.
+  updates and are in your appdata backups (keep those private). The UI takes the key itself,
+  not a file name: a key kept in a file of your own goes in `telltale.toml` instead (below).
+  Pasting a key needs an `https://` router address, and changing a router's address, type,
+  site, or TLS settings asks for the key again.
 - **Set in `telltale.toml`**: key files can live anywhere the container can read. Put them next
   to `telltale.toml`, or in the secrets folder to keep them apart from the config. Both are
   mounted read-only, and `telltale.toml` uses the container's paths, not Unraid's:

@@ -32,6 +32,20 @@ pub enum NameMatch {
     Regex(String),
 }
 
+/// REQ: OBS-003 (ADR-171) — which filters keep the rows that do NOT satisfy them. Each flag
+/// inverts one predicate and does nothing without it. A negated name or client can't rule
+/// blocks out by bloom filter (a bloom only says "maybe present"), and a block is skipped for a
+/// negated status or response code only when every value in it is excluded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // one independent flag per negatable filter
+pub struct Not {
+    pub name: bool,
+    pub client: bool,
+    pub status: bool,
+    pub qtype: bool,
+    pub rcode: bool,
+}
+
 /// Which rows to return. Empty lists and `None` mean "any".
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
@@ -50,6 +64,8 @@ pub struct Filter {
     pub rcode: Vec<u8>,
     pub upstream: Option<u16>,
     pub min_total_us: Option<u32>,
+    /// Invert the name, client, status, type, or response-code predicate (see [`Not`]).
+    pub not: Not,
 }
 
 /// One logged query.
@@ -298,18 +314,13 @@ pub fn search_with(
     opts: &Options,
 ) -> io::Result<Page> {
     let name = f.name.as_ref().map(NamePred::new).transpose()?;
-    let mut keys: Vec<u64> = name
-        .as_ref()
-        .and_then(NamePred::bloom_key)
-        .into_iter()
-        .collect();
-    keys.extend(f.client_ip.as_ref().map(format::client_key));
+    let (keys, any_keys) = bloom_keys(f, name.as_ref());
     let plan = Plan {
         f,
         to_us: if f.to_us == 0 { u64::MAX } else { f.to_us },
         name,
         keys,
-        any_keys: f.client_any.iter().map(format::client_key).collect(),
+        any_keys,
         cols: predicate_columns(f),
     };
     let mut segments: Vec<(SegmentId, std::path::PathBuf)> = list_segments(dir)?
@@ -439,10 +450,11 @@ pub struct Estimate {
 /// Estimates what searching `dir` with `f` would read (see [`Estimate`]).
 pub fn estimate(dir: &Path, f: &Filter) -> io::Result<Estimate> {
     let name = f.name.as_ref().map(NamePred::new).transpose()?;
-    let name_key = name.as_ref().and_then(NamePred::bloom_key);
-    let mut keys: Vec<u64> = name_key.into_iter().collect();
-    keys.extend(f.client_ip.as_ref().map(format::client_key));
-    let any_keys: Vec<u64> = f.client_any.iter().map(format::client_key).collect();
+    let name_key = name
+        .as_ref()
+        .filter(|_| !f.not.name)
+        .and_then(NamePred::bloom_key);
+    let (keys, any_keys) = bloom_keys(f, name.as_ref());
     let to_us = if f.to_us == 0 { u64::MAX } else { f.to_us };
     let mut e = Estimate::default();
     for (id, path) in list_segments(dir)? {
@@ -510,6 +522,33 @@ struct Scratch {
     pos: Vec<(usize, usize)>,
 }
 
+/// The dictionary IDs that satisfy the name and client predicates; a negated predicate's set is
+/// the IDs that do not (REQ: OBS-003, ADR-171).
+fn id_sets(d: &Dictionary, plan: &Plan<'_>, dotted: &mut Vec<u8>) -> (IdSet, IdSet) {
+    let f = plan.f;
+    let names = plan.name.as_ref().map(|p| {
+        d.names()
+            .map(|n| p.matches(n, dotted) != f.not.name)
+            .collect()
+    });
+    let clients = match f.client_ip {
+        Some(ip) => Some(
+            d.clients
+                .iter()
+                .map(|c| (*c == ip) != f.not.client)
+                .collect(),
+        ),
+        None if !f.client_any.is_empty() => Some(
+            d.clients
+                .iter()
+                .map(|c| f.client_any.contains(c) != f.not.client)
+                .collect(),
+        ),
+        None => None,
+    };
+    (names, clients)
+}
+
 /// Searches one segment; returns true when the page is full.
 fn search_segment(
     seg: &mut Segment,
@@ -522,9 +561,13 @@ fn search_segment(
 ) -> io::Result<bool> {
     let f = plan.f;
     // A finished segment's name filter rules out an exact name without reading blocks.
-    if let (Some(key), Some(filter)) =
-        (plan.name.as_ref().and_then(NamePred::bloom_key), &seg.names)
-        && !filter.may_contain(key)
+    if let (Some(key), Some(filter)) = (
+        plan.name
+            .as_ref()
+            .filter(|_| !f.not.name)
+            .and_then(NamePred::bloom_key),
+        &seg.names,
+    ) && !filter.may_contain(key)
     {
         return Ok(false);
     }
@@ -551,17 +594,7 @@ fn search_segment(
     if plan.name.is_some() || f.client_ip.is_some() || !f.client_any.is_empty() {
         let d = seg.dictionary()?;
         page.stats.dictionaries += 1;
-        names = plan
-            .name
-            .as_ref()
-            .map(|p| d.names().map(|n| p.matches(n, &mut s.dotted)).collect());
-        clients = match f.client_ip {
-            Some(ip) => Some(d.clients.iter().map(|c| *c == ip).collect()),
-            None if !f.client_any.is_empty() => {
-                Some(d.clients.iter().map(|c| f.client_any.contains(c)).collect())
-            }
-            None => None,
-        };
+        (names, clients) = id_sets(&d, plan, &mut s.dotted);
         if !any(&names) || !any(&clients) {
             return Ok(false);
         }
@@ -731,12 +764,14 @@ fn select(
                 let v = one(f.min_total_us.map(u64::from));
                 keep(seg, cols, col, &|x| x >= v)?
             }
-            Col::Status => keep(seg, cols, col, &|x| f.status.iter().any(|s| *s as u64 == x))?,
+            Col::Status => keep(seg, cols, col, &|x| {
+                f.status.iter().any(|s| *s as u64 == x) != f.not.status
+            })?,
             Col::Qtype => keep(seg, cols, col, &|x| {
-                f.qtype.iter().any(|&t| u64::from(t) == x)
+                f.qtype.iter().any(|&t| u64::from(t) == x) != f.not.qtype
             })?,
             Col::Rcode => keep(seg, cols, col, &|x| {
-                f.rcode.iter().any(|&r| u64::from(r) == x)
+                f.rcode.iter().any(|&r| u64::from(r) == x) != f.not.rcode
             })?,
             _ => true,
         };
@@ -766,25 +801,58 @@ fn predicate_columns(f: &Filter) -> Vec<Col> {
     v
 }
 
+/// Bloom keys a block must (maybe) hold: the name's (an exact name only) and the client's. A
+/// negated name or client has none: a block that "may" hold the name may also hold other rows.
+fn bloom_keys(f: &Filter, name: Option<&NamePred>) -> (Vec<u64>, Vec<u64>) {
+    let mut keys: Vec<u64> = name
+        .filter(|_| !f.not.name)
+        .and_then(NamePred::bloom_key)
+        .into_iter()
+        .collect();
+    let mut any_keys = Vec::new();
+    if !f.not.client {
+        keys.extend(f.client_ip.as_ref().map(format::client_key));
+        any_keys = f.client_any.iter().map(format::client_key).collect();
+    }
+    (keys, any_keys)
+}
+
 fn block_may_match(h: &BlockHeader, f: &Filter, to_us: u64) -> bool {
     if h.rows == 0 || h.max_ts < f.from_us || h.min_ts >= to_us {
         return false;
     }
-    if !f.status.is_empty()
-        && !f
+    if !f.status.is_empty() {
+        let listed = f
             .status
             .iter()
-            .any(|s| h.status_mask & (1 << (*s as u32 & 31)) != 0)
-    {
-        return false;
+            .fold(0u32, |m, s| m | (1 << (*s as u32 & 31)));
+        // Negated: only a block holding a status that is NOT listed can have a match.
+        let may = if f.not.status {
+            h.status_mask & !listed != 0
+        } else {
+            h.status_mask & listed != 0
+        };
+        if !may {
+            return false;
+        }
     }
-    if !f.rcode.is_empty()
-        && !f
-            .rcode
-            .iter()
-            .any(|&rc| h.rcode_mask & (1 << if rc < 16 { u32::from(rc) } else { 16 }) != 0)
-    {
-        return false;
+    if !f.rcode.is_empty() {
+        let bit = |rc: u8| 1u32 << if rc < 16 { u32::from(rc) } else { 16 };
+        let may = if f.not.rcode {
+            // Codes of 16 and up share one bit with codes that may not be listed, so only the
+            // exact bits (0 to 15) can rule anything out.
+            let listed = f
+                .rcode
+                .iter()
+                .filter(|&&rc| rc < 16)
+                .fold(0u32, |m, &rc| m | bit(rc));
+            h.rcode_mask & !listed != 0
+        } else {
+            f.rcode.iter().any(|&rc| h.rcode_mask & bit(rc) != 0)
+        };
+        if !may {
+            return false;
+        }
     }
     f.min_total_us.is_none_or(|m| h.max_total_us >= m)
 }

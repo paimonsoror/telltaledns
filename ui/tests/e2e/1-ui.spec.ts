@@ -2,9 +2,11 @@
 // dashboard, the query log and "Why?", explain, tokens, users and roles, sign-out/in, and a
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { query } from './dns';
+import { plainHttpPage } from '../../src/lib/plainHttp';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
@@ -14,12 +16,18 @@ const VIEWER = { user: 'viewer1', pass: 'another long password' };
 
 let page: Page;
 const problems: string[] = [];
+// A refusal the running test expects (the server answering a dry run with 4xx), matched when the
+// console message arrives: the message can come after the page shows the refusal, so removing it
+// from `problems` afterwards races. Null (every other test, and outside such a stretch): strict.
+let expectedRefusal: RegExp | null = null;
 
 test.beforeAll(async ({ browser }) => {
   page = await browser.newPage();
   page.on('pageerror', (e) => problems.push(`page error: ${e.message}`));
   page.on('console', (m) => {
-    if (m.type() === 'error' && !/status of 40[13]/.test(m.text())) problems.push(`console: ${m.text()}`);
+    if (m.type() !== 'error' || /status of 40[13]/.test(m.text())) return;
+    if (expectedRefusal?.test(m.text())) return;
+    problems.push(`console: ${m.text()}`);
   });
 });
 
@@ -768,6 +776,26 @@ test('ops_011 support package', async () => {
   await expect(card.getByTestId('support-map')).toBeDisabled();
 });
 
+// REQ: OPS-011 (ADR-172) — "Every node in the cluster": the request carries `cluster`, the pseudonym map
+// is switched off with it (the names never leave their nodes), and a node that is on its own says so
+// instead of making a package. (The cluster itself is `deploy/cluster/e2e.sh`.)
+test('ops_011 support package for the whole cluster', async () => {
+  await page.goto('/#/settings?tab=system');
+  const card = page.getByTestId('support-package');
+  await card.getByTestId('keep-map').check();
+  await card.getByTestId('cluster').check();
+  await expect(card.getByTestId('keep-map')).toBeDisabled();
+  await expect(card.getByTestId('keep-map')).not.toBeChecked();
+  const asked = page.waitForRequest((r) => r.url().includes('/system/support-package') && r.method() === 'POST');
+  await card.getByTestId('support-preview').click();
+  expect(JSON.parse((await asked).postData() ?? '{}').cluster).toBe(true);
+  await expect(card.getByRole('alert')).toContainText("isn't part of a cluster");
+  // The refusal is a 400, which the browser logs as a console error the suite would count: expected here.
+  problems.splice(0, problems.length, ...problems.filter((m) => !/status of 400/.test(m)));
+  await card.getByTestId('cluster').uncheck();
+  await expect(card.getByTestId('keep-map')).toBeEnabled();
+});
+
 // The header's icon buttons match: the pause button (its own component) is the same round,
 // borderless button as the theme toggle, on the same line (owner report 2026-10-06).
 test('header icon buttons are the same size and aligned', async () => {
@@ -842,6 +870,362 @@ test('admins add users; viewers see less', async () => {
   await page.goto('/');
   await signIn(ADMIN.user, ADMIN.pass);
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+});
+
+// REQ: API-003 (issue #64) — a real 6-digit code goes through the browser's own checks: the box on
+// Settings -> Account that turns two-factor on, and the one on the sign-in form. Both carried a
+// `pattern` that Svelte turned into `[0-9]6`, so no code could be entered and two-factor could not
+// be used from the UI at all. The codes are made here from the secret the page shows (RFC 6238).
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function totpAt(secretBase32: string, ms: number): string {
+  const bits = [...secretBase32.toUpperCase()].map((c) => BASE32.indexOf(c).toString(2).padStart(5, '0')).join('');
+  const key = Buffer.from((bits.match(/.{8}/g) ?? []).map((b) => parseInt(b, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(ms / 30_000)));
+  const h = createHmac('sha1', key).update(counter).digest();
+  const o = h[19] & 0x0f;
+  const n = ((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(n % 1_000_000).padStart(6, '0');
+}
+
+// REQ: API-003 (issue #64) — this file is one serial group on one admin, and every test after the one
+// below signs in with the password alone. If it fails while two-factor is on (and maybe signed out),
+// the rest would fail in a cascade that hides the real failure. So whatever happened, this puts the
+// admin back: signed in (with a recovery code, which needs no clock) and without a second factor.
+// It is quiet: the error that brought us here is the one to read.
+async function leaveWithoutTwoFactor(recoveryCodes: string[]) {
+  try {
+    const status = await (await page.request.get('/api/v1/auth/status')).json();
+    let csrf: string | undefined = status.csrfToken;
+    let on: boolean = status.user?.totpEnabled === true;
+    if (!status.authenticated) {
+      // No code was ever shown to us: two-factor never got turned on.
+      if (!recoveryCodes.length) return;
+      const r = await page.request.post('/api/v1/auth/login', {
+        data: { username: ADMIN.user, password: ADMIN.pass, recoveryCode: recoveryCodes[0] },
+      });
+      if (!r.ok()) return;
+      const signedIn = await r.json();
+      csrf = signedIn.csrfToken;
+      on = signedIn.user?.totpEnabled === true;
+    }
+    if (on && csrf) {
+      await page.request.post('/api/v1/auth/totp/disable', { data: { password: ADMIN.pass }, headers: { 'x-csrf-token': csrf } });
+    }
+  } catch {
+    // Nothing more can be done from here.
+  }
+}
+
+test('api_003 two-factor works from the browser: turn it on, sign in with a code, turn it off', async () => {
+  // The helper first: RFC 6238's own secret ("12345678901234567890") at 59 s gives 94287082.
+  expect(totpAt('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 59_000)).toBe('287082');
+  let recoveryCodes: string[] = [];
+  let turnedOff = false;
+  try {
+    await page.goto('/#/settings?tab=account');
+    await page.getByRole('button', { name: 'Set up two-factor sign-in' }).click();
+    const secret = ((await page.locator('div.mono.key').textContent()) ?? '').replace(/\s/g, '');
+    expect(secret).toMatch(/^[A-Z2-7]{32}$/);
+    await page.getByPlaceholder('123456').fill(totpAt(secret, Date.now()));
+    await page.getByRole('button', { name: 'Turn on' }).click();
+    await expect(page.getByText('Save these recovery codes now.')).toBeVisible();
+    recoveryCodes = (await page.locator('ul.codes li').allTextContents()).map((c) => c.trim());
+    // Sign in again: the password, then the code. The server takes each time step's code once, so
+    // this one is the next step's (it accepts one step of clock skew).
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+    await signIn(ADMIN.user, ADMIN.pass);
+    await expect(page.getByText('Enter the 6-digit code from your authenticator app.')).toBeVisible();
+    await page.locator('input[name="totp"]').fill(totpAt(secret, Date.now() + 30_000));
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+    await expect(page.getByText('recovery codes left')).toBeVisible();
+    // Leave the admin as the other tests expect it: no second factor.
+    await page.getByLabel('Password, to turn it off').fill(ADMIN.pass);
+    await page.getByRole('button', { name: 'Turn off two-factor' }).click();
+    await expect(page.getByRole('button', { name: 'Set up two-factor sign-in' })).toBeVisible();
+    turnedOff = true;
+  } finally {
+    if (!turnedOff) await leaveWithoutTwoFactor(recoveryCodes);
+  }
+});
+
+// REQ: API-004, API-005 (issue #63, ADR-175) — with `disable_local_login` on, a client in the break-glass
+// networks still sees the password form, which looked the same as with the flag off. The page now says
+// what the form is. The server here has no provider and the flag off, so a fresh browser context gets
+// the answers of `GET /auth/status` that a server with them would give (the shared page is left alone).
+test('api_004 the sign-in page says when password sign-in is restricted', async () => {
+  const keycloak = [{ id: 'kc', name: 'Keycloak' }];
+  const answer = (over: Record<string, unknown>) => ({ setupRequired: false, authenticated: false, localLogin: true, oidc: keycloak, ...over });
+  const signInPage = async (body: Record<string, unknown>) => {
+    const ctx = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+    const p = await ctx.newPage();
+    await p.route('**/api/v1/auth/status', (route) => route.fulfill({ json: body }));
+    await p.goto('/#/');
+    await expect(p.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+    return { p, close: () => ctx.close() };
+  };
+  const restricted = 'or, as an admin on a trusted network, with a password';
+  const plain = 'or with a password';
+
+  // The flag on, and this client is in the list: the form is there, and says what it is for.
+  let w = await signInPage(answer({ passwordLoginRestricted: true }));
+  await expect(w.p.getByRole('link', { name: 'Sign in with Keycloak' })).toBeVisible();
+  await expect(w.p.getByText(restricted, { exact: true })).toBeVisible();
+  await expect(w.p.getByText(plain, { exact: true })).toHaveCount(0);
+  await expect(w.p.getByLabel('Username', { exact: true })).toBeVisible();
+  await expect(w.p.getByLabel('Password', { exact: true })).toBeVisible();
+  await expect(w.p.getByTestId('password-restricted')).toHaveText(
+    'Password sign-in is limited to admins on trusted networks. Use it when your sign-in provider is down.',
+  );
+  await w.close();
+
+  // The flag on and no provider button (it could not be set up): the line is still there.
+  w = await signInPage(answer({ passwordLoginRestricted: true, oidc: [] }));
+  await expect(w.p.getByTestId('password-restricted')).toBeVisible();
+  await expect(w.p.getByLabel('Username', { exact: true })).toBeVisible();
+  await w.close();
+
+  // The flag off: the page is as it was, with no note.
+  w = await signInPage(answer({ passwordLoginRestricted: false }));
+  await expect(w.p.getByText(plain, { exact: true })).toBeVisible();
+  await expect(w.p.getByText(restricted, { exact: true })).toHaveCount(0);
+  await expect(w.p.getByTestId('password-restricted')).toHaveCount(0);
+  await expect(w.p.getByLabel('Username', { exact: true })).toBeVisible();
+  await w.close();
+
+  // A server that does not send the field (an older one) reads as the flag off.
+  w = await signInPage(answer({}));
+  await expect(w.p.getByText(plain, { exact: true })).toBeVisible();
+  await expect(w.p.getByTestId('password-restricted')).toHaveCount(0);
+  await w.close();
+
+  // Restricted, and this client is not in the list: the form is not offered, and the page says what it
+  // said before (no note about a form that is not there).
+  w = await signInPage(answer({ passwordLoginRestricted: true, localLogin: false }));
+  await expect(w.p.getByText('Password sign-in is turned off on this server.')).toBeVisible();
+  await expect(w.p.getByLabel('Username', { exact: true })).toHaveCount(0);
+  await expect(w.p.getByTestId('password-restricted')).toHaveCount(0);
+  await w.close();
+});
+
+// REQ: API-004, API-005 (issue #63, ADR-175) — an admin sees, under Settings -> Users, where password
+// sign-in is allowed, from the `passwordLogin` block of `GET /users` (admins only, so not in the public
+// status). The test server runs with the flag off, so the answer is rewritten per case and the route is
+// taken away at the end.
+test('api_004 settings shows where password sign-in is allowed', async () => {
+  let policy: Record<string, unknown> | null = null;
+  await page.route('**/api/v1/users', async (route) => {
+    const r = await route.fetch();
+    const body = await r.json();
+    if (policy) body.passwordLogin = policy;
+    else delete body.passwordLogin;
+    await route.fulfill({ response: r, json: body });
+  });
+  const show = async (p: Record<string, unknown> | null) => {
+    policy = p;
+    await page.goto('/#/settings?tab=users');
+    await page.reload();
+    await expect(page.getByRole('heading', { name: /^Users/ })).toBeVisible();
+    await expect(page.locator('main table')).toContainText(ADMIN.user);
+    return page.getByTestId('password-sign-in');
+  };
+  try {
+    // The flag off (what this server really says): nothing about it.
+    await expect(await show(null)).toHaveCount(0);
+    const block = (over: Record<string, unknown>) => ({
+      restricted: true,
+      networks: [] as string[],
+      coversWholeNetworks: false,
+      includesLoopback: false,
+      loopbackIsTrustedProxy: false,
+      ...over,
+    });
+    await expect(await show(block({ restricted: false }))).toHaveCount(0);
+
+    // The default-shaped list: each network, a warning that it includes whole networks, and where to change it.
+    const lan = ['10.0.0.0/8', '192.168.0.0/16', '127.0.0.0/8', '::1/128'];
+    let card = await show(block({ networks: lan, coversWholeNetworks: true, includesLoopback: true }));
+    await expect(card).toBeVisible();
+    await expect(card.getByRole('heading', { name: 'Password sign-in' })).toBeVisible();
+    await expect(card).toContainText('Password sign-in is limited to admins on these networks:');
+    await expect(card.getByRole('listitem')).toHaveText(lan);
+    await expect(card.getByText('Includes whole networks')).toBeVisible();
+    await expect(card).toContainText('not just the machines you name');
+    await expect(card).toContainText('allowed_admin_networks');
+    await expect(card).toContainText('[auth.oidc]');
+    await expect(card.getByRole('link', { name: 'Users and sign-in' })).toHaveAttribute('href', /running\.md#users-and-sign-in$/);
+    await expect(card.getByText('reverse proxy')).toHaveCount(0);
+    await expect(card.getByText('Only the machines listed')).toHaveCount(0);
+
+    // A list of single hosts, which is what the guide recommends: information, no warning, no proxy hint (this
+    // machine is not in it).
+    const hosts = ['192.168.1.10/32', 'fd00::5/128'];
+    card = await show(block({ networks: hosts }));
+    await expect(card.getByRole('listitem')).toHaveText(hosts);
+    await expect(card.getByText('Includes whole networks')).toHaveCount(0);
+    await expect(card.locator('.badge')).toHaveCount(0);
+    await expect(card).toContainText('Only the machines listed are shown the sign-in form');
+    await expect(card.getByText('reverse proxy')).toHaveCount(0);
+    await expect(card).toContainText('allowed_admin_networks');
+
+    // This machine only, no proxy covers it: no warning, and the hint about a proxy on this machine.
+    card = await show(block({ networks: ['127.0.0.0/8', '::1/128'], includesLoopback: true }));
+    await expect(card.getByRole('listitem')).toHaveText(['127.0.0.0/8', '::1/128']);
+    await expect(card.getByText('Includes whole networks')).toHaveCount(0);
+    await expect(card.getByText('reverse proxy')).toBeVisible();
+    await expect(card).toContainText('trusted_proxies');
+
+    // This machine and a workstation: hosts, so no warning, and the same hint while no proxy covers loopback.
+    card = await show(block({ networks: ['127.0.0.1/32', '192.168.1.10/32'], includesLoopback: true }));
+    await expect(card.getByText('Includes whole networks')).toHaveCount(0);
+    await expect(card.getByText('reverse proxy')).toBeVisible();
+
+    // A proxy is listed but 127.0.0.1 is not inside it (the field the page reads says so): the hint stays.
+    card = await show(block({ networks: ['127.0.0.0/8', '::1/128'], includesLoopback: true, loopbackIsTrustedProxy: false }));
+    await expect(card.getByText('reverse proxy')).toBeVisible();
+
+    // This machine only, with loopback a trusted proxy: nothing to add.
+    card = await show(block({ networks: ['127.0.0.0/8', '::1/128'], includesLoopback: true, loopbackIsTrustedProxy: true }));
+    await expect(card.getByRole('listitem')).toHaveCount(2);
+    await expect(card.getByText('Includes whole networks')).toHaveCount(0);
+    await expect(card.getByText('reverse proxy')).toHaveCount(0);
+
+    // Whole networks and loopback: the warning, and no hint (the list is open to more than this machine anyway).
+    card = await show(block({ networks: lan, coversWholeNetworks: true, includesLoopback: true }));
+    await expect(card.getByText('reverse proxy')).toHaveCount(0);
+
+    // No network at all: said plainly, with no empty list.
+    card = await show(block({ networks: [] }));
+    await expect(card).toContainText('nobody can sign in with a password');
+    await expect(card.getByRole('listitem')).toHaveCount(0);
+    await expect(card.getByText('Includes whole networks')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/users');
+  }
+  // The route is gone: the real answer again, and no card.
+  await page.reload();
+  await expect(page.locator('main table')).toContainText(ADMIN.user);
+  await expect(page.getByTestId('password-sign-in')).toHaveCount(0);
+});
+
+// REQ: API-004 (ADR-175) — `allowed_admin_networks` may repeat an entry (the configuration check does not
+// refuse it), and the card lists what the server sends: both rows, and no error. The list used to be keyed on
+// the network's text, which Svelte refuses when two keys are equal (an error in a development build, a row
+// lost or misplaced in a production one). Read through `GET /users` rewritten as in the test above.
+test('api_004 settings shows a repeated network on both of its rows', async () => {
+  const errors: string[] = [];
+  const onConsole = (m: { type(): string; text(): string }) => {
+    if (m.type() === 'error') errors.push(m.text());
+  };
+  const onPageError = (e: Error) => errors.push(String(e));
+  page.on('console', onConsole);
+  page.on('pageerror', onPageError);
+  const rows = ['192.168.1.10/32', '10.0.0.7/32', '192.168.1.10/32'];
+  await page.route('**/api/v1/users', async (route) => {
+    const r = await route.fetch();
+    const body = await r.json();
+    body.passwordLogin = {
+      restricted: true,
+      networks: rows,
+      coversWholeNetworks: false,
+      includesLoopback: false,
+      loopbackIsTrustedProxy: false,
+    };
+    await route.fulfill({ response: r, json: body });
+  });
+  try {
+    await page.goto('/#/settings?tab=users');
+    await page.reload();
+    await expect(page.locator('main table')).toContainText(ADMIN.user);
+    const card = page.getByTestId('password-sign-in');
+    await expect(card.getByRole('listitem')).toHaveText(rows);
+    // Away and back: the card is drawn from what the page already holds, and the page then loads the list
+    // again, which redraws the rows from the same text.
+    await page.goto('/#/settings?tab=account');
+    await expect(page.getByTestId('password-sign-in')).toHaveCount(0);
+    await page.goto('/#/settings?tab=users');
+    await expect(card.getByRole('listitem')).toHaveText(rows);
+    await expect(page.locator('main table')).toContainText(ADMIN.user);
+    await expect(card.getByRole('listitem')).toHaveText(rows);
+    expect(errors, 'no error in the console').toEqual([]);
+  } finally {
+    page.off('console', onConsole);
+    page.off('pageerror', onPageError);
+    await page.unroute('**/api/v1/users');
+  }
+  await page.reload();
+  await expect(page.locator('main table')).toContainText(ADMIN.user);
+  await expect(page.getByTestId('password-sign-in')).toHaveCount(0);
+});
+
+// REQ: OBS-003 (ADR-171) — "everything except": each negated filter keeps exactly the rows its filter
+// leaves out (the two add up to the whole window), a flag without its filter is refused, and the
+// Queries page writes and reads the flags: the Match menu's "is not", and the "not" chip for statuses.
+test('obs_003 the query log can keep what a filter does not match', async () => {
+  // One query each: a name asked again would climb the cache page's top list (by hits), which a
+  // later test reads.
+  expect(await query('neg-a.cache.e2e.test')).toBe(0);
+  expect(await query('neg-b.cache.e2e.test')).toBe(0);
+  type Row = { name: string; status: string; qtype: string; client: string; rcode?: string | null };
+  const rows = async (q: string, to?: string) => {
+    const r = await page.request.get(`/api/v1/queries?${q}&from=-1h${to ? `&to=${encodeURIComponent(to)}` : ''}&limit=1000`);
+    expect(r.status(), q).toBe(200);
+    return (await r.json()) as { items: Row[]; nextCursor?: string | null };
+  };
+  await expect.poll(async () => (await rows('name=neg-')).items.length, { timeout: 20_000 }).toBe(2);
+  // One window for every count below, so a probe query logged meanwhile can't move them. It ends
+  // in the past, where the log is whole (it is flushed about once a second), and more than a second
+  // after our rows: the API reads `to` in whole seconds, so a row less than a second before it can
+  // fall outside.
+  await page.waitForTimeout(3000);
+  const to = new Date(Date.now() - 1500).toISOString();
+  const all = await rows('', to);
+  expect(all.nextCursor ?? null, 'the whole window fits in one page').toBeNull();
+  const cases: [string, (r: Row) => boolean][] = [
+    ['name=neg-a', (r) => r.name.includes('neg-a')],
+    ['name=neg-a.cache.e2e.test&match=exact', (r) => r.name === 'neg-a.cache.e2e.test'],
+    ['name=cache.e2e.test&match=suffix', (r) => r.name.endsWith('cache.e2e.test')],
+    ['name=neg-*.cache.e2e.test&match=glob', (r) => /^neg-.\.cache\.e2e\.test$/.test(r.name)],
+    ['name=^neg-[ab][.]cache&match=regex', (r) => /^neg-[ab][.]cache/.test(r.name)],
+    ['status=forwarded', (r) => r.status === 'forwarded'],
+    ['qtype=A', (r) => r.qtype === 'A'],
+    ['client=127.0.0.1', (r) => r.client === '127.0.0.1'],
+    ['rcode=NOERROR', (r) => r.rcode === 'NOERROR'],
+  ];
+  for (const [q, keeps] of cases) {
+    const flag = `${q.split('=')[0]}Not`;
+    const positive = await rows(q, to);
+    const negated = await rows(`${q}&${flag}=true`, to);
+    expect(positive.items.every(keeps), q).toBe(true);
+    expect(negated.items.some(keeps), `${q} negated`).toBe(false);
+    expect(positive.items.length + negated.items.length, `${q}: the match and its negation make the window`).toBe(all.items.length);
+  }
+  expect((await rows('name=neg-a', to)).items).toHaveLength(1);
+  expect((await rows('name=neg-a&nameNot=true', to)).items.filter((r) => r.name.startsWith('neg-'))).toHaveLength(1);
+  // A flag without its filter is refused, naming it.
+  for (const flag of ['nameNot', 'clientNot', 'statusNot', 'qtypeNot', 'rcodeNot']) {
+    const r = await page.request.get(`/api/v1/queries?${flag}=true&from=-1h`);
+    expect(r.status(), flag).toBe(400);
+    expect(await r.text()).toContain(flag);
+  }
+  // The page reads the flag from the address and writes it back.
+  await page.goto('/#/queries?name=neg-a.cache.e2e.test&match=exact&nameNot=true&from=-1h');
+  await expect(page.locator('select[name="match"]')).toHaveValue('!exact');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  await expect(page.locator('table.log tbody')).not.toContainText('neg-a.cache.e2e.test');
+  await page.locator('select[name="match"]').selectOption('substring');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page).not.toHaveURL(/nameNot/);
+  await expect(page.locator('table.log tbody')).toContainText('neg-a.cache.e2e.test');
+  // The "not" chip turns the chosen statuses around.
+  await page.goto('/#/queries?status=blocked&from=-1h');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  await page.getByTestId('status-not').click();
+  await expect(page).toHaveURL(/statusNot=true/);
+  await expect(page.locator('table.log tbody')).not.toContainText('blocked');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
 });
 
 test('works at phone width (360 px)', async () => {
@@ -1648,6 +2032,116 @@ test('t8_6 discovered devices, group settings, and zones', async () => {
   await page.goto('/#/local-dns');
   const zones = page.getByTestId('zones');
   await expect(zones.locator('tbody tr', { hasText: 'zone.e2e.test' })).toContainText('ipv6only');
+});
+
+// REQ: API-002, T8.2 (ADR-181) — a UniFi router added under Discovered: its key is pasted once
+// (no key-file field), saved by the server, never shown back, and the row says it is saved; a new
+// address needs it again, and a pasted key needs an https:// address (both refused by the server
+// and shown); then it's removed. Every address is loopback or a reserved name in a dry run.
+// Each request is awaited by its response before what it shows is checked, so no check passes on
+// what was there before (the field's help text also says "sent only over https"). The two expected
+// 422s are let through as their console messages arrive (`expectedRefusal`) until later requests
+// have been answered and shown: a refusal's console message can come after the page shows it.
+test('api_002 routers are added and changed in the UI', async () => {
+  // Several 30 s waits below: more than the default 30 s for the whole test (review round 2, R5).
+  test.setTimeout(90_000);
+  // A request to this router (PUT as a dry run or not, or DELETE), awaited by its response. An
+  // apply is answered once the change is stored and the configuration reloaded on the node's main
+  // loop; the build VM has been seen to stall for seconds right after the server starts, so each
+  // wait is 30 s, and what the page shows after a response is given CI's 15 s.
+  const routerCall = (method: string, dry: boolean) =>
+    page.waitForResponse(
+      (r) => r.request().method() === method && r.url().includes('/api/v1/routers/udm-e2e') && r.url().includes('dryRun=true') === dry,
+      { timeout: 30_000 },
+    );
+  const answered = async (p: ReturnType<typeof routerCall>, status: number) => expect((await p).status()).toBe(status);
+  const settle = { timeout: 15_000 };
+  const refusal = (text: RegExp) => page.getByRole('alert').filter({ hasText: text });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/clients?tab=discovered');
+  const editor = page.getByTestId('editor-router');
+  await editor.getByRole('button', { name: 'Add router' }).click();
+  await page.getByLabel('Name', { exact: true }).fill('udm-e2e');
+  // This page is on 127.0.0.1: no plain-HTTP warning.
+  await expect(page.getByTestId('editor-notice')).toHaveCount(0);
+  await page.getByLabel('Address', { exact: true }).fill('https://127.0.0.1:1');
+  await expect(page.getByLabel('API key file', { exact: true })).toHaveCount(0);
+  await page.getByLabel('API key', { exact: true }).fill('e2e-secret-key');
+  await page.getByLabel("Don't check the certificate", { exact: true }).check();
+  let call = routerCall('PUT', true);
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await answered(call, 200);
+  const preview = page.getByTestId('entry-preview');
+  await expect(preview).toBeVisible(settle);
+  await expect(preview).not.toContainText('e2e-secret-key');
+  call = routerCall('PUT', false);
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await answered(call, 200);
+  const row = editor.getByTestId('entry-row').filter({ hasText: 'udm-e2e' });
+  await expect(row).toContainText('added here', settle);
+  await expect(row).toContainText('unifi · https://127.0.0.1:1');
+  await expect(row.getByTestId('entry-status')).toHaveText('key saved');
+
+  await row.getByRole('button', { name: 'Edit' }).click();
+  const key = page.getByLabel('API key', { exact: true });
+  await expect(key).toHaveValue('');
+  await expect(key).toHaveAttribute('placeholder', 'Saved. Type a new API key to replace it.');
+  expectedRefusal = /status of 422/;
+  try {
+    // A new address needs the key again (it isn't sent to an endpoint it wasn't entered for).
+    await page.getByLabel('Address', { exact: true }).fill('https://127.0.0.2:1');
+    call = routerCall('PUT', true);
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await answered(call, 422);
+    await expect(refusal(/enter it again/)).toBeVisible(settle);
+    // A pasted key isn't sent over http:// (a dry run: nothing is contacted).
+    await page.getByLabel('Address', { exact: true }).fill('http://router.example.test');
+    await key.fill('e2e-secret-key-2');
+    call = routerCall('PUT', true);
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await answered(call, 422);
+    await expect(refusal(/sent only over https/)).toBeVisible(settle);
+    await page.getByLabel('Address', { exact: true }).fill('https://127.0.0.2:1');
+    call = routerCall('PUT', true);
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await answered(call, 200);
+    // The editor sends the pasted key, never the key file the entry names (the server keeps it).
+    const sent = (await call).request().postDataJSON() as Record<string, unknown>;
+    expect(sent.api_key).toBe('e2e-secret-key-2');
+    expect(Object.keys(sent).filter((k) => k.endsWith('_file'))).toEqual([]);
+    call = routerCall('PUT', false);
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await answered(call, 200);
+    await expect(row).toContainText('unifi · https://127.0.0.2:1', settle);
+    await expect(row.getByTestId('entry-status')).toHaveText('key saved');
+  } finally {
+    // Requests made after both refusals have been answered and shown, and a page's events come in
+    // order: the refusals' console messages are in.
+    expectedRefusal = null;
+  }
+
+  call = routerCall('DELETE', false);
+  await row.getByRole('button', { name: 'Remove' }).click();
+  await answered(call, 200);
+  await expect(row).toHaveCount(0, settle);
+});
+
+// REQ: API-002, T8.2 (ADR-181) — the Routers editor warns on a plain-HTTP page opened from another
+// machine (a pasted key then crosses the network unencrypted), not over https or on this machine.
+test('api_002 the plain-HTTP notice is for a page reached over the network', () => {
+  const cases: [string, string, boolean][] = [
+    ['http:', '192.168.1.5', true],
+    ['http:', 'telltale.lan', true],
+    ['http:', '127.0.0.1', false],
+    ['http:', '127.1.2.3', false],
+    ['http:', 'localhost', false],
+    ['http:', '[::1]', false],
+    ['http:', '127.0.0.1.example.test', true],
+    ['https:', '192.168.1.5', false],
+  ];
+  for (const [protocol, hostname, shown] of cases) {
+    expect(plainHttpPage({ protocol, hostname }), `${protocol}//${hostname}`).toBe(shown);
+  }
 });
 
 // REQ: OBS-010 (T9.6) — the Alerts page: add a destination, send it a test, add a rule that
@@ -2827,17 +3321,20 @@ test('obs_035 wall helpers', async () => {
 // Esc goes back to the dashboard.
 test('obs_035 wall', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto('/#/wall?panels=slo,flow&every=5');
+  // `layout=single`: at this size the default layout shows both panels at once and nothing rotates.
+  // The one slot lists the big panel first and the small one (`slo`) after it, so `flow` shows
+  // first and `slo` takes over after 5 s (the dots below keep the address's order).
+  await page.goto('/#/wall?layout=single&panels=slo,flow&every=5');
   const wall = page.getByTestId('wall');
   await expect(wall).toBeVisible();
   await expect(page.locator('nav.side')).toHaveCount(0);
   await expect(page.locator('header.top')).toHaveCount(0);
   await expect(page.getByTestId('wall-order').locator('li')).toHaveCount(2);
   expect(await page.getByTestId('wall-order').locator('li').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.panel))).toEqual(['slo', 'flow']);
-  await expect(page.getByTestId('wall-panel-slo')).toBeVisible();
+  await expect(page.getByTestId('wall-panel-flow')).toBeVisible();
   await expect(page.getByTestId('wall-tail')).toBeVisible();
   // Rotates after 5 s.
-  await expect(page.getByTestId('wall-panel-flow')).toBeVisible({ timeout: 9000 });
+  await expect(page.getByTestId('wall-panel-slo')).toBeVisible({ timeout: 9000 });
   // Every panel renders.
   // One at a time (`layout=single`): every panel renders in turn.
   await page.goto('/#/wall?layout=single');
@@ -2864,6 +3361,75 @@ test('obs_035 wall', async () => {
   await page.keyboard.press('Escape');
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.locator('nav.side')).toBeVisible();
+});
+
+// REQ: OBS-035 (#69) — a panel the viewer moved to stays put when the wall's area is measured
+// again. A resize rebuilds the layout object, and that must not send the slot back to its first
+// panel (only a different address, or a different set of panels per slot, does).
+test('obs_035 wall keeps its place when remeasured', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/wall?layout=single&every=600');
+  const slot = page.getByTestId('wall-slot');
+  await expect(slot).toHaveAttribute('data-panel', 'map');
+  await page.keyboard.press('ArrowRight');
+  await expect(slot).toHaveAttribute('data-panel', 'flow');
+  // Each resize changes the panel area's size, so the layout is computed again; two frames let
+  // the browser's resize notification reach the page (it comes after the first frame's callbacks).
+  for (const [width, height] of [[1100, 700], [1280, 800], [1200, 760]]) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await expect(slot).toHaveAttribute('data-panel', 'flow');
+  }
+  await page.keyboard.press('ArrowRight');
+  await expect(slot).toHaveAttribute('data-panel', 'slo');
+  // The shared page goes back as the next test expects it.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+});
+
+// REQ: OBS-035 (#69) — the order CI hit: the address changes to `layout=single` and the viewer
+// presses a key before the page has measured its panel area again (the one-panel title that
+// appears shrinks it). One task does the address change and the key press, so no frame, and so
+// no resize notification, can come between them; the measure always lands after the key.
+test('obs_035 wall keeps its panel when the area is measured after a key press', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/wall?panels=slo,flow&every=600');
+  const slot = page.getByTestId('wall-slot');
+  const area = page.getByTestId('wall-area');
+  await expect(slot).toHaveCount(2);
+  const frames = (n: number) =>
+    page.evaluate(
+      (n) =>
+        new Promise<void>((done) => {
+          const next = (left: number) => (left === 0 ? done() : requestAnimationFrame(() => next(left - 1)));
+          next(n);
+        }),
+      n,
+    );
+  await frames(2); // measured and settled with both panels showing
+  const before = await area.evaluate((e) => e.clientHeight);
+  const seen = await page.evaluate(async () => {
+    const panel = () => document.querySelector('[data-testid="wall-slot"]')?.getAttribute('data-panel') ?? '';
+    const slots = () => document.querySelectorAll('[data-testid="wall-slot"]').length;
+    // Svelte updates in a microtask: wait for it by yielding microtasks only (never a frame).
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 1000 && !done(); i++) await Promise.resolve();
+      return done();
+    };
+    history.replaceState(null, '', '#/wall?layout=single&every=600');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    const single = await until(() => slots() === 1 && panel() === 'map' && !!document.querySelector('h1.title'));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+    const moved = await until(() => panel() === 'flow');
+    return { single, moved };
+  });
+  expect(seen, 'the one-panel wall, then flow, before any frame').toEqual({ single: true, moved: true });
+  await frames(2); // the resize notification for the shorter area arrives here
+  expect(await area.evaluate((e) => e.clientHeight), 'the title made the area shorter').toBeLessThan(before);
+  await expect(slot).toHaveAttribute('data-panel', 'flow');
+  // The shared page goes back as the next test expects it.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
 });
 
 // REQ: OBS-036 — a chatty loop is shown with its strip and marked informational, and the

@@ -57,7 +57,8 @@
         <a class="btn provider" href={startUrl(p.id)}>Sign in with {p.name}</a>
       {/each}
     </div>
-    {#if session.localLogin}<div class="or muted small">or with a password</div>{/if}
+    <!-- REQ: API-004 (ADR-175) — with password sign-in limited to admins on trusted networks, say what the form is. -->
+    {#if session.localLogin}<div class="or muted small">{session.passwordLoginRestricted ? 'or, as an admin on a trusted network, with a password' : 'or with a password'}</div>{/if}
   {/if}
   {#if !session.localLogin}
     <p class="muted small">Password sign-in is turned off on this server.</p>
@@ -72,8 +73,9 @@
       </label>
     {:else if !useRecovery}
       <p class="muted">Enter the 6-digit code from your authenticator app.</p>
+      <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
       <label class="field">Code
-        <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required bind:value={totp} />
+        <input name="totp" title="6 digits" inputmode="numeric" autocomplete="one-time-code" pattern={'[0-9]{6}'} maxlength="6" required bind:value={totp} />
       </label>
       <button type="button" class="link" onclick={() => (useRecovery = true)}>Use a recovery code instead</button>
     {:else}
@@ -85,6 +87,9 @@
     <ErrorNote {error} />
     <button class="primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
   </form>
+  {#if session.passwordLoginRestricted}
+    <p class="muted small" data-testid="password-restricted">Password sign-in is limited to admins on trusted networks. Use it when your sign-in provider is down.</p>
+  {/if}
   {/if}
 </AuthShell>
 

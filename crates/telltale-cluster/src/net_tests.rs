@@ -32,6 +32,18 @@ async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
     panic!("not met in time: {what}");
 }
 
+/// [`wait_until`] for what takes up to a heartbeat (and some slack): a stream's writer finds out
+/// that nobody reads it only when it next sends.
+async fn wait_a_heartbeat(what: &str, mut f: impl FnMut() -> bool) {
+    for _ in 0..(3 * HEARTBEAT.as_millis() / 25) {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("not met in time: {what}");
+}
+
 // REQ: CLU-009 — resolver pods join with the shared bootstrap secret: they trust the CA only
 // after the primary proves it knows the secret, join as ephemeral members, and leave the
 // registry once they're gone for the TTL.
@@ -1479,9 +1491,12 @@ async fn replica_with_a_dead_primary_url(start: Start) {
         }
         serve_primary(&c);
         let (r, p) = (Arc::clone(&replica), p_url.clone());
+        // Wait for both halves of what is asserted next: the stream's URL is the primary's, and the
+        // member table, which is updated separately, flags that stream's server as the primary.
+        // Waiting on the URL alone let the assertion run before the flag was set (GitHub issue #69).
         wait_until(
-            "the replica's own stream goes back to the primary",
-            move || r.connected_primary().as_ref() == Some(&p),
+            "the replica's own stream goes back to the primary, and the member table flags it",
+            move || r.connected_primary().as_ref() == Some(&p) && r.main_link_to_primary(),
         )
         .await;
         assert!(replica.main_link_to_primary());
@@ -2051,4 +2066,625 @@ fn clu_001_the_removed_list_keeps_the_newest() {
         list.last().cloned(),
         Some(format!("n{}", crate::node::MAX_REMOVED + 4))
     );
+}
+
+// REQ: CLU-001, CLU-005, CLU-008 (ADR-173) — the silent peers a node keeps: the primary keeps
+// everyone, a replica keeps the primary and, under automatic failover, its fellow voters;
+// nothing else.
+#[test]
+fn clu_001_which_silent_peers_a_node_keeps() {
+    assert!(
+        keeps_silent_peer(true, false, false),
+        "the primary keeps its replicas"
+    );
+    assert!(
+        keeps_silent_peer(false, true, false),
+        "a replica keeps the primary"
+    );
+    assert!(
+        keeps_silent_peer(false, false, true),
+        "a voter keeps the other voters"
+    );
+    assert!(
+        !keeps_silent_peer(false, false, false),
+        "a replica forgets another replica"
+    );
+}
+
+// REQ: CLU-001, CLU-008 (ADR-173) — two replicas that streamed to each other for a while (one
+// fell back to the other while the primary didn't answer) forget each other once the stream has
+// ended and they've been silent past the up window. They used to keep each other for good as
+// down peers, and `TelltaleDNSClusterPeerDown` fired on both until they restarted. The stream is
+// ended the way a replica leaves a peer for the primary (`switch`), which used to skip marking
+// the peer disconnected on the side that dialed. The primary still counts as a peer they
+// keep, and the primary forgets no one.
+#[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)] // one scenario: link, part, forget
+async fn clu_001_replicas_forget_each_other_after_a_passing_stream() {
+    let (pdir, adir, bdir) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (p_addr, b_addr) = (free_port().await, free_port().await);
+    let (p_url, b_url) = (format!("https://{p_addr}"), format!("https://{b_addr}"));
+    let primary = Identity::init(pdir.path(), "home", vec![p_url.clone()], "k3s").unwrap();
+    let token = primary
+        .create_token_for(
+            600,
+            Some(vec![p_url.clone()]),
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let join_node = |dir: &std::path::Path, site: &str, advertise: Vec<String>| {
+        let key = pki::new_node_key().unwrap();
+        let req = JoinRequest {
+            witness: false,
+            ephemeral: false,
+            secret: token.secret.clone(),
+            csr_pem: key.csr_pem.clone(),
+            advertise: advertise.clone(),
+            site: site.into(),
+            eligible: true,
+            version: "0.1.0".into(),
+        };
+        let resp = primary.accept_join(&req, None).unwrap();
+        Identity::save_joined(dir, &key.key_pem, &resp, site, true, advertise).unwrap()
+    };
+    let a = join_node(adir.path(), "proxmox", vec![]);
+    let b = join_node(bdir.path(), "pi", vec![b_url.clone()]);
+    let (p_id, a_id, b_id) = (
+        primary.meta.node_id.clone(),
+        a.meta.node_id.clone(),
+        b.meta.node_id.clone(),
+    );
+    let (primary, a, b) = (
+        Cluster::new(primary, "0.1.0"),
+        Cluster::new(a, "0.1.0"),
+        Cluster::new(b, "0.1.0"),
+    );
+    let (stop_tx, stop) = watch::channel(false);
+    tokio::spawn(serve(Arc::clone(&primary), p_addr, stop.clone()));
+    tokio::spawn(serve(Arc::clone(&b), b_addr, stop.clone()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Both replicas are attached to the primary.
+    for (c, url) in [(&a, &p_url), (&b, &p_url)] {
+        let cfg = client_config(&c.identity.reload()).unwrap();
+        let (c, url) = (Arc::clone(c), url.clone());
+        tokio::spawn(async move {
+            let _ = stream_once(c, &url, cfg, false, Arc::new(Notify::new())).await;
+        });
+    }
+    // And `a` streams to `b` for a while, as when it fell back to it.
+    let passing = Arc::new(Notify::new());
+    let cfg = client_config(&a.identity.reload()).unwrap();
+    let (a2, url, sw) = (Arc::clone(&a), b_url.clone(), Arc::clone(&passing));
+    let link = tokio::spawn(async move { stream_once(a2, &url, cfg, false, sw).await });
+    let knows = |c: &Arc<Cluster>, id: &str, connected: bool| {
+        c.members()
+            .iter()
+            .any(|m| m.node_id == id && m.connected == connected)
+    };
+    wait_until("the replicas see each other and the primary", || {
+        knows(&a, &b_id, true)
+            && knows(&b, &a_id, true)
+            && knows(&a, &p_id, true)
+            && knows(&b, &p_id, true)
+            && knows(&primary, &a_id, true)
+            && knows(&primary, &b_id, true)
+    })
+    .await;
+    // Still connected: kept, even when silent.
+    let later = now_ms() + 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap() + 1_000;
+    let none: Vec<String> = Vec::new();
+    assert_eq!(a.forget_stray_peers_at(&a.identity.reload(), later), none);
+
+    // The passing stream ends; both sides mark it down.
+    passing.notify_one();
+    let _ = link.await;
+    wait_until(
+        "the stream between the replicas is down on both sides",
+        || knows(&a, &b_id, false) && knows(&b, &a_id, false),
+    )
+    .await;
+    // The replica that served the stream (`b`) learns that its writer has no reader only when
+    // the writer next sends, within a heartbeat; until then its sender looks open, and a peer
+    // with an open sender is never forgotten (the real wait is the 15 s window, longer).
+    wait_a_heartbeat("b's writer to a has ended", || {
+        !b.reachable_peers().contains(&a_id)
+    })
+    .await;
+    // Not silent past the up window yet: kept (it shows as down for at most the up window). Judged
+    // at the moment each was last heard from plus the whole window, not by the wall clock: that
+    // took the time since the last heartbeat (up to two heartbeats here) off a 15 s margin, and
+    // a CI machine that stalled for the rest would have flipped it.
+    let heard = |c: &Arc<Cluster>, id: &str| {
+        c.members()
+            .into_iter()
+            .find(|m| m.node_id == id)
+            .map(|m| m.last_seen_ms)
+            .unwrap()
+    };
+    let window = 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap();
+    assert_eq!(
+        a.forget_stray_peers_at(&a.identity.reload(), heard(&a, &b_id) + window),
+        none
+    );
+    assert_eq!(
+        b.forget_stray_peers_at(&b.identity.reload(), heard(&b, &a_id) + window),
+        none
+    );
+
+    // Silent past the up window: each forgets the other. The primary stays, and so does its
+    // stream; the primary itself forgets no one.
+    let later = now_ms() + 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap() + 1_000;
+    assert_eq!(
+        a.forget_stray_peers_at(&a.identity.reload(), later),
+        vec![b_id.clone()]
+    );
+    assert_eq!(
+        b.forget_stray_peers_at(&b.identity.reload(), later),
+        vec![a_id.clone()]
+    );
+    for c in [&a, &b] {
+        let ids: Vec<String> = c.members().into_iter().map(|m| m.node_id).collect();
+        assert_eq!(ids, vec![p_id.clone()]);
+    }
+    assert_eq!(
+        primary.forget_stray_peers_at(&primary.identity.reload(), later + 3_600_000),
+        none
+    );
+    assert_eq!(primary.members().len(), 2);
+    stop_tx.send(true).unwrap();
+}
+
+// ---- ADR-173: what a replica keeps, on plain facts (no streams) ----
+
+/// The time to give [`Cluster::forget_stray_peers_at`] so that every peer heard from now has
+/// been silent past the up window: no sleeping.
+fn after_the_up_window() -> u64 {
+    now_ms() + 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap() + 1_000
+}
+
+/// A replica that joined a primary (which isn't running here). Its member table is filled by
+/// [`meet`] and emptied by [`Cluster::forget_stray_peers_at`]; there are no streams.
+fn lone_replica(eligible: bool) -> (Arc<Cluster>, tempfile::TempDir) {
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let primary = Identity::init(
+        pdir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let grants = crate::node::TokenGrants {
+        eligible,
+        witness: false,
+    };
+    let token = primary.create_token_for(60, None, grants).unwrap();
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "pi".into(),
+        eligible,
+        version: "0.1.0".into(),
+    };
+    let resp = primary.accept_join(&req, None).unwrap();
+    let id =
+        Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", eligible, vec![]).unwrap();
+    (Cluster::new(id, "0.1.0"), rdir)
+}
+
+/// `node`'s Hello arrives on a stream: it is listed, connected, and says whether it is the
+/// primary (a Hello is sent once, when the stream opens).
+fn meet(c: &Arc<Cluster>, node: &str, primary: bool) {
+    let mut peer = Some(node.to_owned());
+    c.on_frame(
+        &mut peer,
+        Frame {
+            body: Some(Body::Hello(Hello {
+                protocol: PROTOCOL,
+                cluster_id: c.identity.meta.cluster_id.clone(),
+                node_id: node.to_owned(),
+                version: "0.1.0".into(),
+                site: "k8s".into(),
+                eligible: true,
+                advertise: vec![],
+                epoch: 1,
+                applied_seq: 0,
+                primary,
+                config_source: String::new(),
+                source_commit: String::new(),
+            })),
+        },
+        "inbound",
+        &EchoSlot::default(),
+    )
+    .unwrap();
+}
+
+/// What `read_frames` does as a stream ends: the peer is no longer connected.
+fn stream_ended(c: &Cluster, node: &str) {
+    c.members.lock().unwrap().get_mut(node).unwrap().connected = false;
+}
+
+/// The node IDs in the member table.
+fn listed(c: &Cluster) -> Vec<String> {
+    c.members().into_iter().map(|m| m.node_id).collect()
+}
+
+fn record(node_id: &str, eligible: bool, witness: bool) -> crate::node::NodeRecord {
+    crate::node::NodeRecord {
+        node_id: node_id.into(),
+        site: "k8s".into(),
+        eligible,
+        advertise: vec![],
+        joined: 1,
+        witness,
+        ephemeral: false,
+    }
+}
+
+/// A replica in a cluster whose failover is automatic: `others` are in its registry too.
+fn auto_replica(
+    eligible: bool,
+    others: &[crate::node::NodeRecord],
+) -> (Arc<Cluster>, tempfile::TempDir) {
+    let (c, dir) = lone_replica(eligible);
+    let mut nodes = c.identity.registry();
+    nodes.extend(others.iter().cloned());
+    c.identity.save_registry(&nodes).unwrap();
+    c.identity.save_failover("auto").unwrap();
+    (c, dir)
+}
+
+// REQ: CLU-001, CLU-008 (ADR-173) — a Hello says whether its sender is the primary, once, and a
+// stream stays open through a promotion, so the flag stays false on the replica that heard it.
+// The replica keeps whoever the last manifest it applied names the primary: the promoted node
+// that goes silent is the one whose outage matters most, and it is still reported, while
+// another replica is forgotten.
+#[test]
+fn clu_001_a_promoted_peer_is_kept_though_its_hello_said_replica() {
+    let (c, _dir) = lone_replica(true);
+    meet(&c, "promoted", false);
+    meet(&c, "sibling", false);
+    assert!(
+        c.members().iter().all(|m| !m.primary),
+        "the Hello flag is stale after a live promotion"
+    );
+    // The promoted node publishes; this replica applies the version, which names it.
+    let applied = ClusterManifest {
+        primary: "promoted".into(),
+        epoch: 2,
+        seq: 5,
+        ..ClusterManifest::default()
+    };
+    std::fs::write(
+        c.identity.dir.join("applied.json"),
+        serde_json::to_vec(&applied).unwrap(),
+    )
+    .unwrap();
+    // Both streams end and both peers fall silent.
+    stream_ended(&c, "promoted");
+    stream_ended(&c, "sibling");
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), after_the_up_window()),
+        vec!["sibling".to_owned()]
+    );
+    assert_eq!(listed(&c), vec!["promoted".to_owned()]);
+}
+
+// REQ: CLU-001, CLU-008 (ADR-173) — `connected` is one flag per node, cleared by whichever of its
+// streams ends, and a heartbeat never adds a peer that was forgotten. A peer with a stream still
+// open (its sender is in the outbox) is therefore never forgotten, however long it has been
+// silent; once the stream is gone too, it goes.
+#[test]
+fn clu_001_a_peer_with_an_open_stream_is_never_forgotten() {
+    let (c, _dir) = lone_replica(true);
+    meet(&c, "streaming", false);
+    meet(&c, "gone", false);
+    stream_ended(&c, "streaming");
+    stream_ended(&c, "gone");
+    let (tx, rx) = tokio::sync::mpsc::channel::<Frame>(1);
+    c.outbox.lock().unwrap().insert("streaming".into(), tx);
+    let later = after_the_up_window();
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), later),
+        vec!["gone".to_owned()]
+    );
+    assert_eq!(listed(&c), vec!["streaming".to_owned()]);
+    // Its writer ends: nothing holds the peer any more.
+    drop(rx);
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), later),
+        vec!["streaming".to_owned()]
+    );
+    assert_eq!(listed(&c), Vec::<String>::new());
+}
+
+// REQ: CLU-005, CLU-008 (ADR-173) — who the voters are comes from the registry file, and a read
+// that fails leaves only this node in it, which reads as "no automatic failover". That must not
+// make a node forget the voters it keeps a stream to: with the registry unreadable in an
+// automatic cluster, the sweep leaves everything alone until it can read it.
+#[test]
+fn clu_005_a_failed_registry_read_forgets_nothing() {
+    let (c, _dir) = auto_replica(
+        true,
+        &[
+            record("v2", true, false),
+            record("v3", true, false),
+            record("plain", false, false),
+        ],
+    );
+    for n in ["v2", "v3", "plain"] {
+        meet(&c, n, false);
+        stream_ended(&c, n);
+    }
+    let later = after_the_up_window();
+    let registry = c.identity.dir.join("nodes.json");
+    let good = std::fs::read(&registry).unwrap();
+    std::fs::write(&registry, b"{ not json").unwrap();
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), later),
+        Vec::<String>::new()
+    );
+    assert_eq!(listed(&c), ["plain", "v2", "v3"]);
+    // Read again: the voters are kept and the plain node is not.
+    std::fs::write(&registry, good).unwrap();
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), later),
+        vec!["plain".to_owned()]
+    );
+    assert_eq!(listed(&c), ["v2", "v3"]);
+}
+
+// REQ: CLU-005, CLU-008 (ADR-173) — a node that doesn't vote (a replica that isn't eligible, in
+// an automatic cluster) keeps no stream to the voters, so it forgets a silent one like any
+// other stray peer. Failing closed on an unreadable registry must not switch this off.
+#[test]
+fn clu_005_a_node_that_does_not_vote_forgets_voters_it_has_no_link_to() {
+    let (c, _dir) = auto_replica(
+        false,
+        &[
+            record("v2", true, false),
+            record("v3", true, false),
+            record("v4", true, false),
+        ],
+    );
+    assert!(!crate::failover::active(&c.identity.reload()));
+    meet(&c, "v2", false);
+    stream_ended(&c, "v2");
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), after_the_up_window()),
+        vec!["v2".to_owned()]
+    );
+}
+
+// REQ: CLU-005, CLU-008 (ADR-173) — under automatic failover a voter keeps a stream to every other
+// voter (`mesh`), so it keeps them in its member list when they fall silent: they are down, and
+// that is to be reported. A node that doesn't vote is forgotten. In manual mode nobody votes.
+#[test]
+fn clu_005_voters_are_kept_under_automatic_failover() {
+    let (c, _dir) = auto_replica(
+        true,
+        &[
+            record("v2", true, false),
+            record("witness", false, true),
+            record("plain", false, false),
+        ],
+    );
+    for n in ["v2", "witness", "plain"] {
+        meet(&c, n, false);
+        stream_ended(&c, n);
+    }
+    assert!(crate::failover::active(&c.identity.reload()));
+    let later = after_the_up_window();
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), later),
+        vec!["plain".to_owned()]
+    );
+    assert_eq!(listed(&c), ["v2", "witness"]);
+    // The cluster goes back to manual failover: no node is a voter any more.
+    c.identity.save_failover("manual").unwrap();
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), later),
+        vec!["v2".to_owned(), "witness".to_owned()]
+    );
+}
+
+// REQ: CLU-001, CLU-008 (ADR-173) — a peer that was forgotten comes back with its next Hello
+// (a stream that opens again), listed as connected and kept up to date by its heartbeats.
+#[test]
+fn clu_001_a_forgotten_peer_returns_with_its_hello() {
+    let (c, _dir) = lone_replica(true);
+    meet(&c, "sibling", false);
+    stream_ended(&c, "sibling");
+    assert_eq!(
+        c.forget_stray_peers_at(&c.identity.reload(), after_the_up_window()),
+        vec!["sibling".to_owned()]
+    );
+    assert_eq!(listed(&c), Vec::<String>::new());
+    meet(&c, "sibling", false);
+    let mut peer = Some("sibling".to_owned());
+    c.on_frame(
+        &mut peer,
+        Frame {
+            body: Some(Body::Heartbeat(Heartbeat {
+                epoch: 1,
+                applied_seq: 7,
+                ..Heartbeat::default()
+            })),
+        },
+        "inbound",
+        &EchoSlot::default(),
+    )
+    .unwrap();
+    let back = c.members();
+    assert_eq!(back.len(), 1);
+    assert!(back[0].connected && back[0].up(now_ms()));
+    assert_eq!(back[0].applied_seq, 7);
+}
+
+// REQ: CLU-001 (ADR-173) — the sweep is wired into the mesh loop, which runs on every node (in
+// any failover mode): a silent peer with no stream, and no reason to be kept, leaves the member
+// list without anything else calling for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn clu_001_the_mesh_loop_forgets_stray_peers() {
+    let (c, _dir) = lone_replica(true);
+    meet(&c, "sibling", false);
+    {
+        let mut members = c.members.lock().unwrap();
+        let m = members.get_mut("sibling").unwrap();
+        m.connected = false;
+        m.last_seen_ms = 0;
+    }
+    let (stop_tx, stop) = watch::channel(false);
+    let task = tokio::spawn(mesh(Arc::clone(&c), stop));
+    wait_until("the mesh loop forgets the silent peer", || {
+        c.members().is_empty()
+    })
+    .await;
+    stop_tx.send(true).unwrap();
+    task.await.unwrap();
+}
+
+// REQ: CLU-001, CLU-008 (ADR-173) — the topology of the incident: during a primary restart two
+// replicas each dialed the other (a stream each way), then both moved back to the primary. Each
+// stream ends on both sides, and each replica then forgets the other and keeps the primary; the
+// primary forgets no one.
+#[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)] // one scenario: link both ways, part, forget
+async fn clu_001_replicas_that_streamed_both_ways_forget_each_other() {
+    let (pdir, adir, bdir) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (p_addr, a_addr, b_addr) = (free_port().await, free_port().await, free_port().await);
+    let (p_url, a_url, b_url) = (
+        format!("https://{p_addr}"),
+        format!("https://{a_addr}"),
+        format!("https://{b_addr}"),
+    );
+    let primary = Identity::init(pdir.path(), "home", vec![p_url.clone()], "k3s").unwrap();
+    let token = primary
+        .create_token_for(
+            600,
+            Some(vec![p_url.clone()]),
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let join_node = |dir: &std::path::Path, site: &str, advertise: Vec<String>| {
+        let key = pki::new_node_key().unwrap();
+        let req = JoinRequest {
+            witness: false,
+            ephemeral: false,
+            secret: token.secret.clone(),
+            csr_pem: key.csr_pem.clone(),
+            advertise: advertise.clone(),
+            site: site.into(),
+            eligible: true,
+            version: "0.1.0".into(),
+        };
+        let resp = primary.accept_join(&req, None).unwrap();
+        Identity::save_joined(dir, &key.key_pem, &resp, site, true, advertise).unwrap()
+    };
+    let a = join_node(adir.path(), "proxmox", vec![a_url.clone()]);
+    let b = join_node(bdir.path(), "pi", vec![b_url.clone()]);
+    let (p_id, a_id, b_id) = (
+        primary.meta.node_id.clone(),
+        a.meta.node_id.clone(),
+        b.meta.node_id.clone(),
+    );
+    let (primary, a, b) = (
+        Cluster::new(primary, "0.1.0"),
+        Cluster::new(a, "0.1.0"),
+        Cluster::new(b, "0.1.0"),
+    );
+    let (stop_tx, stop) = watch::channel(false);
+    for (c, addr) in [(&primary, p_addr), (&a, a_addr), (&b, b_addr)] {
+        tokio::spawn(serve(Arc::clone(c), addr, stop.clone()));
+    }
+    wait_until("the three nodes listen", || {
+        [p_addr, a_addr, b_addr].iter().all(|addr| {
+            std::net::TcpStream::connect_timeout(addr, Duration::from_millis(200)).is_ok()
+        })
+    })
+    .await;
+    // Both replicas are attached to the primary.
+    for c in [&a, &b] {
+        let cfg = client_config(&c.identity.reload()).unwrap();
+        let (c, url) = (Arc::clone(c), p_url.clone());
+        tokio::spawn(async move {
+            let _ = stream_once(c, &url, cfg, false, Arc::new(Notify::new())).await;
+        });
+    }
+    // And each streams to the other, as when both fell back while the primary restarted.
+    let link = |from: &Arc<Cluster>, to_url: &str| {
+        let switch = Arc::new(Notify::new());
+        let cfg = client_config(&from.identity.reload()).unwrap();
+        let (c, url, s) = (Arc::clone(from), to_url.to_owned(), Arc::clone(&switch));
+        let task = tokio::spawn(async move { stream_once(c, &url, cfg, false, s).await });
+        (switch, task)
+    };
+    let (a_to_b, a_task) = link(&a, &b_url);
+    let (b_to_a, b_task) = link(&b, &a_url);
+    let knows = |c: &Arc<Cluster>, id: &str, connected: bool| {
+        c.members()
+            .iter()
+            .any(|m| m.node_id == id && m.connected == connected)
+    };
+    wait_until("the replicas see each other and the primary", || {
+        knows(&a, &b_id, true)
+            && knows(&b, &a_id, true)
+            && knows(&a, &p_id, true)
+            && knows(&b, &p_id, true)
+            && knows(&primary, &a_id, true)
+            && knows(&primary, &b_id, true)
+    })
+    .await;
+    // Both leave, as when the primary answers again.
+    a_to_b.notify_one();
+    b_to_a.notify_one();
+    let _ = a_task.await;
+    let _ = b_task.await;
+    wait_until(
+        "the streams between the replicas are down on both sides",
+        || knows(&a, &b_id, false) && knows(&b, &a_id, false),
+    )
+    .await;
+    // The side that served a stream learns that its writer has no reader only when it next sends.
+    wait_a_heartbeat("the writers between the replicas have ended", || {
+        !a.reachable_peers().contains(&b_id) && !b.reachable_peers().contains(&a_id)
+    })
+    .await;
+    let later = after_the_up_window();
+    assert_eq!(
+        a.forget_stray_peers_at(&a.identity.reload(), later),
+        vec![b_id.clone()]
+    );
+    assert_eq!(
+        b.forget_stray_peers_at(&b.identity.reload(), later),
+        vec![a_id.clone()]
+    );
+    for c in [&a, &b] {
+        assert_eq!(listed(c), vec![p_id.clone()]);
+    }
+    let none: Vec<String> = Vec::new();
+    assert_eq!(
+        primary.forget_stray_peers_at(&primary.identity.reload(), later + 3_600_000),
+        none
+    );
+    assert_eq!(primary.members().len(), 2);
+    stop_tx.send(true).unwrap();
 }

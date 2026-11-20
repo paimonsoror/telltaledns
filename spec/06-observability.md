@@ -74,6 +74,7 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
   3. Prune blocks with the block index + bloom filter.
   4. Decode only the needed columns, filter, and stream results newest-first with cursor pagination.
   5. Parallelize segments across a small thread pool (1 thread on Pi by default).
+  6. **Negation (ADR-171):** name, client, status, type, and response code can each be turned around ("everything except"). The dictionary's ID set is flipped, the blooms are not used for a negated name or client (they only say "maybe present"), and a block is pruned for a negated status or response code only when every value in it is excluded.
 - **Retention (OBS-003):** by days (default 30) **and** by bytes (default 2 GiB; oldest segments deleted first). Expected compressed size is ~10–20 bytes/row, so 50M rows ≈ 0.5–1 GiB.
 - **Privacy levels** (Pi-hole parity): `0` full; `1` hide domains (stored as hash); `2` hide domains + clients; `3` anonymous (no per-query log, aggregates only). Configurable per group.
 - **Escape hatch:** `telltale ctl qlog export --from --to --format parquet|csv|jsonl` for offline analysis (Parquet behind a feature flag).
@@ -98,6 +99,7 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 | `telltale_client_queries_total` | counter | `node, client` **opt-in**, top-N capped (default off; N=100) |
 | `telltale_telemetry_dropped_total`, `telltale_qlog_write_seconds`, `telltale_qlog_bytes` | | `node` |
 | `telltale_cluster_snapshot_lag`, `telltale_cluster_peer_up`, `telltale_cluster_role` | gauge | `node, peer` |
+| `telltale_federated_refused_total` (CLU-004, ADR-174) | counter | `reason` (`waits`, `spent`, `ceiling`, `bytes`) |
 | `telltale_ratelimited_total`, `telltale_dnssec_validation_total{result}` | counter | |
 
 ### Others

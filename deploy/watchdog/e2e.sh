@@ -103,6 +103,7 @@ grep -q " telltale-rt " "$F" || fail "no runtime worker in the thread table"
 grep -qE "^telltale-rt \([0-9]+\): 0x[0-9a-f]+" "$F" || fail "no stack for a runtime worker"
 grep -q "== executable mappings" "$F" && grep -qE "r-xp" "$F" || fail "no executable mapping"
 grep -q "== log, last" "$F" || fail "no log"
+grep -qE "^runtime workers: [0-9]+, tasks alive: [0-9]+, waiting in the global queue: [0-9]+" "$F" || fail "no runtime numbers"
 [ "$(wc -l < "$D/restarts")" = 1 ] || fail "the restart wasn't recorded once"
 echo "ok: the dump has the reason, threads, stacks, mappings, and log"
 

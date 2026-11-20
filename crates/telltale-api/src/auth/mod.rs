@@ -245,6 +245,79 @@ pub struct Settings {
     pub trusted_proxies: Vec<(IpAddr, u8)>,
 }
 
+/// REQ: API-004 (issue #63, ADR-175) — every address in `net/prefix` is this machine's: 127.0.0.0/8
+/// or a part of it, or `::1`. (An IPv4-mapped form, or a network that only contains loopback among
+/// others, is not.) The start-up line and the Settings note both ask this, so they can't disagree.
+pub fn is_loopback_network(net: IpAddr, prefix: u8) -> bool {
+    match net {
+        IpAddr::V4(a) => a.is_loopback() && prefix >= 8,
+        IpAddr::V6(a) => a == std::net::Ipv6Addr::LOCALHOST && prefix == 128,
+    }
+}
+
+/// REQ: API-004 (ADR-175) — `net/prefix` names one address: a /32 IPv4 or a /128 IPv6 host.
+pub fn is_single_host(net: IpAddr, prefix: u8) -> bool {
+    match net {
+        IpAddr::V4(_) => prefix == 32,
+        IpAddr::V6(_) => prefix == 128,
+    }
+}
+
+/// REQ: API-004 (issue #63, ADR-175) — some network in `networks` is neither this machine
+/// ([`is_loopback_network`]) nor one named host ([`is_single_host`]): a range of more than one
+/// address, so everyone in it is shown the password form, not only the machines the list names.
+/// The start-up line and the Settings note both ask this, so they can't disagree.
+pub fn covers_whole_networks(networks: &[(IpAddr, u8)]) -> bool {
+    networks
+        .iter()
+        .any(|(n, p)| !is_loopback_network(*n, *p) && !is_single_host(*n, *p))
+}
+
+/// REQ: API-004 (ADR-175) — some network in `networks` is this machine ([`is_loopback_network`]).
+pub fn includes_loopback(networks: &[(IpAddr, u8)]) -> bool {
+    networks.iter().any(|(n, p)| is_loopback_network(*n, *p))
+}
+
+/// REQ: API-004 (ADR-175) — a proxy on this machine reaches the API from `127.0.0.1`, and
+/// `remote()` believes `X-Forwarded-For` from a peer that is inside a `trusted_proxies` network
+/// (the same `in_network` test): so loopback is a trusted proxy exactly when `127.0.0.1` is
+/// inside one of `proxies`. (A proxy that connects over `::1` is not looked for.)
+pub fn loopback_is_trusted_proxy(proxies: &[(IpAddr, u8)]) -> bool {
+    proxies
+        .iter()
+        .any(|(n, l)| in_network(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), *n, *l))
+}
+
+// REQ: API-004 (issue #63, ADR-175)
+/// How password sign-in is restricted on this node: what an admin is shown under Settings, Users
+/// (`passwordLogin` in `GET /users`). It carries the networks, so it is never in a public answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // the answer's shape: independent yes or no facts
+pub struct PasswordLogin {
+    /// `[auth.oidc] disable_local_login` is on: password sign-in and HTTP Basic work only for
+    /// admins from `networks`.
+    pub restricted: bool,
+    /// While `restricted`: the networks (`address/prefix`, in the order of
+    /// `allowed_admin_networks`) admins may use a password from. Empty means nobody can: if the
+    /// sign-in provider is down, nobody can sign in with a password. Empty when not restricted.
+    pub networks: Vec<String>,
+    /// While `restricted`: some network is a range of more than one address that is not this
+    /// machine (not a single host such as `192.168.1.10/32`, not loopback), so everyone in it is
+    /// shown the password form, not only the machines you name. False for a list of single hosts
+    /// and loopback, and when not restricted.
+    pub covers_whole_networks: bool,
+    /// While `restricted`: some network is this machine (`127.0.0.0/8` or a part of it, or
+    /// `::1`). With a proxy on this machine in front of the UI, everyone it serves arrives from
+    /// there unless `loopbackIsTrustedProxy` is true. False when not restricted.
+    pub includes_loopback: bool,
+    /// While `restricted`: `127.0.0.1` is inside a network of `[api] trusted_proxies`, so a proxy
+    /// on this machine is believed about its clients' addresses (`X-Forwarded-For`). False
+    /// otherwise: a proxy there hides its clients behind its own address. (This node can't tell
+    /// whether such a proxy exists; one that connects over `::1` is not looked for.)
+    pub loopback_is_trusted_proxy: bool,
+}
+
 /// `ip` is inside `net/len` (IPv4-mapped IPv6 addresses match IPv4 networks).
 pub fn in_network(ip: IpAddr, net: IpAddr, len: u8) -> bool {
     let ip = match ip {
@@ -265,6 +338,29 @@ pub fn in_network(ip: IpAddr, net: IpAddr, len: u8) -> bool {
             u128::from(a) & m == u128::from(n) & m
         }
         _ => false,
+    }
+}
+
+impl Settings {
+    /// REQ: API-004 (issue #63, ADR-175) — the password sign-in policy in force, for an admin.
+    pub fn password_login(&self) -> PasswordLogin {
+        let restricted = self.disable_local_login;
+        let networks: Vec<String> = if restricted {
+            self.admin_networks
+                .iter()
+                .map(|(a, p)| format!("{a}/{p}"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        PasswordLogin {
+            restricted,
+            networks,
+            covers_whole_networks: restricted && covers_whole_networks(&self.admin_networks),
+            includes_loopback: restricted && includes_loopback(&self.admin_networks),
+            loopback_is_trusted_proxy: restricted
+                && loopback_is_trusted_proxy(&self.trusted_proxies),
+        }
     }
 }
 
@@ -325,6 +421,13 @@ pub struct Auth {
     audit_gap: Mutex<Option<(u64, String)>>,
     /// Password checks in flight (at most [`MAX_PASSWORD_CHECKS`]).
     password_checks: std::sync::atomic::AtomicU32,
+    /// REQ: API-004 (issue #63, ADR-175) — when the hint about a same-host proxy was last logged.
+    proxy_hint: routes::ProxyHint,
+    /// REQ: API-002, AGT-003 (ADR-181) — the key of [`Auth::request_digest`]: random per process
+    /// until the server sets this node's ([`Auth::set_request_key`]).
+    request_key: Mutex<[u8; 32]>,
+    /// REQ: API-002, AGT-003 (ADR-181) — the configuration changes running on this node.
+    write_gate: Arc<crate::config_api::WriteGate>,
 }
 
 /// A slot for one password check; given back when dropped.
@@ -407,7 +510,38 @@ impl Auth {
             identity_primary: Mutex::new(None),
             password_checks: std::sync::atomic::AtomicU32::new(0),
             audit_gap: Mutex::new(None),
+            proxy_hint: routes::ProxyHint::new(),
+            request_key: Mutex::new(rand::random()),
+            write_gate: Arc::new(crate::config_api::WriteGate::new()),
         }
+    }
+
+    /// REQ: API-002, AGT-003 (ADR-181) — the configuration changes running on this node: the
+    /// Idempotency-Keys whose first request hasn't finished, and the places for changes at once.
+    pub(crate) fn write_gate(&self) -> &Arc<crate::config_api::WriteGate> {
+        &self.write_gate
+    }
+
+    /// REQ: API-002, AGT-003 (ADR-181) — this node's request key, kept in a file so a retry
+    /// after a restart still replays (the server loads or creates it at start-up).
+    pub fn set_request_key(&self, key: [u8; 32]) {
+        *self
+            .request_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = key;
+    }
+
+    /// REQ: API-002, AGT-003 (ADR-181) — security F5: `secret` as a keyed BLAKE3 hash (hex), for
+    /// a request kept with its Idempotency-Key: the same secret gives the same text on this node,
+    /// and without the key the text says nothing about the secret.
+    pub fn request_digest(&self, secret: &str) -> String {
+        let key = *self
+            .request_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        blake3::keyed_hash(&key, secret.as_bytes())
+            .to_hex()
+            .to_string()
     }
 
     /// REQ: CLU-003 (T9.1) — the replication sets where identities come from (`None`: here).

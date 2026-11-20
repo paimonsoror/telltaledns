@@ -29,13 +29,33 @@ fn ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// REQ: API-002 (ADR-180) — whether `error` is about a TLS file `u` names (the router's messages
+/// start with the file's path).
+fn names_a_tls_file(u: &Upstream, error: &str) -> bool {
+    [&u.tls_ca, &u.tls_client_cert, &u.tls_client_key]
+        .into_iter()
+        .flatten()
+        .any(|p| error.contains(p.as_str()))
+}
+
+/// What a caller below admin is told when a TLS file can't be used: the same whatever is, or
+/// isn't, at the path.
+const TLS_FILE_ERROR: &str = "a TLS file it names (`tls_ca`, `tls_client_cert` or `tls_client_key`) couldn't be used; an administrator sees why, and the node's log says";
+
 /// REQ: API-002 (T9.12) — builds the upstream as the router would (bootstrap, proxy, TLS,
-/// stamps), and asks it what health checks ask (`. NS`, or a stub zone's SOA).
+/// stamps), and asks it what health checks ask (`. NS`, or a stub zone's SOA). `by_admin`: the
+/// caller is an administrator (who alone is told what went wrong reading a TLS file).
 pub(crate) async fn upstream(
     cfg: &Config,
     body: serde_json::Value,
+    by_admin: bool,
 ) -> Result<CheckResult, Problem> {
     let u: Upstream = draft(body, "upstream")?;
+    // REQ: UPS-011, API-002 (ADR-180) — refused before anything is built: a check starts no
+    // program and connects to no local socket, for anyone.
+    if let Some(field) = crate::managed::plugin_field(u.url.as_str(), !u.args.is_empty()) {
+        return Err(crate::api_backend::plugin_refused(field));
+    }
     // A configuration with only this upstream, in the default group.
     let mut c = cfg.clone();
     c.route.clear();
@@ -47,8 +67,17 @@ pub(crate) async fn upstream(
     let router = match telltale_upstream::Router::from_config(&c) {
         Ok(r) => r,
         Err(errors) => {
+            let error = errors.join("; ");
+            // REQ: API-002 (ADR-180) — what went wrong reading a TLS file (a line of it, whether
+            // it is there) is an administrator's to see; the node's log has it.
+            let error = if !by_admin && names_a_tls_file(&u, &error) {
+                tracing::info!(upstream = %u.name, %error, "pre-save check: a TLS file couldn't be used");
+                format!("upstream `{}`: {TLS_FILE_ERROR}", u.name)
+            } else {
+                error
+            };
             return Ok(CheckResult {
-                error: Some(errors.join("; ")),
+                error: Some(error),
                 detail: "not built".to_owned(),
                 ..CheckResult::default()
             });
@@ -242,27 +271,36 @@ mod tests {
         let r = upstream(
             &cfg(),
             serde_json::json!({ "url": format!("udp://{addr}") }),
+            false,
         )
         .await
         .unwrap();
         assert!(r.ok, "{r:?}");
         assert_eq!(r.detail, "answered NOERROR, 0 records");
         // Nothing listens on port 9 of 127.0.0.2: a timeout or a refusal, not ok.
-        let r = upstream(&cfg(), serde_json::json!({ "url": "tcp://127.0.0.1:9" }))
-            .await
-            .unwrap();
+        let r = upstream(
+            &cfg(),
+            serde_json::json!({ "url": "tcp://127.0.0.1:9" }),
+            false,
+        )
+        .await
+        .unwrap();
         assert!(!r.ok && r.error.is_some(), "{r:?}");
-        let r = upstream(&cfg(), serde_json::json!({ "url": "gopher://x" }))
+        let r = upstream(&cfg(), serde_json::json!({ "url": "gopher://x" }), false)
             .await
             .unwrap();
         assert!(!r.ok && r.detail == "not built", "{r:?}");
         assert!(
-            upstream(&cfg(), serde_json::json!({ "url": 7 }))
+            r.error.as_deref().unwrap_or("").contains("gopher"),
+            "a build error without a TLS file is shown to everyone: {r:?}"
+        );
+        assert!(
+            upstream(&cfg(), serde_json::json!({ "url": 7 }), true)
                 .await
                 .is_err()
         );
         assert!(
-            upstream(&cfg(), serde_json::json!({ "uri": "udp://1.1.1.1" }))
+            upstream(&cfg(), serde_json::json!({ "uri": "udp://1.1.1.1" }), true)
                 .await
                 .is_err()
         );

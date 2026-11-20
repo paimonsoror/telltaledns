@@ -56,13 +56,16 @@ pub(crate) fn agent_may_simulate(
 /// allowed, a changed route, a changed answer, by name, device, and group. In a cluster every
 /// node replays its own log (and the logs shipped to it) and the counts are summed; nodes that
 /// didn't answer are in `missingNodes`. Nothing changes and nothing is audited. Needs the
-/// viewer role (agents: `config:read` and `querylog:read`).
+/// viewer role (agents: `config:read` and `querylog:read`). A caller who isn't an administrator
+/// can name only the local files (a list's `path`, a zone's `file`, `[local] hosts_files`, an
+/// upstream's TLS files) and plugin upstreams that the configuration in effect names: anything
+/// else is refused before it's read (422, ADR-180).
 #[utoipa::path(post, path = "/api/v1/simulate", tag = "config",
     request_body = SimulateRequest,
     responses(
         (status = 200, body = Simulation, description = "The differences (or `available: false` and why)."),
         (status = 409, body = Problem, description = "This node is already running a simulation (`simulation_busy`); retry after Retry-After seconds."),
-        (status = 422, body = Problem, description = "The configuration isn't valid, or the window isn't a duration of at most 7 days (`simulation_window`)."),
+        (status = 422, body = Problem, description = "The configuration isn't valid, the window isn't a duration of at most 7 days (`simulation_window`), or a caller below admin named a new local file, program or socket."),
     ))]
 pub(crate) async fn simulate(
     State(backend): State<Shared>,
@@ -73,11 +76,8 @@ pub(crate) async fn simulate(
     agent_may_simulate(&p, Some("config:read"))?;
     let req = body(b)?;
     let now = backend.now_unix_seconds();
-    let until_s = req
-        .until
-        .as_deref()
-        .map(|u| crate::time::parse_time(u, now))
-        .transpose()
+    // REQ: OBS-024 (T13.1) — `now` is no end given: the backend's default takes in this second.
+    let until_s = crate::time::parse_until(req.until.as_deref(), now)
         .map_err(|e| Problem::invalid(format!("`until`: {e}")))?;
     let opts = SimulateOpts {
         window: req.window.clone(),
@@ -85,7 +85,7 @@ pub(crate) async fn simulate(
         until_s,
     };
     let s = backend
-        .simulate(req.config, opts)
+        .simulate(req.config, opts, crate::config_api::by_admin(&p))
         .await
         .map_err(|e| sanitize_problem(&p, e))?;
     Ok(Json(s))

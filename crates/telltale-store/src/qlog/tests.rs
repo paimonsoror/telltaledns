@@ -271,6 +271,232 @@ fn obs_003_filters_match_exactly_what_a_scan_would() {
     assert_eq!((page.rows.len(), page.stats.blocks_read), (0, 0));
 }
 
+// REQ: OBS-003 (ADR-171) — a negated filter finds exactly the rows a scan finds that do NOT satisfy
+// the predicate, for every kind of name match, and for client, status, type, and response code.
+#[test]
+fn obs_003_negated_filters_match_exactly_what_a_scan_would() {
+    let tmp = tempfile::tempdir().unwrap();
+    populate(tmp.path(), 0, 2, 20_000);
+    let every = all(tmp.path(), &Filter::default());
+    let check = |f: Filter, pred: &dyn Fn(&Row) -> bool| {
+        let got = all(tmp.path(), &f);
+        let want: Vec<&Row> = every.iter().filter(|r| pred(r)).collect();
+        assert_eq!(got.len(), want.len(), "{f:?}");
+        assert!(got.iter().zip(&want).all(|(a, b)| a == *b), "{f:?}");
+        got.len()
+    };
+    let not_name = Not {
+        name: true,
+        ..Not::default()
+    };
+    let n = check(
+        Filter {
+            name: Some(NameMatch::Exact("www.site42.example".into())),
+            not: not_name,
+            ..Filter::default()
+        },
+        &|r| r.name != "www.site42.example",
+    );
+    assert_eq!(n, 40_000 - 40, "everything but the one name");
+    check(
+        Filter {
+            name: Some(NameMatch::Substring("site9".into())),
+            not: not_name,
+            ..Filter::default()
+        },
+        &|r| !r.name.contains("site9"),
+    );
+    check(
+        Filter {
+            name: Some(NameMatch::Suffix("site7.example".into())),
+            not: not_name,
+            ..Filter::default()
+        },
+        &|r| !r.name.ends_with("site7.example"),
+    );
+    check(
+        Filter {
+            name: Some(NameMatch::Glob("www.site1?.example".into())),
+            not: not_name,
+            ..Filter::default()
+        },
+        &|r| !(r.name.len() == 18 && r.name.starts_with("www.site1")),
+    );
+    check(
+        Filter {
+            name: Some(NameMatch::Regex(r"^www\.site(5|6)00\.".into())),
+            not: not_name,
+            ..Filter::default()
+        },
+        &|r| r.name != "www.site500.example" && r.name != "www.site600.example",
+    );
+    // A name every row has leaves nothing, and a negated exact name gets no help from a bloom
+    // filter: it reads the blocks (a positive one reads none for a name that is not there).
+    let page = search(
+        tmp.path(),
+        &Filter {
+            name: Some(NameMatch::Substring("example".into())),
+            not: not_name,
+            ..Filter::default()
+        },
+        10,
+        None,
+    )
+    .unwrap();
+    assert_eq!((page.rows.len(), page.stats.blocks_read), (0, 0));
+    let page = search(
+        tmp.path(),
+        &Filter {
+            name: Some(NameMatch::Exact("never.logged.example".into())),
+            not: not_name,
+            ..Filter::default()
+        },
+        10,
+        None,
+    )
+    .unwrap();
+    assert_eq!(page.rows.len(), 10, "every row is not that name");
+    assert!(page.stats.blocks_read > 0);
+}
+
+// REQ: OBS-003 (ADR-171) — the same for client, status, type, and response code, and where there
+// is nothing to negate.
+#[test]
+fn obs_003_negated_client_status_type_and_rcode_match_exactly_what_a_scan_would() {
+    let tmp = tempfile::tempdir().unwrap();
+    populate(tmp.path(), 0, 2, 20_000);
+    let every = all(tmp.path(), &Filter::default());
+    let check = |f: Filter, pred: &dyn Fn(&Row) -> bool| {
+        let got = all(tmp.path(), &f);
+        let want: Vec<&Row> = every.iter().filter(|r| pred(r)).collect();
+        assert_eq!(got.len(), want.len(), "{f:?}");
+        assert!(got.iter().zip(&want).all(|(a, b)| a == *b), "{f:?}");
+        got.len()
+    };
+    // Not from one client, not blocked, not AAAA, not NXDOMAIN, and two of them together.
+    check(
+        Filter {
+            client_ip: Some(ip(3)),
+            not: Not {
+                client: true,
+                ..Not::default()
+            },
+            ..Filter::default()
+        },
+        &|r| r.client_ip != ip(3),
+    );
+    check(
+        Filter {
+            status: vec![Status::Blocked],
+            not: Not {
+                status: true,
+                ..Not::default()
+            },
+            ..Filter::default()
+        },
+        &|r| r.status != Status::Blocked,
+    );
+    check(
+        Filter {
+            qtype: vec![28],
+            not: Not {
+                qtype: true,
+                ..Not::default()
+            },
+            ..Filter::default()
+        },
+        &|r| r.qtype != 28,
+    );
+    check(
+        Filter {
+            rcode: vec![3],
+            not: Not {
+                rcode: true,
+                ..Not::default()
+            },
+            ..Filter::default()
+        },
+        &|r| r.rcode != Some(3),
+    );
+    check(
+        Filter {
+            status: vec![Status::Blocked, Status::Cached],
+            qtype: vec![1],
+            not: Not {
+                status: true,
+                ..Not::default()
+            },
+            ..Filter::default()
+        },
+        &|r| r.status != Status::Blocked && r.status != Status::Cached && r.qtype == 1,
+    );
+    // A negation with nothing to negate changes nothing.
+    check(
+        Filter {
+            not: Not {
+                name: true,
+                client: true,
+                status: true,
+                qtype: true,
+                rcode: true,
+            },
+            ..Filter::default()
+        },
+        &|_| true,
+    );
+}
+
+// REQ: OBS-003 (ADR-171) — a block is skipped for a negated status only when every status in it is
+// listed, and the estimate stays an upper bound of the matches.
+#[test]
+fn obs_003_negated_status_skips_only_blocks_it_excludes_entirely() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut b = Builder::spawn(settings(tmp.path(), 0)).unwrap();
+    // Hour 0 holds only blocked rows; hour 1 only cached ones.
+    for h in 0..2u64 {
+        let status = if h == 0 {
+            Status::Blocked
+        } else {
+            Status::Cached
+        };
+        for i in 0..2_000u64 {
+            b.push(
+                &ev((base_hour() + h) * HOUR_US + i, 1, status, 5),
+                &wire("a.example"),
+            );
+        }
+    }
+    drop(b);
+    let not_blocked = Filter {
+        status: vec![Status::Blocked],
+        not: Not {
+            status: true,
+            ..Not::default()
+        },
+        ..Filter::default()
+    };
+    let page = search(tmp.path(), &not_blocked, 5_000, None).unwrap();
+    assert_eq!(page.rows.len(), 2_000);
+    assert!(page.rows.iter().all(|r| r.status == Status::Cached));
+    assert_eq!(
+        page.stats.blocks_read, 1,
+        "the all-blocked block is skipped from its header"
+    );
+    let e = estimate(tmp.path(), &not_blocked).unwrap();
+    assert_eq!((e.segments, e.rows), (1, 2_000));
+    // Both statuses listed: nothing left, and no block is read.
+    let neither = Filter {
+        status: vec![Status::Blocked, Status::Cached],
+        not: Not {
+            status: true,
+            ..Not::default()
+        },
+        ..Filter::default()
+    };
+    let page = search(tmp.path(), &neither, 10, None).unwrap();
+    assert_eq!((page.rows.len(), page.stats.blocks_read), (0, 0));
+}
+
 /// REQ: AGT-012 — the estimate bounds what a search matches, from headers alone.
 #[test]
 fn agt_012_estimate_bounds_the_matches() {

@@ -24,6 +24,9 @@ use tracing::{debug, info, warn};
 
 use crate::devices::{Lease, Leases};
 
+/// How often the routers in effect are compared with the ones last read (ADR-181).
+const CHANGE_CHECK: Duration = Duration::from_secs(5);
+
 /// Most bytes one answer may have.
 const MAX_ANSWER: u64 = 16 << 20;
 
@@ -59,9 +62,36 @@ fn secret(path: Option<&telltale_config::SafeString>) -> Result<Option<String>, 
     path.map(|p| {
         std::fs::read_to_string(p.as_str())
             .map(|s| s.trim().to_owned())
-            .map_err(|e| format!("{}: {e}", p.as_str()))
+            .map_err(|e| {
+                // REQ: T8.2 (ADR-181) — after a restore elsewhere or a failover the key isn't
+                // on this node: say so, and what puts it back for either kind of router.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    format!(
+                        "{}: the key file isn't on this node (put the file there; for a router made in the UI, enter the key again on the node that takes configuration changes)",
+                        p.as_str()
+                    )
+                } else {
+                    format!("{}: {e}", p.as_str())
+                }
+            })
     })
     .transpose()
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — the routers this node holds back (a key file it won't send for
+/// them), by name, with why: each is logged when it is first held or its reason changes, not at
+/// every round. Returns the ones to log.
+fn held_now(
+    held: &mut HashMap<String, String>,
+    now: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let fresh: Vec<(String, String)> = now
+        .iter()
+        .filter(|(n, why)| held.get(n) != Some(why))
+        .cloned()
+        .collect();
+    *held = now.into_iter().collect();
+    fresh
 }
 
 fn base64(input: &[u8]) -> String {
@@ -237,6 +267,19 @@ pub(crate) fn opnsense_leases(v: &Value) -> Seen {
         .collect()
 }
 
+/// `s` as one path segment: every byte but the unreserved ones (letters, digits, `-._~`)
+/// percent-encoded.
+fn path_segment(s: &str) -> String {
+    s.bytes().fold(String::new(), |mut out, b| {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(b));
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut out, format_args!("%{b:02X}"));
+        }
+        out
+    })
+}
+
 /// How to reach a UniFi Network API once signed in: the path prefix (`/proxy/network` on
 /// UniFi OS consoles) and the header that authenticates (`x-api-key`, or the login cookie).
 struct UnifiSession<'a> {
@@ -255,7 +298,14 @@ impl UnifiSession<'_> {
         client: &telltale_filter::fetch::Client,
         path: &str,
     ) -> Result<Value, String> {
-        let url = format!("{}{}{path}", self.base, self.prefix).replace("{site}", self.site);
+        // REQ: T8.2 (ADR-181) — security F6: the site goes into the path template only, as one
+        // percent-encoded segment, never into the address.
+        let url = format!(
+            "{}{}{}",
+            self.base,
+            self.prefix,
+            path.replace("{site}", &path_segment(self.site))
+        );
         let req = http::Request::get(url.as_str())
             .header(self.auth.0, self.auth.1.as_str())
             .header("accept", "application/json")
@@ -417,26 +467,79 @@ fn rebuild(parts: &HashMap<String, Polled>, view: &ArcSwap<Leases>) {
 /// Polls every `[[router]]` until `stop`. `resolver_pod`: a Helm resolver pod, which has the
 /// routers' settings but not their key files (ADR-120), logs its failures as info; the
 /// controller, which serves the names in the UI, warns.
+#[allow(clippy::too_many_lines)] // one round: which routers to hold back, the polls, the wait
 pub(crate) async fn run(
-    routers: Vec<RouterConfig>,
+    sources: Arc<crate::http::Sources>,
     view: Arc<ArcSwap<Leases>>,
     mut stop: tokio::sync::watch::Receiver<bool>,
     resolver_pod: bool,
 ) {
-    if routers.is_empty() {
-        return;
-    }
+    let routers_now = || sources.config.load().router.clone();
     let resolver: Arc<dyn telltale_filter::fetch::Resolve> =
         Arc::new(telltale_filter::fetch::SystemResolver);
     let mut parts: HashMap<String, Polled> = HashMap::new();
     let mut failing: HashMap<String, bool> = HashMap::new();
-    let interval = routers
-        .iter()
-        .map(|r| r.interval_secs.max(30))
-        .min()
-        .unwrap_or(300);
+    let mut held: HashMap<String, String> = HashMap::new();
+    // REQ: API-002, T8.2 (ADR-181) — F5: the routers the last sweep of key files saw.
+    let mut swept_for: Option<Vec<RouterConfig>> = None;
+    // The routers last read: one removed, or now pointing at another device (type, address,
+    // site), drops its answer, so no names linger from a router that's gone (ADR-181). Other
+    // changes (credentials, TLS, timing) keep it until the next answer replaces it.
+    let mut read_with: Vec<RouterConfig> = Vec::new();
     loop {
+        let routers = routers_now();
+        // REQ: API-002, T8.2 (ADR-181) — F5: at start, and after each change of the routers in
+        // effect (a write, a reload, a replicated version, a failover), the key files this node
+        // wrote that nothing names any more are removed; one that couldn't run yet (the state
+        // database not open) is tried again at the next check (correctness F3).
+        if swept_for.as_ref() != Some(&routers) && crate::router_secrets::sweep(&sources).await {
+            swept_for = Some(routers.clone());
+        }
+        let same_device = |a: &RouterConfig, b: &RouterConfig| {
+            a.name == b.name && a.kind == b.kind && a.url == b.url && a.site == b.site
+        };
+        let kept = |n: &str| {
+            routers
+                .iter()
+                .any(|r| r.name.as_str() == n && read_with.iter().any(|w| same_device(w, r)))
+        };
+        parts.retain(|n, _| kept(n));
+        failing.retain(|n, _| kept(n));
+        read_with.clone_from(&routers);
+        let interval = routers
+            .iter()
+            .map(|r| r.interval_secs.max(30))
+            .min()
+            .unwrap_or(300);
+        // REQ: API-002, T8.2 (ADR-181) — the use-time rule, worked out for this round: a router
+        // whose key file this node won't send for it isn't polled, and keeps no names. If the
+        // check can't run, none with a key file is polled (fails closed).
+        let check = {
+            let s = Arc::clone(&sources);
+            tokio::task::spawn_blocking(move || crate::router_secrets::UseCheck::load(&s))
+                .await
+                .unwrap_or_default()
+        };
+        let refused: Vec<(String, String)> = routers
+            .iter()
+            .filter_map(|r| check.refused(r).map(|why| (r.name.to_string(), why)))
+            .collect();
+        // Review round 2, R1: a warning on a replica too (once per router and reason): its
+        // Routers page shows the primary's status, so the log is where it says what it does. A
+        // Helm resolver pod has no keys by design (ADR-120): information there.
+        for (name, why) in held_now(&mut held, refused) {
+            if resolver_pod {
+                info!(router = %name, reason = %why, "router integration: not read on this node");
+            } else {
+                warn!(router = %name, reason = %why, "router integration: not read on this node");
+            }
+        }
         for r in &routers {
+            if held.contains_key(r.name.as_str()) {
+                parts.remove(r.name.as_str());
+                failing.remove(r.name.as_str());
+                continue;
+            }
             let client = if r.tls_insecure_skip_verify {
                 telltale_filter::fetch::Client::insecure(Arc::clone(&resolver))
             } else if let Some(p) = &r.tls_ca {
@@ -498,9 +601,23 @@ pub(crate) async fn run(
         } else {
             interval
         };
-        tokio::select! {
-            _ = stop.changed() => return,
-            () = tokio::time::sleep(Duration::from_secs(u64::from(wait))) => {}
+        // REQ: T8.2 (ADR-181) — until the next read, or sooner when the routers change.
+        let until = tokio::time::Instant::now() + Duration::from_secs(u64::from(wait));
+        while tokio::time::Instant::now() < until {
+            tokio::select! {
+                _ = stop.changed() => return,
+                () = tokio::time::sleep(CHANGE_CHECK.min(until - tokio::time::Instant::now())) => {}
+            }
+            // A sweep that couldn't run yet is tried again at each check, without a new round of
+            // polls (correctness F3; cheap while the state database isn't open).
+            if swept_for.as_ref() != Some(&read_with)
+                && crate::router_secrets::sweep(&sources).await
+            {
+                swept_for = Some(read_with.clone());
+            }
+            if routers_now() != read_with {
+                break;
+            }
         }
     }
 }
@@ -693,6 +810,34 @@ mod tests {
         assert_eq!(
             (phone.hostname.as_deref(), phone.offline),
             (Some("Old phone"), true)
+        );
+    }
+
+    /// REQ: API-002, T8.2 (ADR-181) — a router held back is logged when it is first held and when
+    /// its reason changes, not at every round; one no longer held is forgotten, so it is logged
+    /// again if it is held again.
+    #[test]
+    fn api_002_a_held_router_is_logged_once_per_reason() {
+        let mut held = HashMap::new();
+        let v = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect()
+        };
+        assert_eq!(
+            held_now(&mut held, v(&[("evil", "a")])),
+            v(&[("evil", "a")])
+        );
+        assert_eq!(held_now(&mut held, v(&[("evil", "a")])), v(&[]));
+        assert_eq!(
+            held_now(&mut held, v(&[("evil", "b")])),
+            v(&[("evil", "b")])
+        );
+        assert_eq!(held_now(&mut held, v(&[])), v(&[]));
+        assert_eq!(
+            held_now(&mut held, v(&[("evil", "b")])),
+            v(&[("evil", "b")])
         );
     }
 

@@ -61,12 +61,48 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: More than 5% of answers are SERVFAIL on {{ "{{" }} $labels.instance {{ "}}" }}.
+        {{- /* REQ: FLT-004, OBS-005 — the last success is over 48 h ago AND the latest refresh
+        failed, not merely old: a list's refresh_secs may exceed 48 h, so it ages between
+        refreshes without anything being wrong (a list disabled at runtime kept its last success
+        and aged the same way; it is no longer exported, see below). spec/06 §8
+        (OBS-010 rule examples) has "list fetch failing for > 48 h" as an example for the in-app
+        alert rules; this rule is the reading above, not that sentence. Not covered here: a list
+        that never succeeded (it has no last-success series; TelltaleDNSListNeverLoaded below
+        covers it) and a list held by max_shrink_percent (ADR-147: not a failure; only the in-app
+        list_failing rule reports it). A list disabled in the configuration isn't exported at
+        all (`render_lists` in crates/telltale/src/http.rs), so neither rule sees it. */}}
         - alert: TelltaleDNSListStale
-          expr: time() - telltale_list_last_success_timestamp_seconds{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 172800
+          expr: |
+            (time() - telltale_list_last_success_timestamp_seconds{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 172800)
+              and on(instance, list) (telltale_list_fetch_consecutive_failures{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 0)
           for: 30m
           labels: { severity: warning }
           annotations:
-            summary: Filter list {{ "{{" }} $labels.list {{ "}}" }} hasn't refreshed in over 48 hours.
+            summary: Filter list {{ "{{" }} $labels.list {{ "}}" }} hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
+        {{- /* REQ: FLT-004 (ADR-147) — the other half of the list alerts: a list that has never
+        succeeded exports its failure count but no last-success time, so TelltaleDNSListStale
+        (an age) can't see it, and it is the commonest real failure (a mistyped URL on a new list,
+        or an empty data directory after a pod restart). `unless on(instance, list)` keeps the
+        failing lists that have no last-success series for the same instance and list; `absent`
+        can't do that per label set. A list that succeeded once, however long ago, has the series
+        and belongs to TelltaleDNSListStale. `for: 1h`: the failure count is 0 until the first
+        refresh (its download attempts included) has failed, so a node still on its first fetch is
+        quiet; after that a failing URL or file list is retried 5, 10, 20 and 40 minutes after its
+        previous refresh started, then hourly, so with fast failures the refreshes start about 0,
+        5, 15, 35 and 75 minutes after the first one (refreshes that time out stretch the gaps)
+        and an hour of failures is four failed refreshes in a row. A network that is back in time
+        for the refresh at about 35 minutes never pages; one that returns later can fire the alert
+        at the hour, and it clears by itself at the next refresh (about 75 minutes). An inline
+        list (never fetched, so never exporting a last success) that fails to load is reported by
+        this rule too; the retry times above are not promised for it. */}}
+        - alert: TelltaleDNSListNeverLoaded
+          expr: |
+            (telltale_list_fetch_consecutive_failures{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 0)
+              unless on(instance, list) telltale_list_last_success_timestamp_seconds{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"}
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: Filter list {{ "{{" }} $labels.list {{ "}}" }} has never refreshed successfully on {{ "{{" }} $labels.instance {{ "}}" }} and its latest refresh failed (check its URL, path or rules).
         - alert: TelltaleDNSTelemetryDropping
           expr: sum by (instance) (rate(telltale_telemetry_dropped_total{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"}[10m])) > 0
           for: 30m

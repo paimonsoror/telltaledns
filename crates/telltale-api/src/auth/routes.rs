@@ -2,6 +2,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
@@ -15,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use telltale_store::state::User;
 use utoipa::ToSchema;
 
-use super::{Actor, Auth, NewSession, Presented, Principal, Role, Scope, Via, crypto};
+use super::{
+    Actor, Auth, NewSession, PasswordLogin, Presented, Principal, Role, Scope, Via, crypto,
+};
 use crate::problem::{Code, Problem};
 
 /// Header carrying the caller's reason for a change, stored in the audit log (AGT-005).
@@ -62,6 +66,96 @@ pub(crate) fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
         .map_err(|e| Problem::invalid(format!("request body: {}", e.body_text())))
 }
 
+/// REQ: API-004 (issue #63, ADR-175) — how often the hint about a proxy on this machine may be
+/// logged: at most once in this long, however many requests carry the header.
+const PROXY_HINT_EVERY_MS: u64 = 10 * 60 * 1000;
+
+/// REQ: API-004 (issue #63, ADR-175) — remembers when the hint about a same-host reverse proxy was
+/// last logged, so a busy proxy doesn't fill the log (the same shape as the federated reads' refusal
+/// line: one `AtomicU64`, no lock, no new dependency).
+#[derive(Debug)]
+pub(crate) struct ProxyHint {
+    /// The clock (milliseconds since `since`) of the last line, plus one: zero is "never".
+    last: AtomicU64,
+    /// The clock's origin: monotonic, from when this was made.
+    #[cfg_attr(test, allow(dead_code))]
+    since: Instant,
+    /// In tests the clock is this, moved on by hand ([`ProxyHint::advance`]): no test waits for
+    /// ten minutes or races the real clock.
+    #[cfg(test)]
+    skew_ms: AtomicU64,
+}
+
+impl ProxyHint {
+    pub(crate) fn new() -> Self {
+        Self {
+            last: AtomicU64::new(0),
+            since: Instant::now(),
+            #[cfg(test)]
+            skew_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// The clock the hint's interval is measured on.
+    #[cfg(not(test))]
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.since.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    #[cfg(test)]
+    fn now_ms(&self) -> u64 {
+        self.skew_ms.load(Ordering::Relaxed)
+    }
+
+    /// Whether the line is due at `now_ms`: the first time, then once the interval has passed.
+    /// Of any number of threads that find it due together, exactly one is told so.
+    fn due(&self, now_ms: u64) -> bool {
+        let stamp = now_ms.saturating_add(1);
+        let last = self.last.load(Ordering::Acquire);
+        if last != 0 && stamp.saturating_sub(last) < PROXY_HINT_EVERY_MS {
+            return false;
+        }
+        self.last
+            .compare_exchange(last, stamp, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Moves the clock on (tests).
+    #[cfg(test)]
+    pub(crate) fn advance(&self, by: std::time::Duration) {
+        let ms = u64::try_from(by.as_millis()).unwrap_or(u64::MAX);
+        self.skew_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+}
+
+/// `ip` is this machine: `127.0.0.0/8`, `::1`, or either as an IPv4-mapped address.
+fn is_loopback(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => a.is_loopback(),
+        IpAddr::V6(a) => a.is_loopback() || a.to_ipv4_mapped().is_some_and(|m| m.is_loopback()),
+    }
+}
+
+/// Which header a proxy on this machine named its client in, for the hint. (`X-Forwarded-Proto`
+/// alone says nothing about a client: a TLS terminator on this machine sends it, rightly.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardedBy {
+    /// `X-Forwarded-For`: the header this node reads a client's address from.
+    ForHeader,
+    /// Only the standard `Forwarded` header, which this node never reads.
+    ForwardedOnly,
+}
+
+fn forwarded_by(headers: &HeaderMap) -> Option<ForwardedBy> {
+    if headers.contains_key("x-forwarded-for") {
+        Some(ForwardedBy::ForHeader)
+    } else if headers.contains_key("forwarded") {
+        Some(ForwardedBy::ForwardedOnly)
+    } else {
+        None
+    }
+}
+
 /// The client's address. Behind a trusted proxy (`[api] trusted_proxies`: an ingress, a
 /// reverse proxy) it's the rightmost `X-Forwarded-For` entry that isn't itself a trusted
 /// proxy; entries further left are client-supplied and can be forged. Used for lockouts,
@@ -80,6 +174,33 @@ pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &He
             .any(|(n, l)| super::in_network(ip, *n, *l))
     };
     if !trusted(peer) {
+        // REQ: API-004 (issue #63, ADR-175) — a hint, and nothing else changes: the peer is still
+        // the client. A proxy on this machine that isn't in `trusted_proxies` shows up as a
+        // loopback peer that sends a forwarded-address header; every browser it serves then looks
+        // like loopback to the break-glass list. Only loopback peers: a LAN host that sends the
+        // header itself is not a proxy. The header is never logged (the sender wrote it).
+        // A proxy that sends only `Forwarded` gets another line: this node reads a client's address
+        // only from `X-Forwarded-For`, so listing that proxy would silence the hint and change
+        // nothing (every client would still be the proxy), which is the mistake it is for.
+        if is_loopback(peer)
+            && let Some(by) = forwarded_by(headers)
+            && auth.proxy_hint.due(auth.proxy_hint.now_ms())
+        {
+            match by {
+                ForwardedBy::ForHeader => tracing::info!(
+                    "requests from {peer} carry a forwarded-address header but `[api] trusted_proxies` \
+                     doesn't list that proxy, so client addresses are taken as the proxy's; list it to \
+                     restrict by client (see the Users and sign-in guide in docs/running.md)"
+                ),
+                ForwardedBy::ForwardedOnly => tracing::info!(
+                    "requests from {peer} carry a `Forwarded` header but no `X-Forwarded-For`; this node \
+                     reads client addresses only from `X-Forwarded-For`, so they are taken as the \
+                     proxy's whatever `[api] trusted_proxies` says: make the proxy send \
+                     `X-Forwarded-For`, then list it to restrict by client (see the Users and sign-in \
+                     guide in docs/running.md)"
+                ),
+            }
+        }
         return peer;
     }
     headers
@@ -417,6 +538,7 @@ pub struct Me {
 /// Whether setup is needed and who is signed in (public).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // the answer's shape: independent yes or no fields
 pub struct AuthStatus {
     /// No user exists yet: create the first admin with the setup token.
     pub setup_required: bool,
@@ -429,6 +551,12 @@ pub struct AuthStatus {
     /// Password sign-in is offered to this client (off with `disable_local_login`, except
     /// from the break-glass admin networks).
     pub local_login: bool,
+    // REQ: API-004 (issue #63, ADR-175)
+    /// Password sign-in is limited to admins on trusted networks (`[auth.oidc]
+    /// disable_local_login` is on). The same for every client: `localLogin` says whether the form
+    /// is offered to this one. The networks are not listed here; admins read them in
+    /// `GET /api/v1/users` (`passwordLogin`).
+    pub password_login_restricted: bool,
     /// OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`.
     pub oidc: Vec<OidcButton>,
 }
@@ -648,6 +776,18 @@ pub struct UpdateUser {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Listed<T> {
     pub items: Vec<T>,
+}
+
+/// The users, and how this node limits password sign-in (admins only).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserList {
+    pub items: Vec<UserInfo>,
+    // REQ: API-004 (issue #63, ADR-175)
+    /// Whether `disable_local_login` is on and which networks admins may use a password from, on
+    /// the node that answers. The networks are why this is here and not in the public
+    /// `GET /auth/status`.
+    pub password_login: PasswordLogin,
 }
 
 fn user_info(u: &User) -> UserInfo {
@@ -954,6 +1094,7 @@ pub(crate) async fn status(
             user,
             csrf_token: csrf,
             local_login: auth.local_login_allowed(ip),
+            password_login_restricted: auth.settings().disable_local_login,
             oidc,
         }))
     })
@@ -1920,14 +2061,15 @@ pub(crate) async fn revoke_user_token(
 
 /// Users (admin).
 ///
-/// Every user with role, status, and two-factor state.
+/// Every user with role, status, and two-factor state, and `passwordLogin`: whether password
+/// sign-in is limited to admins on trusted networks (`[auth.oidc] disable_local_login`) and which
+/// networks (`allowed_admin_networks`) on the node that answers. The public `GET /auth/status`
+/// carries only the yes or no.
 #[utoipa::path(get, path = "/api/v1/users", tag = "auth",
-    responses((status = 200, body = Listed<UserInfo>, description = "The result."), (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction).")))]
-pub(crate) async fn list_users(
-    State(auth): State<AuthState>,
-) -> Result<Json<Listed<UserInfo>>, Problem> {
+    responses((status = 200, body = UserList, description = "The result."), (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction).")))]
+pub(crate) async fn list_users(State(auth): State<AuthState>) -> Result<Json<UserList>, Problem> {
     blocking(move || {
-        Ok(Json(Listed {
+        Ok(Json(UserList {
             items: auth
                 .state()
                 .users()
@@ -1935,6 +2077,7 @@ pub(crate) async fn list_users(
                 .iter()
                 .map(user_info)
                 .collect(),
+            password_login: auth.settings().password_login(),
         }))
     })
     .await
@@ -2098,6 +2241,10 @@ pub(crate) async fn delete_user(
     })
     .await
 }
+
+#[cfg(test)]
+#[path = "proxy_hint_tests.rs"]
+mod proxy_hint_tests;
 
 #[cfg(test)]
 mod group_tests {

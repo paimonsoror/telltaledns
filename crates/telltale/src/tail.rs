@@ -152,6 +152,16 @@ pub(crate) fn combine(
         _ => Some(Box::new(Fanout(sinks))),
     }
 }
+/// REQ: OBS-003 (ADR-171) — which of a subscriber's filters keep what they do NOT match.
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // one independent flag per negatable filter
+struct Negated {
+    name: bool,
+    client: bool,
+    status: bool,
+    qtype: bool,
+}
+
 /// A subscriber's filters, resolved once.
 #[derive(Debug, Default)]
 pub(crate) struct Filter {
@@ -164,6 +174,7 @@ pub(crate) struct Filter {
     qtypes: Vec<u16>,
     upstream: Option<u16>,
     min_us: u32,
+    not: Negated,
     pub(crate) rate: u32,
 }
 
@@ -247,6 +258,12 @@ impl Filter {
             qtypes,
             upstream: p.upstream,
             min_us: p.min_latency_ms.unwrap_or(0).saturating_mul(1000),
+            not: Negated {
+                name: p.name_not.unwrap_or(false),
+                client: p.client_not.unwrap_or(false),
+                status: p.status_not.unwrap_or(false),
+                qtype: p.qtype_not.unwrap_or(false),
+            },
             rate: p.rate.unwrap_or(DEFAULT_RATE),
         })
     }
@@ -254,10 +271,12 @@ impl Filter {
     /// uf is scratch space reused across calls (no allocation per event).
     pub(crate) fn matches(&self, t: &TailEvent, buf: &mut String) -> bool {
         let e = &t.ev;
-        if self.client.is_some_and(|c| c != e.client_ip)
+        let n = self.not;
+        // Each negatable filter keeps the event when "it matches" differs from "negated".
+        if self.client.is_some_and(|c| (c == e.client_ip) == n.client)
             || self.group.is_some_and(|g| g != e.group)
-            || (!self.statuses.is_empty() && !self.statuses.contains(&e.status))
-            || (!self.qtypes.is_empty() && !self.qtypes.contains(&e.qtype))
+            || (!self.statuses.is_empty() && self.statuses.contains(&e.status) == n.status)
+            || (!self.qtypes.is_empty() && self.qtypes.contains(&e.qtype) == n.qtype)
             || self.upstream.is_some_and(|u| u != e.upstream)
             || e.t_total_us < self.min_us
         {
@@ -266,7 +285,11 @@ impl Filter {
         if let Some((text, wl)) = &self.workload {
             let v6 = std::net::Ipv6Addr::from(e.client_ip);
             let ip = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
-            if wl.load().get(ip).is_none_or(|h| *h.workload.text != **text) {
+            let inside = wl
+                .load()
+                .get(ip)
+                .is_some_and(|h| *h.workload.text == **text);
+            if inside == n.client {
                 return false;
             }
         }
@@ -275,13 +298,14 @@ impl Filter {
         };
         lower_dotted(&t.name, buf);
         let name = buf.as_str();
-        match m {
+        let hit = match m {
             NameMatch::Substring => name.contains(want.as_str()),
             NameMatch::Exact => name == want,
             NameMatch::Suffix => name == want || name.ends_with(&format!(".{want}")),
             NameMatch::Glob => glob(want.as_bytes(), name.as_bytes()),
             NameMatch::Regex => false,
-        }
+        };
+        hit != n.name
     }
 }
 
@@ -486,6 +510,81 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    // REQ: OBS-003, OBS-008 (ADR-171) — the live view keeps what a negated filter does not match.
+    #[test]
+    fn obs_008_negated_filters() {
+        let groups = vec!["default".to_owned()];
+        let e = event("ads.Example.com", Status::Blocked, 5);
+        let ok = |p: TailParams| {
+            Filter::parse(&p, &groups, &Arc::default())
+                .unwrap()
+                .matches(&e, &mut String::new())
+        };
+        let yes = Some(true);
+        assert!(!ok(params(|p| {
+            p.name = Some("example".into());
+            p.name_not = yes;
+        })));
+        assert!(ok(params(|p| {
+            p.name = Some("nope".into());
+            p.name_not = yes;
+        })));
+        assert!(!ok(params(|p| {
+            p.name = Some("example.com".into());
+            p.name_match = Some(NameMatch::Suffix);
+            p.name_not = yes;
+        })));
+        assert!(ok(params(|p| {
+            p.name = Some("example.com".into());
+            p.name_match = Some(NameMatch::Exact);
+            p.name_not = yes;
+        })));
+        assert!(!ok(params(|p| {
+            p.name = Some("*.example.c?m".into());
+            p.name_match = Some(NameMatch::Glob);
+            p.name_not = yes;
+        })));
+        assert!(!ok(params(|p| {
+            p.status = Some("blocked".into());
+            p.status_not = yes;
+        })));
+        assert!(ok(params(|p| {
+            p.status = Some("cached, forwarded".into());
+            p.status_not = yes;
+        })));
+        assert!(!ok(params(|p| {
+            p.qtype = Some("aaaa".into());
+            p.qtype_not = yes;
+        })));
+        assert!(ok(params(|p| {
+            p.qtype = Some("a".into());
+            p.qtype_not = yes;
+        })));
+        assert!(!ok(params(|p| {
+            p.client = Some("192.168.1.20".into());
+            p.client_not = yes;
+        })));
+        assert!(ok(params(|p| {
+            p.client = Some("192.168.1.21".into());
+            p.client_not = yes;
+        })));
+        // A flag without its filter changes nothing here (the API refuses it before this point).
+        assert!(ok(params(|p| p.name_not = yes)));
+        // Regex is still not available live, negated or not.
+        assert!(
+            Filter::parse(
+                &params(|p| {
+                    p.name = Some("x".into());
+                    p.name_match = Some(NameMatch::Regex);
+                    p.name_not = yes;
+                }),
+                &groups,
+                &Arc::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]

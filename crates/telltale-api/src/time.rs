@@ -27,6 +27,17 @@ pub fn parse_time(text: &str, now_s: u64) -> Result<u64, String> {
     })
 }
 
+/// REQ: OBS-024 (T13.1) — an end time the request may leave to the endpoint's default: `None`
+/// for no text, an empty one, or `now`, since whole-second `now` ([`parse_time`]) ends at the
+/// start of the second the request is in and leaves out what was logged in it (issue #69).
+/// Anything else is an exact end, as [`parse_time`] reads it.
+pub fn parse_until(text: Option<&str>, now_s: u64) -> Result<Option<u64>, String> {
+    match text.map(str::trim) {
+        None | Some("" | "now") => Ok(None),
+        Some(t) => parse_time(t, now_s).map(Some),
+    }
+}
+
 /// REQ: OBS-033 — like [`parse_time`], in Unix milliseconds: an RFC 3339 time keeps its
 /// milliseconds (a page cursor must not round to the second).
 pub fn parse_time_ms(text: &str, now_ms: u64) -> Result<u64, String> {
@@ -157,6 +168,40 @@ mod tests {
             assert!(parse_time(bad, now).is_err(), "{bad}");
         }
         assert_eq!(format_us(1_791_072_000_123_456), "2026-10-04T00:00:00.123Z");
+    }
+
+    // REQ: OBS-024 (T13.1, issue #69) — an end time the endpoint may leave to its default: no text,
+    // an empty or blank one, or `now` (spaces around it too) is `None`, so the simulation ends its
+    // window at its own default (the request's second included); anything else is exact, read as
+    // `parse_time` reads it, and a bad one is an error that names it. Both doors (`config_api`'s
+    // `simulate_opts` and `POST /simulate`) go through this function.
+    #[test]
+    fn obs_024_parse_until_leaves_now_to_the_default() {
+        let now = 1_791_072_000; // 2026-10-04T00:00:00Z
+        for default in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("now"),
+            Some(" now "),
+            Some("\tnow\n"),
+        ] {
+            assert_eq!(parse_until(default, now), Ok(None), "{default:?}");
+        }
+        assert_eq!(parse_until(Some("-1h"), now), Ok(Some(now - 3600)));
+        assert_eq!(parse_until(Some(" -1h "), now), Ok(Some(now - 3600)));
+        assert_eq!(parse_until(Some("-90s"), now), Ok(Some(now - 90)));
+        assert_eq!(
+            parse_until(Some("2026-10-04T00:00:00Z"), now),
+            Ok(Some(now))
+        );
+        assert_eq!(
+            parse_until(Some("2026-10-03T23:00:00-01:00"), now),
+            Ok(Some(now))
+        );
+        for bad in ["yesterday", "-24x", "2026-13-01T00:00:00Z", "-h", "nowish"] {
+            assert!(parse_until(Some(bad), now).is_err(), "{bad}");
+        }
     }
 
     // REQ: OBS-033 — a page cursor keeps its milliseconds.

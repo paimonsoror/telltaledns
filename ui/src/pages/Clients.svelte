@@ -16,6 +16,8 @@
   import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
   import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
   import { mode } from '../lib/mode.svelte';
+  import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import { plainHttpPage } from '../lib/plainHttp';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -31,6 +33,59 @@
   // REQ: T8.2, T8.3 (T8.6) — devices found by the routers' DHCP or mDNS.
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
+  // REQ: T8.2, API-002 (ADR-181) — the routers, added and changed here (admins). A key or
+  // password is pasted, never a file named: the server saves it to a new file under secrets/
+  // in the data folder of the node that took the change, and never shows it again. Changing the
+  // address, type, site or TLS settings needs it pasted again. Each row says whether the node
+  // that answered (on a replica, the primary) has its keys and uses them, or not (after a
+  // restore or a failover; a key in /run/secrets/ or /etc/telltale-secrets/ is used on any
+  // node). A key file a platform mounts, or a config file names, that isn't there is put back
+  // as a file, not pasted (review round 2, R7: `file_missing`).
+  type KeyStatus = { credentials?: Record<string, string> | null };
+  const kept = (field: string, what: string) => (_: Record<string, unknown>, __: string, e?: KeyStatus) => {
+    const s = e?.credentials?.[field];
+    if (s === 'saved') return `Saved. Type a new ${what} to replace it.`;
+    if (s === 'missing') return `Key missing: enter the ${what} again`;
+    if (s === 'file_missing') return `Key file missing: put the file there (or paste the ${what})`;
+    if (s === 'not_used') return `Not used: enter the ${what} again`;
+    return `Paste the ${what}`;
+  };
+  const routerStatus = (e: KeyStatus) => {
+    const s = Object.values(e.credentials ?? {});
+    if (s.length === 0) return null;
+    if (s.includes('missing')) return { text: 'key missing: enter it again', cls: 'bad' };
+    if (s.includes('file_missing')) return { text: 'key file missing: put the file there, or paste the key', cls: 'bad' };
+    if (s.includes('not_used')) return { text: 'key not used: enter it again', cls: 'bad' };
+    return { text: 'key saved', cls: 'ok' };
+  };
+  const routerFields: Field[] = [
+    { key: 'type', label: 'Type', type: 'select', options: ['unifi', 'opnsense'], initial: 'unifi' },
+    { key: 'url', label: 'Address', type: 'text', placeholder: 'https://192.168.1.1',
+      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. A pasted key is sent only over https://. Changing the address (or the type, site or TLS settings) needs the key pasted again.' },
+    { key: 'api_key', label: 'API key', type: 'secret', placeholderFor: kept('api_key', 'API key'),
+      help: 'UniFi Network 9+: Settings → Control Plane → Integrations. OPNsense: System → Access → Users → API keys. It is saved on the node that takes configuration changes, and not in backups.' },
+    { key: 'api_secret', label: 'API secret (OPNsense)', type: 'secret', placeholderFor: kept('api_secret', 'API secret') },
+    { key: 'username', label: 'Username (UniFi, instead of an API key)', type: 'text', placeholder: 'telltale', advanced: true,
+      help: 'A local UniFi user; read-only is enough.' },
+    { key: 'password', label: 'Password (UniFi)', type: 'secret', placeholderFor: kept('password', 'password'), advanced: true },
+    { key: 'site', label: 'Site (UniFi)', type: 'text', placeholder: 'default', advanced: true },
+    { key: 'tls_ca', label: 'Console certificate', type: 'text', placeholder: '/etc/telltale/udm.pem',
+      help: 'A self-signed console: a file with its certificate, so it is verified.' },
+    { key: 'tls_server_name', label: 'Name in the certificate', type: 'text', placeholder: 'unifi.local',
+      help: 'UniFi consoles name themselves unifi.local.' },
+    { key: 'tls_insecure_skip_verify', label: "Don't check the certificate", type: 'bool',
+      help: 'Works with any console, but anything on your network could pose as it and receive the key. With a pasted key, give the address as a number (https://192.168.1.1).' },
+    { key: 'interval_secs', label: 'Read every (seconds)', type: 'number', placeholder: '300', advanced: true },
+    { key: 'offline_days', label: 'Offline devices seen within (days, UniFi)', type: 'number', placeholder: '30', advanced: true,
+      help: '0: only the connected clients.' },
+  ];
+  // REQ: API-002, T8.2 (ADR-181) — the key files stay the server's: never sent back.
+  const routerFiles = ['api_key_file', 'api_secret_file', 'password_file'];
+  // REQ: API-002, T8.2 (ADR-181) — security F2: a page opened over plain HTTP from another
+  // machine sends what is pasted into it unencrypted; say so (the server can't tell).
+  const plainHttpNotice = plainHttpPage(location)
+    ? 'You are on a plain-HTTP page: a key you paste crosses the network unencrypted. Open this page over https first.'
+    : null;
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   // REQ: OBS-025 — what each device looks like, by address.
   let identities = $state<Record<string, S['DeviceIdentity']>>({});
@@ -260,7 +315,7 @@
         one, change it, or put the device in a group.
       </p>
       {#if found.length === 0}
-        <p class="empty">Nothing discovered yet. Connect your router (<code>[[router]]</code>) or set <code>[clients] mdns = true</code>.</p>
+        <p class="empty">Nothing discovered yet. Connect your router under <strong>Routers</strong>, below, or set <code>[clients] mdns = true</code>.</p>
       {:else}
         <div class="table-wrap">
           <table>
@@ -280,6 +335,10 @@
         </div>
       {/if}
     </section>
+    <ConfigEditor kind="router" path="routers" title="Routers" noun="router" fields={routerFields} role="admin"
+      summary={(d) => `${String(d.type ?? '')} · ${String(d.url ?? '')}`}
+      status={routerStatus} omit={routerFiles} notice={plainHttpNotice}
+      onchanged={load} />
   {/if}
   </TabPanel>
   {#if rhythmFor}

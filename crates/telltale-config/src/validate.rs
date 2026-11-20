@@ -1226,6 +1226,11 @@ fn oidc(o: &crate::OidcConfig, r: &mut Report<'_>) {
             "needs at least one [[auth.oidc.provider]]: otherwise only break-glass admins could sign in",
         );
     }
+    // REQ: API-004 (issue #63) — no address may then use a password: with the provider down,
+    // nobody can sign in (the way back is a config edit and a restart).
+    if o.disable_local_login && o.allowed_admin_networks.is_empty() {
+        r.warn("auth.oidc.allowed_admin_networks: empty while disable_local_login is on, so nobody can sign in with a password if the provider is down");
+    }
     let mut ids = HashSet::new();
     for (n, p) in o.provider.iter().enumerate() {
         let at = format!("auth.oidc.provider[{n}]");

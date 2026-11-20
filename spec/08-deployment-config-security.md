@@ -3,6 +3,8 @@
 ## 1. Recommendation: container-first everywhere
 **Decision (ADR-004):** the primary artifact is a multi-arch OCI image, used **both** in Kubernetes and on a Raspberry Pi (Docker/Podman). The static binary is a by-product of the same build and is published too, but its support tier is "secondary".
 
+*Amended by ADR-176 (2026-11-18): on a Raspberry Pi or Linux machine the docs recommend the native install; what is built, tested and released, and the tiers, are unchanged.*
+
 Why this is the right path:
 - **One artifact, one test matrix.** The image is `FROM scratch` + one static musl binary + a compact zoneinfo (ADR-169; no CA bundle: every TLS client uses the compiled-in Mozilla roots, ADR-168), about 10–15 MiB. A container adds roughly no runtime overhead for a network daemon (host networking on the Pi avoids NAT entirely).
 - **Pi upgrades become `docker compose pull && up -d`**, with trivial rollback by tag. That avoids distro/glibc drift (the reason Pi-hole needs per-OS install scripts, and Technitium needs a matching .NET runtime).
@@ -106,7 +108,7 @@ services:
      - JIT provisioning, optional `require_verified_email`, and back-channel/RP-initiated logout.
      - The ID token is validated (iss/aud/exp/nonce, JWKS rotation). Sessions are local after login, so the IdP isn't needed per request.
      - Clustered nodes share the OIDC config via replication. Each node's redirect URI must be registered, or a single canonical `public_url` is used.
-     - Optional `oidc.disable_local_login` keeps one break-glass local admin usable only from `allowed_admin_networks`.
+     - Optional `oidc.disable_local_login` keeps one break-glass local admin usable only from `allowed_admin_networks` (default: private networks and loopback, so the form stays visible on a LAN; `[]` turns password sign-in off for everyone; start-up warns when the list includes whole networks (a range of more than one address; a list of this machine and single hosts is information), even if a provider can't be set up; behind a proxy, loopback means the client only with `[api] trusted_proxies` set, ADR-034).
   - LDAP is a non-goal (API-009).
 - **RBAC roles:** `viewer` (dashboards, query log subject to privacy level), `operator` (pause, flush cache, manage lists/clients/groups), `admin` (everything incl. users, cluster, upstreams). A `family` role (P1) can only pause or unpause specific groups.
 - **First run:** no default password. A one-time setup token is printed to logs / available via `telltale ctl setup-token`; the Helm chart can set a bootstrap admin from a Secret.

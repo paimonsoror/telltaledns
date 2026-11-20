@@ -154,11 +154,19 @@ match = ["10.0.5.0/24"]       # no groups: its network's group, else "default"</
 <section id="router">
   <h2>Names from your router and mDNS</h2>
   <p>Your router's DHCP hands out addresses; TelltaleDNS can read its client list, so devices show up by name without any typing.</p>
+  <p><b>In the UI</b> (admins): Clients → Discovered → <b>Routers</b> → Add router. Pick UniFi or OPNsense, give its <code>https://</code> address, and paste the API key. TelltaleDNS saves it to a new file only it can read, under <code>secrets/</code> in the data folder, and never shows it again; the row says <b>key saved</b>. Changing the address, the type, the site, or the TLS settings needs the key typed again. Changes apply within 5 seconds after the reads in progress end (a removed router's names go after the next round of reads), without a restart.</p>
+  <ul>
+    <li><b>Only administrators</b> change routers (their own sign-in or an admin API token; agent tokens can't). Others see them without their key files or user names.</li>
+    <li><b>Paste the key, don't name a file.</b> A key kept in a Docker or Kubernetes secret is named in the configuration file instead. A pasted key needs an <code>https://</code> address (or a loopback one), and with <b>Don't check the certificate</b> the address as a number (<code>https://192.168.1.1</code>), not a host name. Open the UI over <code>https://</code> to paste a key: on a plain-HTTP page from another machine, the editor warns that the key crosses the network unencrypted.</li>
+    <li><b>A pasted key stays on the node that saved it</b>, and isn't in backups. After a restore on another machine, or a failover to another primary, the router says <b>key missing: enter it again</b> until you paste it on the node that takes configuration changes. A copy of the whole data folder or a volume snapshot does hold the keys: keep it private, and encrypt the volume.</li>
+    <li><b>In a cluster of native nodes,</b> a replica, or a primary promoted after a failover, reads a router from the primary's configuration file only when its key files are in <code>/run/secrets/</code> or <code>/etc/telltale-secrets/</code> on that node, as in the example below (keys in <code>/etc/telltale/</code>, as earlier versions showed, aren't read there: move them, such as to <code>/etc/telltale-secrets/firewall/api_secret</code>). Otherwise it logs a warning saying why and what to do. A router changed in the UI may name only a key pasted there or the very key file and address the configuration file gives it: an override that kept the file's key (in those folders or anywhere else) is left out (with a warning) once the file moves or removes the router, and isn't shared with the other nodes. One that names another file in the data folder's <code>secrets/</code> (restored or edited by hand) stays in place of the file's router but isn't read, also with a warning. <b>A replica's Routers page shows the primary's status</b> (its own only while the primary can't be reached): what a replica does is in its log. With the Helm chart nothing changes.</li>
+  </ul>
+  <p>Or in the configuration file:</p>
 <pre><code>[[router]]
 name = "udm"
 type = "unifi"                         # UniFi OS consoles and the Network application
 url = "https://192.168.1.1"
-api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
+api_key_file = "/etc/telltale-secrets/udm/api_key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
 tls_ca = "/etc/telltale/udm.pem"       # the console's own certificate (self-signed)
 tls_server_name = "unifi.local"        # the name in it
 
@@ -166,18 +174,18 @@ tls_server_name = "unifi.local"        # the name in it
 name = "firewall"
 type = "opnsense"
 url = "https://opnsense.lan"
-api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
-api_secret_file = "/etc/telltale/opn-secret"</code></pre>
+api_key_file = "/etc/telltale-secrets/firewall/api_key"     # System → Access → Users → API keys
+api_secret_file = "/etc/telltale-secrets/firewall/api_secret"</code></pre>
   <ul>
     <li><b>UniFi</b> gives the connected clients and the offline ones it saw in the last 30 days (<code>offline_days</code>; 0 for connected ones only), at their last address, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
     <li><b>A self-signed UniFi console:</b> save its certificate as <code>tls_ca</code> (<code>openssl s_client -connect 192.168.1.1:443 &lt;/dev/null | openssl x509 &gt; udm.pem</code>). It names <code>unifi.local</code>, not the address you reach it at, so set <code>tls_server_name</code> to that name. The console is then verified, and only that certificate is trusted.</li>
-    <li>Credentials stay in files. Routers are read every <code>interval_secs</code> (300). Changes to <code>[[router]]</code> need a restart.</li>
+    <li>Credentials stay in files (a key pasted in the UI is saved to one). Routers are read every <code>interval_secs</code> (300). Routers in the configuration file apply at start and on reload (<code>SIGHUP</code>); ones added or changed in the UI apply within 5 seconds after the reads in progress end. Keep key files in <code>/etc/telltale-secrets/&lt;router&gt;/</code> (mode 0600) or <code>/run/secrets/</code>.</li>
   </ul>
   <p><b>mDNS:</b> phones, speakers, printers, and NAS boxes announce names like <code>Kitchen-HomePod.local</code>. To use them for devices you haven't named:</p>
 <pre><code>[clients]
 mdns = true</code></pre>
   <ul>
-    <li>Listen only: TelltaleDNS never sends mDNS, and it shares port 5353 with avahi. It needs to hear the LAN: a native install, the Pi bundle, or a pod with host networking. Changing it needs a restart.</li>
+    <li>Listen only: TelltaleDNS never sends mDNS, and it shares port 5353 with avahi. It needs to hear the LAN: a native install, the Docker Compose bundle, or a pod with host networking. Changing it needs a restart.</li>
     <li><b>Which name wins:</b> the name you gave, then the router's, then mDNS.</li>
     <li><b>In a cluster</b>, one node reading the router (or hearing mDNS) is enough: every node uses the names the others know, so resolver pods name devices the same way the primary does.</li>
     <li><b>Clients → Discovered</b> lists every device a router or mDNS found; naming one from there suggests the name it gave. <code>GET /api/v1/dhcp/leases</code> lists them too.</li>
@@ -303,7 +311,7 @@ exempt = ["127.0.0.0/8", "::1/128"]</code></pre>
       <tr><td>A device isn't in its VLAN's group</td><td>Check that it reaches TelltaleDNS with its own address, and that no <code>[[client]]</code> entry gives it other <code>groups</code> (those win over the network).</td></tr>
       <tr><td>The config is refused: a network in two groups</td><td>A CIDR can belong to one group only. Nested networks are fine.</td></tr>
       <tr><td>You can't edit a device in the UI</td><td>It's defined in a config file; files win. Change it there.</td></tr>
-      <tr><td>Router or mDNS names don't appear</td><td>Restart after changing <code>[[router]]</code> or <code>mdns</code>. mDNS needs host networking. For a self-signed UniFi console, set <code>tls_ca</code> and <code>tls_server_name</code>.</td></tr>
+      <tr><td>Router or mDNS names don't appear</td><td>A router whose row says <b>key missing</b> needs its key pasted again (on the node that takes configuration changes); one that says <b>key file missing</b> needs its key file put back where the configuration names it; one that says <b>key not used</b> has a key file this node doesn't send for it (the log says why). On a replica, the page shows the primary's status: the replica's log says what it does. <code>[[router]]</code> changes in the file apply on reload (<code>SIGHUP</code>); <code>mdns</code> needs a restart and host networking. For a self-signed UniFi console, set <code>tls_ca</code> and <code>tls_server_name</code>.</td></tr>
       <tr><td>A phone shows no maker</td><td>Phones use private Wi-Fi addresses, so the maker is unknown; the domains and name decide the guess.</td></tr>
       <tr><td>Queries through your router are refused</td><td>It's over the rate limit as one address: add it to <code>[ratelimit] exempt</code> or raise <code>queries</code>.</td></tr>
       <tr><td>Rebinding protection blocks a service you use</td><td>Add its domain to the group's <code>rebinding_allow</code>.</td></tr>

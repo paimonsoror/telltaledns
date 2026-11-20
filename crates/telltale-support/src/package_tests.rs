@@ -16,6 +16,7 @@ fn opts(level: Level, key: u8) -> Options {
         created_unix: 1_790_000_000,
         created: "2026-11-16T00:00:00Z".to_owned(),
         max_bytes: 20 * 1024 * 1024,
+        keyed_labels: false,
     }
 }
 

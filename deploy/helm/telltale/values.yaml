@@ -203,7 +203,10 @@ encrypted:
       dnsNames: []
 
 # The UI and API behind an Ingress (TLS). Also set [api] trusted_proxies in `config` to the
-# ingress's source network so sign-in lockouts and the audit log see client addresses.
+# ingress's source network (the ingress itself, never your LAN) so sign-in lockouts, the audit
+# log, and the break-glass networks (`disable_local_login`) see client addresses. Where the
+# ingress hides them (source NAT), address checks can't be trusted: use
+# `allowed_admin_networks = []` there.
 ingress:
   enabled: false
   className: ""
@@ -257,7 +260,8 @@ serviceMonitor:
   scrapeTimeout: 10s
   labels: {}
 
-# Default alerts: down, upstreams down, SERVFAIL rate, stale lists, dropped telemetry.
+# Default alerts: down, upstreams down, SERVFAIL rate, lists whose last good copy is over 48 hours old
+# and whose latest refresh failed, lists that have never loaded, dropped telemetry.
 prometheusRule:
   enabled: false
   labels: {}

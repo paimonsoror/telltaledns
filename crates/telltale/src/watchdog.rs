@@ -7,7 +7,9 @@
 //! probe name: answered NXDOMAIN without an upstream, kept out of the query log and analytics).
 //! A check that hasn't passed for `[watchdog] stall_secs` means the node is stuck: the dump is
 //! written, and with `action = "restart"` the process exits with status 70 for the supervisor
-//! to start it again, at most `max_restarts_per_hour` times an hour.
+//! to start it again, at most `max_restarts_per_hour` times an hour. A stall that finds that limit
+//! used up gets the dump, one error line, the same line once an hour while it lasts, one line when
+//! it ends by itself, and a counter (ADR-163, amended): the node is left running, but not silent.
 //!
 //! Nothing here touches the query path: no pipeline code, and nothing is allocated, locked, or
 //! read there.
@@ -135,6 +137,31 @@ pub(crate) trait Probes {
     fn listener(&mut self, wait: Duration) -> Option<bool>;
 }
 
+/// REQ: OPS-012 (ADR-163, amended) — the restart limit for the hour was used up when a stall began,
+/// so the watchdog leaves the node running: the numbers behind that decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Cap {
+    /// Restarts in the hour before the stall.
+    pub(crate) restarts: u32,
+    /// `max_restarts_per_hour`.
+    pub(crate) max: u32,
+}
+
+impl Cap {
+    /// What the dump's first line, its action line and the log all lead with.
+    pub(crate) const HEADLINE: &'static str = "restart cap reached; not restarting";
+
+    /// The numbers, for the action line and the log.
+    fn numbers(self) -> String {
+        format!(
+            "{} restart{} in the last hour, [watchdog] max_restarts_per_hour = {}",
+            self.restarts,
+            if self.restarts == 1 { "" } else { "s" },
+            self.max
+        )
+    }
+}
+
 /// Why a dump is written.
 #[derive(Debug, Clone)]
 pub(crate) struct Reason {
@@ -143,8 +170,8 @@ pub(crate) struct Reason {
     pub(crate) limit: Duration,
     /// The process exits after the dump.
     pub(crate) restart: bool,
-    /// Why it doesn't, when it could have.
-    pub(crate) note: Option<&'static str>,
+    /// Why it doesn't, when it could have: the restart limit for the hour is used up.
+    pub(crate) cap: Option<Cap>,
 }
 
 /// Writes the dump. A stub in tests.
@@ -160,7 +187,32 @@ pub(crate) enum Outcome {
     Dumped(Option<PathBuf>),
     /// A stall began: the dump is written (or couldn't be) and the process should exit.
     Restart(Option<PathBuf>),
+    /// REQ: OPS-012 (ADR-163, amended) — a stall began and the restart limit for the hour is used
+    /// up: the dump is written (or couldn't be), the node keeps running, and the log says it is
+    /// not being restarted.
+    CapReached {
+        dump: Option<PathBuf>,
+        cap: Cap,
+    },
+    /// REQ: OPS-012 (ADR-163, amended) — the stall that reached the limit is still there an hour
+    /// after the last word on it. No new dump (the rotation keeps only five, and a repeat would
+    /// push out the ones that show how it began).
+    StillCapped {
+        silent: Duration,
+        cap: Cap,
+        dump: Option<PathBuf>,
+    },
+    /// REQ: OPS-012 (ADR-163, amended) — the stall that reached the limit ended by itself: both
+    /// checks pass again, `after` the stall was first reported, when the node had already been
+    /// silent for `silent` (so it went about `silent + after` without answering).
+    Recovered {
+        after: Duration,
+        silent: Duration,
+    },
 }
+
+/// How often the log repeats that a node is still stuck after the restart limit was reached.
+pub(crate) const REPEAT_EVERY: Duration = Duration::from_secs(HOUR_SECS);
 
 /// The settings of this run.
 #[derive(Debug, Clone)]
@@ -190,6 +242,23 @@ pub(crate) struct Watchdog<P> {
     settings: Settings,
     /// A stall has been dealt with and no check has recovered since: no second dump.
     in_stall: bool,
+    /// REQ: OPS-012 (ADR-163, amended) — the stall now going on reached the restart limit.
+    capped: Option<Capped>,
+    /// Stalls of this run that reached the restart limit (a repeat of one is not another).
+    cap_episodes: u64,
+}
+
+/// A stall that found the restart limit used up, while it lasts.
+struct Capped {
+    /// When it was first reported.
+    since: Instant,
+    /// How long the node had already been silent then (at least `stall_secs`).
+    silent: Duration,
+    /// When the log last said it was still there.
+    said: Instant,
+    cap: Cap,
+    /// The dump written when it was first reported.
+    dump: Option<PathBuf>,
 }
 
 impl<P: Probes> Watchdog<P> {
@@ -200,6 +269,8 @@ impl<P: Probes> Watchdog<P> {
             tracker,
             settings,
             in_stall: false,
+            capped: None,
+            cap_episodes: 0,
         }
     }
 
@@ -215,22 +286,45 @@ impl<P: Probes> Watchdog<P> {
         publish_ages(&ages);
         let Some(stall) = self.tracker.stalled(now) else {
             self.in_stall = false;
-            return Outcome::Quiet;
+            // REQ: OPS-012 (ADR-163, amended) — a stall that had found the restart limit used up
+            // is over: say so once.
+            return match self.capped.take() {
+                Some(c) => Outcome::Recovered {
+                    after: now.saturating_duration_since(c.since),
+                    silent: c.silent,
+                },
+                None => Outcome::Quiet,
+            };
         };
         if self.in_stall {
-            return Outcome::Quiet;
+            // REQ: OPS-012 (ADR-163, amended) — a stall at the restart limit is not silent: the log
+            // says it is still there once an hour (monotonic time, so a clock step can't repeat it).
+            return match &mut self.capped {
+                Some(c) if now.saturating_duration_since(c.said) >= REPEAT_EVERY => {
+                    c.said = now;
+                    Outcome::StillCapped {
+                        silent: stall.silent,
+                        cap: c.cap,
+                        dump: c.dump.clone(),
+                    }
+                }
+                _ => Outcome::Quiet,
+            };
         }
         self.in_stall = true;
-        let allowed = recent_restarts(&self.settings.dir, unix) < self.settings.max_restarts;
+        let recent = recent_restarts(&self.settings.dir, unix);
+        let allowed = recent < self.settings.max_restarts;
         let restart = self.settings.restart && allowed;
-        let note = (self.settings.restart && !allowed)
-            .then_some("the restart limit for this hour is reached, so the node keeps running");
+        let cap = (self.settings.restart && !allowed).then_some(Cap {
+            restarts: recent,
+            max: self.settings.max_restarts,
+        });
         let why = Reason {
             stall,
             ages,
             limit: self.settings.stall,
             restart,
-            note,
+            cap,
         };
         let path = match evidence.dump(&why, unix) {
             Ok(p) => Some(p),
@@ -243,6 +337,19 @@ impl<P: Probes> Watchdog<P> {
         if restart {
             record_restart(&self.settings.dir, unix);
             Outcome::Restart(path)
+        } else if let Some(cap) = cap {
+            // REQ: OPS-012 (ADR-163, amended) — the node stays, and the log, the dump's first line
+            // and the counter say why. The decision is still made once per stall.
+            self.capped = Some(Capped {
+                since: now,
+                silent: stall.silent,
+                said: now,
+                cap,
+                dump: path.clone(),
+            });
+            self.cap_episodes += 1;
+            publish_cap(self.cap_episodes);
+            Outcome::CapReached { dump: path, cap }
         } else {
             Outcome::Dumped(path)
         }
@@ -292,15 +399,24 @@ struct Shared {
     /// Seconds since each check last passed; `u64::MAX`: not checked.
     ages: [AtomicU64; 2],
     last_action: AtomicU64,
+    /// REQ: OPS-012 (ADR-163, amended) — stalls that found the restart limit used up.
+    cap_reached: AtomicU64,
+}
+
+impl Shared {
+    const fn new() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            ages: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
+            last_action: AtomicU64::new(0),
+            cap_reached: AtomicU64::new(0),
+        }
+    }
 }
 
 fn shared() -> &'static Shared {
     static S: OnceLock<Shared> = OnceLock::new();
-    S.get_or_init(|| Shared {
-        enabled: AtomicBool::new(false),
-        ages: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
-        last_action: AtomicU64::new(0),
-    })
+    S.get_or_init(Shared::new)
 }
 
 fn publish_ages(ages: &[(Check, Duration)]) {
@@ -313,9 +429,22 @@ fn publish_action(unix: u64) {
     shared().last_action.store(unix, Ordering::Relaxed);
 }
 
+/// REQ: OPS-012 (ADR-163, amended) — how many stalls of this run found the restart limit used up
+/// (the watchdog's own count, stored: one thread writes it).
+fn publish_cap(episodes: u64) {
+    publish_cap_to(shared(), episodes);
+}
+
+fn publish_cap_to(s: &Shared, episodes: u64) {
+    s.cap_reached.store(episodes, Ordering::Relaxed);
+}
+
 /// REQ: OPS-012 — the watchdog's metrics.
 pub(crate) fn render(w: &mut PromWriter) {
-    let s = shared();
+    render_from(shared(), w);
+}
+
+fn render_from(s: &Shared, w: &mut PromWriter) {
     w.family(
         "telltale_watchdog_enabled",
         "gauge",
@@ -353,6 +482,16 @@ pub(crate) fn render(w: &mut PromWriter) {
         "telltale_watchdog_last_action_timestamp_seconds",
         &[],
         s.last_action.load(Ordering::Relaxed),
+    );
+    w.family(
+        "telltale_watchdog_restart_cap_reached_total",
+        "counter",
+        "Stalls of this run that found the restart limit for the hour used up, so the watchdog wrote its dump and left the node running. A node that is stuck cannot answer a scrape, so this shows after it recovers, or while only its UDP listener is stuck.",
+    )
+    .sample(
+        "telltale_watchdog_restart_cap_reached_total",
+        &[],
+        s.cap_reached.load(Ordering::Relaxed),
     );
 }
 
@@ -442,6 +581,8 @@ pub(crate) struct ThreadRow {
 /// What a dump holds.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Report {
+    /// REQ: OPS-012 (ADR-163, amended) — the restart limit was used up: the first line says so.
+    pub(crate) capped: bool,
     pub(crate) time: String,
     pub(crate) reason: Vec<String>,
     pub(crate) build: String,
@@ -456,7 +597,11 @@ pub(crate) struct Report {
 /// The dump as text.
 pub(crate) fn render_report(r: &Report) -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "TelltaleDNS watchdog dump");
+    if r.capped {
+        let _ = writeln!(s, "TelltaleDNS watchdog dump: {}", Cap::HEADLINE);
+    } else {
+        let _ = writeln!(s, "TelltaleDNS watchdog dump");
+    }
     let _ = writeln!(s, "time: {}", r.time);
     let _ = writeln!(s, "build: {}", r.build);
     let _ = writeln!(s, "uptime: {} s", r.uptime_secs);
@@ -551,8 +696,8 @@ pub(crate) fn parse_stat(stat: &str) -> Option<(char, u64, u64)> {
     ))
 }
 
-/// A few lines of `/proc/self/status` and the load average.
-fn process_lines() -> Vec<String> {
+/// A few lines of `/proc/self/status`, the load average, and what the runtime says of itself.
+fn process_lines(runtime: Option<&tokio::runtime::Handle>) -> Vec<String> {
     let mut v = Vec::new();
     if let Ok(t) = fs::read_to_string("/proc/self/status") {
         for l in t.lines() {
@@ -573,7 +718,25 @@ fn process_lines() -> Vec<String> {
     if let Ok(t) = fs::read_to_string("/proc/loadavg") {
         v.push(format!("load average: {}", t.trim()));
     }
+    if let Some(rt) = runtime {
+        v.push(runtime_line(rt));
+    }
     v
+}
+
+/// REQ: OPS-012 (ADR-174) — what the runtime says of itself: its workers, the tasks alive, and
+/// the tasks waiting in its global queue (where a task started from outside waits for a worker).
+/// They are atomic reads that spawn nothing and need no worker, so they answer for a stuck
+/// runtime: workers, tasks waiting and nothing running is a wedge at a glance, with the thread
+/// table showing where each worker is.
+pub(crate) fn runtime_line(rt: &tokio::runtime::Handle) -> String {
+    let m = rt.metrics();
+    format!(
+        "runtime workers: {}, tasks alive: {}, waiting in the global queue: {}",
+        m.num_workers(),
+        m.num_alive_tasks(),
+        m.global_queue_depth()
+    )
 }
 
 /// The mappings of the running executable (to turn an address into an offset in the file).
@@ -594,6 +757,8 @@ fn exe_maps() -> Vec<String> {
 pub(crate) struct Writer {
     dir: PathBuf,
     started: Instant,
+    /// The runtime the node serves on (its numbers go in the dump).
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 impl Evidence for Writer {
@@ -622,15 +787,19 @@ impl Writer {
             format!(
                 "action: the process exits with status {EXIT_STATUS} for its supervisor to restart"
             )
-        } else {
+        } else if let Some(cap) = why.cap {
             format!(
-                "action: the node keeps running ({})",
-                why.note.unwrap_or("[watchdog] action = \"dump\"")
+                "action: the node keeps running ({}: {})",
+                Cap::HEADLINE,
+                cap.numbers()
             )
+        } else {
+            "action: the node keeps running ([watchdog] action = \"dump\")".to_owned()
         });
         let log = crate::support_log::global().snapshot().lines;
         let skip = log.len().saturating_sub(LOG_LINES);
         Report {
+            capped: why.cap.is_some(),
             time: telltale_api::time::format_us(unix * 1_000_000),
             reason,
             build: format!(
@@ -641,7 +810,7 @@ impl Writer {
                 crate::build_info::CHANNEL
             ),
             uptime_secs: self.started.elapsed().as_secs(),
-            process: process_lines(),
+            process: process_lines(self.runtime.as_ref()),
             threads: thread_rows(),
             stacks: stacks(),
             maps: exe_maps(),
@@ -755,6 +924,7 @@ pub(crate) fn spawn(
         return;
     }
     note_previous_restart(&settings.dir, unix_now());
+    let runtime = handle.clone();
     let live = Live {
         handle,
         udp: udp_listener(cfg),
@@ -764,6 +934,7 @@ pub(crate) fn spawn(
     let mut writer = Writer {
         dir: settings.dir.clone(),
         started,
+        runtime: Some(runtime),
     };
     let mut watchdog = Watchdog::new(live, settings, started);
     let thread = std::thread::Builder::new()
@@ -801,31 +972,67 @@ pub(crate) fn run<P: Probes>(
                 return;
             }
         }
-        match watchdog.tick(Instant::now(), unix_now(), evidence) {
-            Outcome::Quiet => {}
-            Outcome::Dumped(path) => error!(
-                dump = ?path,
-                "the node stopped answering: the watchdog wrote its dump and the node keeps running"
-            ),
-            Outcome::Restart(path) => {
-                error!(
-                    dump = ?path,
-                    "the node stopped answering: the watchdog wrote its dump and restarts the process"
-                );
-                // The lines that say why reach the log files before the process ends.
-                crate::support_log::global().flush();
-                if !*stop.borrow() {
-                    exit(EXIT_STATUS);
-                    return;
-                }
+        let outcome = watchdog.tick(Instant::now(), unix_now(), evidence);
+        announce(&outcome);
+        if matches!(outcome, Outcome::Restart(_)) {
+            // The lines that say why reach the log files before the process ends.
+            crate::support_log::global().flush();
+            if !*stop.borrow() {
+                exit(EXIT_STATUS);
+                return;
             }
         }
     }
 }
 
+/// What the log says of a round. An ordinary `tracing` call from the watchdog's own thread: it
+/// needs nothing from the runtime, so it is said even while the runtime is stuck.
+pub(crate) fn announce(outcome: &Outcome) {
+    match outcome {
+        Outcome::Quiet => {}
+        Outcome::Dumped(path) => error!(
+            dump = ?path,
+            "the node stopped answering: the watchdog wrote its dump and the node keeps running"
+        ),
+        Outcome::Restart(path) => error!(
+            dump = ?path,
+            "the node stopped answering: the watchdog wrote its dump and restarts the process"
+        ),
+        // REQ: OPS-012 (ADR-163, amended) — one line when the limit is found used up, and one an
+        // hour while the stall lasts, so a node that stays stuck is not silent.
+        Outcome::CapReached { dump, cap } => error!(
+            dump = ?dump,
+            "{}: the node stopped answering and the watchdog has restarted it as often as it may ({}); \
+             it keeps running and still does not answer",
+            Cap::HEADLINE,
+            cap.numbers()
+        ),
+        Outcome::StillCapped { silent, cap, dump } => error!(
+            dump = ?dump,
+            "{}: the node has not answered for {} s ({} when this began). The watchdog decides once \
+             per stall and does not look again; this line repeats every hour while it lasts",
+            Cap::HEADLINE,
+            silent.as_secs(),
+            cap.numbers()
+        ),
+        // The watchdog reports a stall only once it has lasted `stall_secs`, so the time since the
+        // report understates the outage by that much: both are said.
+        Outcome::Recovered { after, silent } => info!(
+            "the node answers again: the stall the watchdog reported at its restart limit ended by \
+             itself {} s after it was reported (it had not answered for {} s then, so about {} s \
+             without answering)",
+            after.as_secs(),
+            silent.as_secs(),
+            after.saturating_add(*silent).as_secs()
+        ),
+    }
+}
+
 /// REQ: OPS-012 — test builds only (`--features wedge-test`): `TT_WEDGE_AFTER_SECS=n` blocks
 /// every runtime worker `n` seconds after start, as a deadlock would. The UDP workers have threads
-/// of their own and keep answering, so the runtime check is the one that fails.
+/// of their own and keep answering, so the runtime check is the one that fails. The wedge lasts an
+/// hour unless `TT_WEDGE_SECS=m` says otherwise: then it ends `m` seconds after it began and the
+/// node comes back by itself (the restart cap's recovery line, ADR-163).
 #[cfg(feature = "wedge-test")]
 pub(crate) fn wedge_for_test(handle: &tokio::runtime::Handle) {
     let Some(after) = std::env::var("TT_WEDGE_AFTER_SECS")
@@ -834,21 +1041,37 @@ pub(crate) fn wedge_for_test(handle: &tokio::runtime::Handle) {
     else {
         return;
     };
+    let hold = std::env::var("TT_WEDGE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(3600);
     let handle = handle.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(after));
-        // More tasks than any runtime has workers: each one holds a worker.
+        let until = wedge_deadline(Instant::now(), hold);
+        // More tasks than any runtime has workers: each one holds a worker until `until`, and the
+        // ones still queued then find it passed and end at once.
         for _ in 0..512 {
-            handle.spawn(async { wedge_here() });
+            handle.spawn(async move { wedge_here(until) });
         }
     });
+}
+
+/// When a wedge that begins at `now` and lasts `hold_secs` ends. `TT_WEDGE_SECS` comes from the
+/// environment, so a value too big for an `Instant` is a very long wedge (a hundred years), never
+/// a panic (final review F5).
+#[cfg(feature = "wedge-test")]
+fn wedge_deadline(now: Instant, hold_secs: u64) -> Instant {
+    now.checked_add(Duration::from_secs(hold_secs))
+        .or_else(|| now.checked_add(Duration::from_hours(100 * 365 * 24)))
+        .unwrap_or(now)
 }
 
 /// Where the blocked workers sit, so a stack in a dump can be recognised.
 #[cfg(feature = "wedge-test")]
 #[inline(never)]
-fn wedge_here() {
-    std::thread::sleep(Duration::from_secs(3600));
+fn wedge_here(until: Instant) {
+    std::thread::sleep(until.saturating_duration_since(Instant::now()));
 }
 
 /// The newest dump's time, from the files (0 for none).

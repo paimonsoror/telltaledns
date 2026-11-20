@@ -35,7 +35,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, watch};
 use tracing::{debug, info, warn};
 
-use crate::node::{Identity, JoinRequest, JoinResponse, Role};
+use crate::node::{Identity, JoinRequest, JoinResponse, Role, TrustStep, TrustVersion};
 use crate::pki::CLUSTER_NAME;
 use crate::sync::{BlobRef, BlobStore, ClusterManifest, Signed};
 use crate::token::Token;
@@ -60,6 +60,12 @@ const REPROBE_MIN: Duration = Duration::from_millis(100);
 const REPROBE_MAX: Duration = Duration::from_millis(400);
 /// A look at the primary that takes longer than this counts as no answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How often [`mesh`] runs: the sweep for stray peers on every node, and, in automatic failover,
+/// the streams to the other voters. Tests look sooner.
+#[cfg(not(test))]
+const MESH_EVERY: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const MESH_EVERY: Duration = Duration::from_millis(100);
 
 fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
@@ -77,6 +83,33 @@ fn defers_to_git(
         && others
             .into_iter()
             .any(|(git, up, eligible)| git && up && eligible)
+}
+
+/// REQ: CLU-001, CLU-005, CLU-008 (ADR-173) — whether a node keeps a peer that has gone silent
+/// in its member list (and so in `telltale_cluster_peer_up`, as down). The primary keeps every
+/// peer: each one is meant to dial it. A replica keeps the primary (`peer_primary`: its Hello
+/// said so, or the last version this node applied names it, see [`applied_primary`]), and under
+/// automatic failover the other voters (`voter_link`: [`mesh`] keeps a stream to each). Any
+/// other peer was a passing stream, such as one replica's fallback to another while the primary
+/// didn't answer, and is forgotten.
+fn keeps_silent_peer(self_primary: bool, peer_primary: bool, voter_link: bool) -> bool {
+    self_primary || peer_primary || voter_link
+}
+
+/// REQ: CLU-001 (ADR-173) — the node the last version this node applied names as the primary
+/// (`applied.json`, which replication writes next to the identity), if any. A member's `primary`
+/// flag comes from its Hello and stays as it was when the stream opened, so a node promoted on a
+/// stream that was already open still reads as a replica (see [`Cluster::defers_to_git_node`]);
+/// the version it publishes next names it, and a replica applies that one.
+fn applied_primary(id: &Identity) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Applied {
+        #[serde(default)]
+        primary: String,
+    }
+    let bytes = std::fs::read(id.dir.join("applied.json")).ok()?;
+    let applied: Applied = serde_json::from_slice(&bytes).ok()?;
+    (!applied.primary.is_empty()).then_some(applied.primary)
 }
 
 /// REQ: CLU-005 (ADR-154) — how long a node leaves the election to a Git-managed node while no
@@ -1026,6 +1059,78 @@ impl Cluster {
         };
         let s = s.trim();
         (!s.is_empty()).then(|| s.to_owned())
+    }
+
+    /// REQ: CLU-001, CLU-005, CLU-008 (ADR-173) — forgets the peers this node has no standing
+    /// link to once their stream has ended and they've been silent past [`Member::up`]'s window
+    /// (see [`keeps_silent_peer`]); a peer it has a stream open to is never forgotten. Without
+    /// this, a replica that streamed to another replica for a while (it fell back to it while
+    /// the primary didn't answer, or the other dialed in) kept it for good as a down peer, and
+    /// `TelltaleDNSClusterPeerDown` fired on both of them. `id` is the current identity
+    /// (failover mode and registry). Returns the IDs forgotten. With automatic failover and a
+    /// registry that can't be read, it forgets nothing.
+    pub fn forget_stray_peers(&self, id: &Identity) -> Vec<String> {
+        self.forget_stray_peers_at(id, now_ms())
+    }
+
+    fn forget_stray_peers_at(&self, id: &Identity, now: u64) -> Vec<String> {
+        let primary = self.is_primary();
+        // REQ: CLU-001, CLU-005 (ADR-173) — what a replica keeps is read, once, before `members`
+        // is locked (the registry and `applied.json` are files). The primary keeps everyone and
+        // reads nothing.
+        let (voters, named) = if primary {
+            (Vec::new(), None)
+        } else {
+            let registry = id.registry();
+            let all = crate::failover::voters_in(&registry);
+            if id.meta.failover == "auto" && registry.len() < 2 {
+                // Fails closed: a registry that lists no node but this one couldn't be read (a
+                // replica always lists the primary), so who the voters are isn't known, and a
+                // voter must not be forgotten for that. `registry()` falls back to this node
+                // alone, which reads as "automatic failover isn't active".
+                return Vec::new();
+            }
+            let voters = if crate::failover::active_among(id, &all) {
+                all
+            } else {
+                Vec::new()
+            };
+            (voters, applied_primary(id))
+        };
+        // REQ: CLU-001, CLU-008 (ADR-173) — a peer with a stream still open is never forgotten:
+        // `connected` is one flag per node, cleared by whichever of its streams ends, and a
+        // heartbeat never adds a member that is missing (only a Hello does), so forgetting a
+        // peer that is still talking would drop it from the list and the metrics for good.
+        let open = self.reachable_peers();
+        let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+        let gone: Vec<String> = members
+            .values()
+            .filter(|m| {
+                !m.connected
+                    && !m.up(now)
+                    && !open.contains(&m.node_id)
+                    && !keeps_silent_peer(
+                        primary,
+                        m.primary || named.as_deref() == Some(m.node_id.as_str()),
+                        voters.contains(&m.node_id),
+                    )
+            })
+            .map(|m| m.node_id.clone())
+            .collect();
+        for g in &gone {
+            members.remove(g);
+        }
+        drop(members);
+        // Not under the lock. At `info`: a node leaving this list is what an operator looking at
+        // a replica's metrics or peer list (`/api/v1/system/info`) wants an explanation for.
+        for g in &gone {
+            info!(
+                peer = %g,
+                "cluster: forgot a peer this node keeps no link to: its stream has ended and it \
+                 has been silent past the up window"
+            );
+        }
+        gone
     }
 
     /// Drops ephemeral members not heard from for `ttl` from the registry (primary only, CLU-009).
@@ -2291,15 +2396,26 @@ impl Cluster {
     }
 }
 
-/// Reads frames from `body` into `cluster` until it ends.
+/// Reads frames from `body` into `cluster` until it ends, or until `switch` (when given) is
+/// notified; either way the peer is marked disconnected.
 async fn read_frames(
     cluster: &Arc<Cluster>,
     body: Incoming,
     mut peer: Option<String>,
     via: &'static str,
     echo: &EchoSlot,
+    switch: Option<&Notify>,
 ) -> Result<(), String> {
-    let result = read_loop(cluster, body, &mut peer, via, echo).await;
+    // REQ: CLU-001, CLU-008 (ADR-173) — a stream the caller ends (a replica moving back to the
+    // primary) is marked disconnected too: ending it from outside used to skip the clean-up
+    // below, and the replica it had been on stayed connected (and listed, down) for good.
+    let result = match switch {
+        Some(s) => tokio::select! {
+            r = read_loop(cluster, body, &mut peer, via, echo) => r,
+            () = s.notified() => Ok(()),
+        },
+        None => read_loop(cluster, body, &mut peer, via, echo).await,
+    };
     // Streams that ended can't carry RPCs any more.
     cluster
         .outbox
@@ -2560,8 +2676,15 @@ async fn handle(
                 Some(id.clone()),
             ));
             tokio::spawn(async move {
-                if let Err(e) =
-                    read_frames(&c, req.into_body(), Some(id.clone()), "inbound", &echo).await
+                if let Err(e) = read_frames(
+                    &c,
+                    req.into_body(),
+                    Some(id.clone()),
+                    "inbound",
+                    &echo,
+                    None,
+                )
+                .await
                 {
                     debug!(peer = %id, "cluster stream ended: {e}");
                 }
@@ -2790,16 +2913,23 @@ async fn join_one(
     serde_json::from_slice(&bytes).map_err(|e| format!("{url}: bad join response: {e}"))
 }
 
-/// In automatic failover, keeps a stream to every other voter (ADR-056): votes need one.
-/// Of each pair, the node with the lower ID dials; the other side gets an inbound stream.
+/// The loop that runs every `MESH_EVERY` on every node, whatever the failover mode:
+/// - REQ: CLU-001, CLU-008 (ADR-173) — forgets the peers this node keeps no link to once they're
+///   silent ([`Cluster::forget_stray_peers`]);
+/// - REQ: CLU-005 (ADR-056) — in automatic failover, keeps a stream to every other voter: votes
+///   need one. Of each pair, the node with the lower ID dials; the other side gets an inbound
+///   stream.
 pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     let dialing: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
     loop {
         tokio::select! {
             _ = stop.changed() => return,
-            () = tokio::time::sleep(Duration::from_secs(3)) => {}
+            () = tokio::time::sleep(MESH_EVERY) => {}
         }
         let id = cluster.identity.reload();
+        // REQ: CLU-001, CLU-008 (ADR-173) — the peers this node keeps no link to leave its member
+        // list once they're silent, in any failover mode.
+        cluster.forget_stray_peers(&id);
         let Ok(cfg) = client_config(&id) else {
             continue;
         };
@@ -3013,10 +3143,15 @@ async fn stream_once(
             node: server_id.clone(),
         });
     }
-    let result = tokio::select! {
-        done = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo) => done,
-        () = switch.notified() => Ok(()),
-    };
+    let result = read_frames(
+        &cluster,
+        r.into_body(),
+        server_id,
+        "outbound",
+        &echo,
+        Some(&switch),
+    )
+    .await;
     writer.abort();
     cluster
         .connected
@@ -3055,14 +3190,46 @@ async fn futures_join_all<F: std::future::Future>(
 /// How long a failed fetch or apply waits before trying the same manifest again.
 const SYNC_RETRY: Duration = Duration::from_secs(2);
 
+/// REQ: CLU-001, CLU-005 (T5.4c) — checks a manifest's signature against the CAs this node
+/// trusts now (`ca.crt` on disk, which a CA rotation changes while the node runs), not the ones
+/// it started with. Every reader of the primary's manifests uses it: the replica's [`follow`],
+/// [`follow_trust`], and the witness.
+pub fn verify_now(cluster: &Cluster, signed: &Signed) -> Result<ClusterManifest, String> {
+    signed.verify(&cluster.identity.reload().ca_pem)
+}
+
 /// REQ: CLU-001 (T5.4c) — adopts the CAs a verified manifest says to trust (step by step,
 /// never dropping every CA this node trusts) and rebuilds TLS for new connections.
-pub fn adopt_manifest_trust(cluster: &Cluster, m: &ClusterManifest) {
+///
+/// REQ: CLU-001, CLU-005 (ADR-177) — in order only: nothing from a manifest of an older epoch
+/// than the one this node knows, nor from one older than the manifest it last took its CAs from
+/// (a replay, or a former primary's last manifest, still verifies). Returns `false` for such a
+/// manifest: it is older than one already taken, so it isn't applied either.
+pub fn adopt_manifest_trust(cluster: &Cluster, m: &ClusterManifest) -> bool {
     if m.ca_bundle.is_empty() {
-        return;
+        return true;
     }
-    match cluster.identity.adopt_trust(&m.ca_bundle) {
-        Ok(true) => {
+    let step = if m.epoch < cluster.role().1 {
+        Ok(TrustStep::Older)
+    } else {
+        let at = TrustVersion {
+            cluster_id: m.cluster_id.clone(),
+            epoch: m.epoch,
+            seq: m.seq,
+        };
+        cluster.identity.adopt_trust(&m.ca_bundle, &at)
+    };
+    match step {
+        Ok(TrustStep::Older) => {
+            // One line, at debug: a replay can repeat it as often as it likes.
+            debug!(
+                epoch = m.epoch,
+                seq = m.seq,
+                "cluster: not taking the CAs of an older manifest"
+            );
+            return false;
+        }
+        Ok(TrustStep::Changed) => {
             cluster.bump_cert_generation();
             let n = crate::pki::certs_of(&m.ca_bundle).len();
             info!(cas = n, "cluster: trusted CAs updated from the primary");
@@ -3072,9 +3239,10 @@ pub fn adopt_manifest_trust(cluster: &Cluster, m: &ClusterManifest) {
                 format!("{n} CA(s) trusted"),
             );
         }
-        Ok(false) => {}
+        Ok(TrustStep::Unchanged) => {}
         Err(e) => warn!("cluster: the primary's CA bundle was refused: {e}"),
     }
+    true
 }
 
 /// For nodes that don't apply configuration (witnesses): follows the primary's manifests only
@@ -3090,7 +3258,7 @@ pub async fn follow_trust(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>
         let Some(signed) = incoming.borrow_and_update().clone() else {
             continue;
         };
-        match signed.verify(&cluster.identity.reload().ca_pem) {
+        match verify_now(&cluster, &signed) {
             Ok(m) if m.cluster_id == cluster.identity.meta.cluster_id => {
                 adopt_manifest_trust(&cluster, &m);
             }
@@ -3130,7 +3298,7 @@ pub async fn follow<F, Fut>(
                 break;
             };
             // T5.4c — the trusted CAs change during a rotation: read them fresh.
-            let m = match signed.verify(&cluster.identity.reload().ca_pem) {
+            let m = match verify_now(&cluster, &signed) {
                 Ok(m) if m.cluster_id == cluster.identity.meta.cluster_id => m,
                 Ok(_) => {
                     warn!("ignoring a manifest from another cluster");
@@ -3143,8 +3311,9 @@ pub async fn follow<F, Fut>(
                     break;
                 }
             };
-            adopt_manifest_trust(&cluster, &m);
-            if !m.newer_than(epoch, seq) || m.epoch < cluster.role().1 {
+            // REQ: CLU-001 (ADR-177) — the CAs first, in order; one out of order isn't applied.
+            let in_order = adopt_manifest_trust(&cluster, &m);
+            if !in_order || !m.newer_than(epoch, seq) || m.epoch < cluster.role().1 {
                 break;
             }
             let t = tokio::time::Instant::now();
@@ -3223,3 +3392,7 @@ pub async fn follow<F, Fut>(
 #[cfg(test)]
 #[path = "net_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "net_trust_tests.rs"]
+mod trust_tests;

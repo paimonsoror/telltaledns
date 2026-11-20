@@ -86,6 +86,9 @@ pub enum Code {
     NodeIsPrimary,
     /// REQ: CLU-001 (ADR-155) — the node to remove is up: pass `force` to cut it off anyway.
     NodeIsUp,
+    /// REQ: AGT-003 (ADR-181) — the first request with this Idempotency-Key is still running:
+    /// retry after `Retry-After` for its answer.
+    ChangeInProgress,
 }
 
 impl Code {
@@ -126,6 +129,7 @@ impl Code {
             Self::DrillTargets => "https://telltaledns.dev/problems/drill_targets",
             Self::NodeIsPrimary => "https://telltaledns.dev/problems/node_is_primary",
             Self::NodeIsUp => "https://telltaledns.dev/problems/node_is_up",
+            Self::ChangeInProgress => "https://telltaledns.dev/problems/change_in_progress",
         }
     }
 
@@ -166,6 +170,7 @@ impl Code {
             Self::DrillTargets => "Invalid drill request",
             Self::NodeIsPrimary => "The node is the primary",
             Self::NodeIsUp => "The node is up",
+            Self::ChangeInProgress => "The change is still running",
         }
     }
 
@@ -187,7 +192,8 @@ impl Code {
             | Self::DrillRefused
             | Self::DrillActive
             | Self::NodeIsPrimary
-            | Self::NodeIsUp => StatusCode::CONFLICT,
+            | Self::NodeIsUp
+            | Self::ChangeInProgress => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig

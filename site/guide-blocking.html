@@ -72,12 +72,12 @@ rules = ["||ads.example.com^", "@@||cdn.example.com^"]</code></pre>
     </div>
 
     <div class="panel" id="add-api"><h3>API / CLI</h3>
-      <p><code>PUT /api/v1/lists/{name}</code> takes the same fields as <code>[[list]]</code>; add <code>?dryRun=true</code> to preview. <code>POST /api/v1/checks/list</code> tests a draft without saving it.</p>
+      <p><code>PUT /api/v1/lists/{name}</code> takes the same fields as <code>[[list]]</code>; add <code>?dryRun=true</code> to preview. <code>POST /api/v1/checks/list</code> tests a draft without saving it. A <code>path</code> (a file on the node) is set by an administrator; URL lists and inline rules need only the operator role.</p>
 <pre><code>telltale ctl put lists/hagezi-pro --data '{"url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"}'
 telltale ctl lists                      # with unique names and hits</code></pre>
     </div>
   </div>
-  <div class="callout"><p><b>A failed refresh never loses a list.</b> The last good copy stays in use, and a failing list is retried after 5 minutes, then 10, 20, and so on up to hourly. Downloads that can't be a list (an empty body, a captive portal's HTML page, mostly invalid lines) are refused.</p></div>
+  <div class="callout"><p><b>A failed refresh never loses a list.</b> The last good copy stays in use, and a failing list is retried after 5 minutes, then 10, 20, and so on up to hourly. Inline rules that are refused (blank, or mostly not rules) are tried once and shown as failing until you edit them, switch the list off and on (reloading after each, so the node sees it off), restart, or send <code>SIGUSR1</code>. One that can't be stored (a full disk) is retried like a download. Downloads that can't be a list (an empty body, a captive portal's HTML page, mostly invalid lines) are refused.</p></div>
   <p class="muted">Every <code>[[list]]</code> and <code>[filter]</code> key is in the <a href="config.html">configuration reference</a>; compiling and memory sizing are in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#compiling">detailed docs</a>.</p>
 </section>
 

@@ -33,9 +33,12 @@
     { key: 'from', label: 'From (email)', type: 'text', placeholder: 'you@gmail.com' },
     { key: 'to', label: 'To (email, one per line)', type: 'lines', placeholder: 'you@gmail.com' },
     { key: 'username', label: 'Account (email)', type: 'text', placeholder: 'you@gmail.com' },
+    // REQ: OBS-010 (ADR-179) — a destination with a credential file is an administrator's, and
+    // the file is in a folder meant for secrets.
     { key: 'password_file', label: 'Password file (email)', type: 'text', placeholder: '/run/secrets/smtp-password',
-      help: 'A file on the node holding the password (a Gmail app password, for example). The password itself never goes through the UI.' },
-    { key: 'token_file', label: 'Token file (ntfy, Gotify)', type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true },
+      help: 'A file on the node holding the password (a Gmail app password, for example). The password itself never goes through the UI. An administrator sets this. Use a file under /run/secrets, /etc/telltale-secrets or the data directory\'s secrets folder.' },
+    { key: 'token_file', label: 'Token file (ntfy, Gotify)', type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true,
+      help: 'A file on the node holding the access token. An administrator sets this. Use a file under /run/secrets, /etc/telltale-secrets or the data directory\'s secrets folder.' },
     { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true },
   ];
   const conditions = [

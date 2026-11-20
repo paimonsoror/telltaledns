@@ -493,14 +493,28 @@ pub struct QueryParams {
     #[serde(rename = "match")]
     #[param(rename = "match")]
     pub name_match: Option<NameMatch>,
+    /// REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:
+    /// does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
+    /// `name`. Default: false.
+    pub name_not: Option<bool>,
     /// Client IP address.
     pub client: Option<String>,
+    /// Keep the rows from every client except `client`. Needs `client`. Default: false.
+    pub client_not: Option<bool>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
+    /// Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every
+    /// query that was not blocked). Needs `status`. Default: false.
+    pub status_not: Option<bool>,
     /// Query types, comma-separated (`A,AAAA`).
     pub qtype: Option<String>,
+    /// Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false.
+    pub qtype_not: Option<bool>,
     /// Response codes, comma-separated (`NXDOMAIN,SERVFAIL`).
     pub rcode: Option<String>,
+    /// Keep the rows whose response code is none of `rcode` (queries that got no response code
+    /// are kept). Needs `rcode`. Default: false.
+    pub rcode_not: Option<bool>,
     /// Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
     /// name the upstream that answered for all of them.
     pub upstream: Option<u16>,
@@ -522,6 +536,22 @@ pub struct QueryParams {
     /// REQ: OBS-017 (ADR-110) — the query a trace ID names (32 hex digits, from an exemplar
     /// on `/metrics` or an exported trace). Replaces `from` and `to`.
     pub trace: Option<String>,
+}
+
+impl QueryParams {
+    /// REQ: OBS-003 (ADR-171) — whether any filter is negated. A negated search goes to peers
+    /// as a read that an older node doesn't know (it would ignore the flags and answer rows
+    /// that were not negated).
+    pub fn negates(&self) -> bool {
+        [
+            self.name_not,
+            self.client_not,
+            self.status_not,
+            self.qtype_not,
+            self.rcode_not,
+        ]
+        .contains(&Some(true))
+    }
 }
 
 /// One logged query.
@@ -731,6 +761,10 @@ pub struct ListInfo {
     pub mode: String,
     /// URL, file path, or `inline`.
     pub source: String,
+    /// REQ: FLT-004 (ADR-180) — the list reads a local file (`path`), whatever its `source`
+    /// looks like. Not sent: it decides who sees the list's `error`.
+    #[serde(skip)]
+    pub local: bool,
     /// `ok`, `failed`, or `pending` (not downloaded yet).
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1105,14 +1139,23 @@ pub struct TailParams {
     #[serde(rename = "match")]
     #[param(rename = "match")]
     pub name_match: Option<NameMatch>,
+    /// REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
+    /// Needs `name`. Default: false.
+    pub name_not: Option<bool>,
     /// Client IP address.
     pub client: Option<String>,
+    /// Only queries from every client except `client`. Needs `client`. Default: false.
+    pub client_not: Option<bool>,
     /// The client's group (its highest-priority group).
     pub group: Option<String>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
+    /// Only queries whose status is none of `status`. Needs `status`. Default: false.
+    pub status_not: Option<bool>,
     /// Query types, comma-separated (`A,AAAA`).
     pub qtype: Option<String>,
+    /// Only queries whose type is none of `qtype`. Needs `qtype`. Default: false.
+    pub qtype_not: Option<bool>,
     /// Upstream ID (from `GET /upstreams`).
     pub upstream: Option<u16>,
     /// Only queries that took at least this long.
@@ -1123,6 +1166,19 @@ pub struct TailParams {
     /// `cluster` (default: every reachable node's queries, each row naming its node),
     /// `site:<name>`, `node:<id or site>`, or `node:local` (this node only).
     pub scope: Option<String>,
+}
+
+impl TailParams {
+    /// REQ: OBS-003 (ADR-171) — whether any filter is negated (see [`QueryParams::negates`]).
+    pub fn negates(&self) -> bool {
+        [
+            self.name_not,
+            self.client_not,
+            self.status_not,
+            self.qtype_not,
+        ]
+        .contains(&Some(true))
+    }
 }
 
 /// Sent as an SSE `dropped` event when matching queries weren't delivered.
@@ -1471,9 +1527,19 @@ pub struct ConfigEntry {
     /// the files' entry of that name), or `hidden` (the files' entry is left out).
     pub source: String,
     /// The definition in effect, with the same fields as in `telltale.toml` (absent when
-    /// hidden).
+    /// hidden). REQ: API-002, T8.2 (ADR-181) — a router's key-file fields and `username` are
+    /// shown to an administrator only.
     #[schema(value_type = Option<Object>)]
     pub definition: Option<serde_json::Value>,
+    /// REQ: API-002, T8.2 (ADR-181) — a router's credentials, by name (`api_key`, `api_secret`,
+    /// `password`), as the node that answered sees them (on a replica, the primary): `saved` (its
+    /// file is there, and that node uses it), `missing` (no file there, and it is one the node
+    /// saves when a key is pasted: enter the key again, as after a restore on another machine or
+    /// a failover), `file_missing` (no file there, and it is one a platform mounts or a config
+    /// file names: put the file there), or `not_used` (the file is there, but it isn't one that
+    /// node sends for this router). Read without the secret. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// `GET /api/v1/config/entries` parameters.
@@ -1985,6 +2051,41 @@ pub struct SupportPackageRequest {
     /// Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`).
     #[serde(default)]
     pub keep_map: bool,
+    /// REQ: OPS-011 (ADR-172) — one package for the whole cluster: every reachable node makes and
+    /// redacts its own part under one key made for this package, so a device has the same
+    /// pseudonym on every node and no real name or address leaves the node it is on. Not with
+    /// `keepMap` (the names never leave their nodes, so there is no map). A node that doesn't
+    /// answer, or is older than this feature, is listed in the manifest.
+    #[serde(default)]
+    pub cluster: bool,
+}
+
+/// REQ: OPS-011 (ADR-172) — what a node is asked for when a cluster package is made. It goes over
+/// the cluster channel only (never as an API request body), with the key of this one package.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SupportCollectRequest {
+    /// `strict`, `standard`, or `none`, as in [`SupportPackageRequest`].
+    pub level: Option<String>,
+    pub reveal: Vec<String>,
+    pub query_sample: u32,
+    /// The package's key: 64 hex digits, held in memory for the call and never stored.
+    pub key: String,
+    /// The most bytes of file content this node's part may hold (its share of the cap).
+    pub max_bytes: usize,
+}
+
+// The key is the one secret of the request: whatever prints a read (a debug log, a panic message)
+// must not print it.
+impl std::fmt::Debug for SupportCollectRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SupportCollectRequest")
+            .field("level", &self.level)
+            .field("reveal", &self.reveal.len())
+            .field("query_sample", &self.query_sample)
+            .field("key", &"<hidden>")
+            .field("max_bytes", &self.max_bytes)
+            .finish()
+    }
 }
 
 /// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex
