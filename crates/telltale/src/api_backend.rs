@@ -1717,6 +1717,7 @@ impl Backend for ApiBackend {
                     enabled: l.enabled,
                     mode: label(&l.mode),
                     source,
+                    local: l.url.is_none() && l.path.is_some(),
                     state: state.to_owned(),
                     error: meta.and_then(|m| m.last_error.clone()),
                     bytes: meta.map_or(0, |m| m.bytes),
@@ -2471,6 +2472,7 @@ impl Backend for ApiBackend {
     fn alert_test(
         &self,
         name: &str,
+        by_admin: bool,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::AlertTest, Problem>> {
         let cfg = self.src.config.load_full();
         let d = cfg
@@ -2481,10 +2483,30 @@ impl Backend for ApiBackend {
             .cloned();
         let node = crate::http::node_name(&cfg);
         let name = name.to_owned();
+        let src = Arc::clone(&self.src);
         Box::pin(async move {
             let d =
                 d.ok_or_else(|| Problem::not_found(format!("no alert destination `{name}`")))?;
-            let r = crate::alerts::send_test(&d, &node).await;
+            // REQ: OBS-010 (ADR-179) — a destination made through the API whose credential file
+            // isn't in a folder meant for secrets isn't read or sent to; the answer says why.
+            let refused = tokio::task::spawn_blocking(move || {
+                crate::alerts::refused(&cfg, &crate::alerts::own_destinations(&src))
+            })
+            .await
+            .map_err(|e| Problem::internal(format!("request worker failed: {e}")))?;
+            let r = match refused.get(d.name.as_str()) {
+                Some(why) => Err(why.clone()),
+                None => crate::alerts::send_test(&d, &node).await,
+            };
+            // REQ: OBS-010 (ADR-180) — what went wrong reading the private CA file (a line of it,
+            // whether it is there) is an administrator's to see; the node's log has it.
+            let r = r.map_err(|e| match &d.tls_ca {
+                Some(ca) if !by_admin && e.contains(ca.as_str()) => {
+                    tracing::info!(destination = %d.name, error = %e, "test send: the private CA file couldn't be used");
+                    "the private CA file (`tls_ca`) couldn't be used; an administrator sees why, and the node's log says".to_owned()
+                }
+                _ => e,
+            });
             Ok(telltale_api::model::AlertTest {
                 ok: r.is_ok(),
                 error: r.err(),
@@ -2496,9 +2518,10 @@ impl Backend for ApiBackend {
     fn check_upstream(
         &self,
         body: serde_json::Value,
+        by_admin: bool,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
         let cfg = self.src.config.load_full();
-        Box::pin(async move { crate::checks::upstream(&cfg, body).await })
+        Box::pin(async move { crate::checks::upstream(&cfg, body, by_admin).await })
     }
 
     // REQ: API-002 (T9.12) — a draft list downloaded (or its rules taken) and parsed.
@@ -2516,6 +2539,7 @@ impl Backend for ApiBackend {
         &self,
         config: serde_json::Value,
         opts: telltale_api::SimulateOpts,
+        by_admin: bool,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::Simulation, Problem>> {
         let src = Arc::clone(&self.src);
         let mut config = config;
@@ -2539,6 +2563,11 @@ impl Backend for ApiBackend {
                         "Send the shared sections as JSON, as a Git commit's shared TOML becomes.",
                     )
                 })?;
+            // REQ: OBS-024 (ADR-180) — below admin, refused before anything is read.
+            if !by_admin && let Some(field) = crate::simulate::new_local_name(&current, &candidate)
+            {
+                return Err(crate::simulate::local_name_refused(&field));
+            }
             crate::simulate::simulate(&src, current, Arc::new(candidate), &opts)
                 .await
                 .map(Option::unwrap_or_default)
@@ -2813,6 +2842,7 @@ impl Backend for ApiBackend {
                     }
                     .to_owned(),
                     definition: serde_json::to_value(e).ok(),
+                    credentials: None,
                 });
             }
             for (n, o) in stored {
@@ -2822,6 +2852,7 @@ impl Backend for ApiBackend {
                         name: n.clone(),
                         source: "hidden".to_owned(),
                         definition: None,
+                        credentials: None,
                     });
                 }
             }
@@ -2890,6 +2921,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.ratelimit).ok(),
+                credentials: None,
             });
         }
         // REQ: OBS-022 (T12.1) — likewise, the exclusions.
@@ -2904,6 +2936,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.exclusions).ok(),
+                credentials: None,
             });
         }
         // REQ: CLU-013 (T13.2) — likewise, the rollout settings.
@@ -2918,6 +2951,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.cluster.rollout).ok(),
+                credentials: None,
             });
         }
         // REQ: OBS-024 (T13.1) — likewise, the simulation settings.
@@ -2932,6 +2966,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.simulate).ok(),
+                credentials: None,
             });
         }
         // REQ: FLT-010 (T9.7)
@@ -2944,9 +2979,22 @@ impl Backend for ApiBackend {
                 &mut out,
             );
         }
-        // REQ: T8.2 (ADR-181) — the definitions name files, never the secrets themselves.
+        // REQ: T8.2 (ADR-181) — the definitions name files, never the secrets themselves. REQ:
+        // API-002, T8.2 (ADR-181) — each router's credentials have a status that takes no secret
+        // to read: saved, missing (enter it again), or not used on this node.
         if want("router") {
+            let start = out.len();
             rows("router", &cfg.router, &file.router, &e.routers, &mut out);
+            let check = crate::router_secrets::UseCheck::load(&self.src);
+            for entry in &mut out[start..] {
+                entry.credentials = entry
+                    .definition
+                    .as_ref()
+                    .and_then(|d| {
+                        serde_json::from_value::<telltale_config::RouterConfig>(d.clone()).ok()
+                    })
+                    .map(|r| check.status(&r));
+            }
         }
         // REQ: OBS-038
         if want("anomaly_mute") {
@@ -3709,6 +3757,7 @@ pub(crate) fn spawn_rule_sweep(
                     expect: None,
                     by: "rule expiry".into(),
                     simulate: None,
+                    by_admin: false,
                 };
                 match backend.write_managed(w).await {
                     Ok(c) if c.applied => auth.record(
@@ -3937,6 +3986,13 @@ fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forwa
             format!("`{name}`: give at least one server"),
         ));
     }
+    // REQ: UPS-011, API-002 (ADR-180) — a server becomes an upstream: not a program or a socket.
+    if let Some(i) = servers
+        .iter()
+        .position(|s| crate::managed::is_plugin_url(&crate::managed::server_url(s)))
+    {
+        return Err(plugin_refused(&format!("servers[{i}]")));
+    }
     // REQ: DNS-022 — a stub zone's servers are asked directly, by address.
     if input.stub
         && let Some(bad) = servers
@@ -3996,12 +4052,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Schedule, _) => {
             "Applies within 15 seconds to the groups that use it.".into()
         }
-        // REQ: T8.2 (ADR-181)
+        // REQ: T8.2 (ADR-181) — review round 2, correctness R3: what the router task does.
         (ManagedKind::Router, true) => {
-            "The router is read within 5 seconds; its devices are named once it answers (the log says if it doesn't).".into()
+            "The router is read within 5 seconds after the reads in progress end; its devices are named once it answers (the log says if it doesn't).".into()
         }
         (ManagedKind::Router, false) => {
-            "Its devices lose the names it gave them within 5 seconds.".into()
+            "Its devices lose the names it gave them after the next round of reads, which starts within 5 seconds after the reads in progress end.".into()
         }
         // REQ: OBS-038 — decided when a finding is created, so nothing already recorded changes.
         (ManagedKind::AnomalyMute, true) => {
@@ -4496,14 +4552,16 @@ type AlsoStored = Vec<(&'static str, String, Option<String>)>;
 fn upstream_cascade(
     name: &str,
     file: &telltale_config::Config,
-    before_cfg: &telltale_config::Config,
     entries: &mut crate::managed::Entries,
 ) -> Result<(AlsoStored, Vec<String>), Problem> {
     use crate::managed::Named;
     let mut also = Vec::new();
     let mut groups = Vec::new();
-    for g in before_cfg
-        .upstream_group
+    // The groups as the files and the API define them: one made through the API may still name
+    // an upstream that the merge leaves out (REQ: UPS-011, ADR-180), and loses it here too.
+    let mut defined = file.upstream_group.clone();
+    crate::managed::apply_ovr(&mut defined, &entries.upstream_groups);
+    for g in defined
         .iter()
         .filter(|g| g.members.iter().any(|m| m.as_str() == name))
     {
@@ -4629,6 +4687,181 @@ fn named_json<T: crate::managed::Named + Serialize>(
         .map(|x| serde_json::to_value(x).unwrap_or_default())
 }
 
+/// REQ: UPS-011, API-002 (ADR-180) — an upstream that names a program the server would start
+/// (`exec://`, its `args`) or a local socket it would connect to (`unix://`) is a configuration
+/// file matter: a write through the API, a dry run, a forward's servers, and a pre-save check are
+/// refused for every caller, an administrator included. `field` is the one that says so.
+pub(crate) fn plugin_refused(field: &str) -> Problem {
+    Problem::new(
+        Code::InvalidConfig,
+        format!(
+            "`{field}`: an upstream that names a program or a local socket isn't set through the API"
+        ),
+    )
+    .hint("Plugin upstreams (`exec://`, `unix://`) are defined in the config file.")
+}
+
+/// REQ: UPS-011, API-002 (ADR-180) — the plugin field of an upstream's body (JSON), if any.
+fn plugin_field_of(body: &serde_json::Value) -> Option<&'static str> {
+    crate::managed::plugin_field(
+        body.get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(""),
+        body.get("args")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|a| !a.is_empty()),
+    )
+}
+
+/// REQ: FLT-004, API-002 (ADR-180) — a list made through the API that reads a local file
+/// (`path`) is pointed at that file only by an administrator: the server reads it on every
+/// refresh, so which file is read is for someone trusted with the node. `current` is the file
+/// the list in effect reads, if any: a write that keeps it (another setting changed) needs only
+/// the operator role, as do URL lists, inline rules, and deletes. Dry runs and writes forwarded
+/// from another node are checked the same way.
+fn local_file_guard(w: &ManagedWrite, current: Option<&str>) -> Result<(), Problem> {
+    if w.by_admin {
+        return Ok(());
+    }
+    let Some(after) = w
+        .body
+        .as_ref()
+        .and_then(|b| b.get("path"))
+        .filter(|p| !p.is_null())
+    else {
+        return Ok(());
+    };
+    if after.as_str().is_some_and(|p| Some(p) == current) {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Forbidden,
+        "a list's `path` (a local file) is set or changed only by an administrator",
+    )
+    .hint("Setting or changing a list's local file needs an administrator. A URL list, inline rules, a change that keeps the list's file, or deleting it, need only the operator role."))
+}
+
+/// REQ: OBS-010, API-002 (ADR-179) — the credential-file fields an alert destination (as JSON)
+/// names.
+fn credential_fields(d: &serde_json::Value) -> Vec<&'static str> {
+    ["token_file", "password_file"]
+        .into_iter()
+        .filter(|f| d.get(*f).is_some_and(|v| !v.is_null()))
+        .collect()
+}
+
+/// REQ: OBS-010, API-002 (ADR-179) — only an administrator adds or changes an alert destination
+/// that names a credential file (`token_file`, `password_file`) before or after the change. The
+/// server reads that file when it sends and puts what it holds in the request to the
+/// destination's address (or the mail server's login), so choosing the file, or where its content
+/// goes, is for someone trusted with the node's secrets. A delete only takes away: the operator
+/// role is enough. Dry runs and writes forwarded from another node are checked the same way.
+fn credential_guard(w: &ManagedWrite, current: Option<&serde_json::Value>) -> Result<(), Problem> {
+    let Some(after) = w.body.as_ref().filter(|_| !w.by_admin) else {
+        return Ok(());
+    };
+    let mut fields = credential_fields(after);
+    for f in current.map(credential_fields).unwrap_or_default() {
+        if !fields.contains(&f) {
+            fields.push(f);
+        }
+    }
+    if fields.is_empty() {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Forbidden,
+        format!(
+            "an alert destination with `{}` is added or changed only by an administrator",
+            fields.join("` or `")
+        ),
+    )
+    .hint("Setting or changing a credential file needs an administrator. A destination without one, or deleting this one, needs only the operator role."))
+}
+
+/// REQ: API-002, T8.2 (ADR-181, as ADR-179) — a router is added, changed or removed only by an
+/// administrator: an admin's own sign-in or admin API token (`by_admin`), never an agent token. A
+/// router holds credentials and says where they're sent, so every write is one, a delete and a
+/// change that keeps the key included. Checked first, before anything in the body is looked at,
+/// for dry runs and for writes forwarded from another node alike.
+fn router_guard(w: &ManagedWrite) -> Result<(), Problem> {
+    if w.kind != ManagedKind::Router || w.by_admin {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Forbidden,
+        "a router is added, changed or removed only by an administrator",
+    )
+    .hint("Routers hold credentials and say where they're sent: use an administrator's own sign-in or an admin API token (agent tokens can't)."))
+}
+
+/// REQ: OBS-010, API-002 (ADR-179) — a credential file an alert destination made through the API
+/// names is in a folder meant for secrets ([`crate::secret_path`]): otherwise a 422 that names the
+/// field and the folders. The message is the same whatever is, or isn't, at that path. Blocking
+/// (the check may look at the filesystem; writes are planned on a blocking thread).
+fn credential_place(d: &telltale_config::AlertDestination, data_dir: &str) -> Result<(), Problem> {
+    for (field, path) in [
+        ("token_file", &d.token_file),
+        ("password_file", &d.password_file),
+    ] {
+        if let Some(p) = path
+            && !crate::secret_path::allowed(p.as_str(), data_dir)
+        {
+            return Err(Problem::new(
+                Code::InvalidConfig,
+                format!("`{field}`: use {}", crate::secret_path::places()),
+            )
+            .hint("Keep the file in a Docker or Compose secret (/run/secrets/), a Kubernetes Secret (the Helm chart's secretMounts, /etc/telltale-secrets/), or the data directory's secrets/ folder, and name that path."));
+        }
+    }
+    Ok(())
+}
+
+/// REQ: UPS-011, API-002 (ADR-180) — an upstream group or a client group written through the API
+/// (`entries`, with the write in them) that names what the merge leaves out because it names a
+/// program or a local socket (a plugin upstream, a forward's plugin server, an upstream group left
+/// out with them) is refused, rather than stored and adjusted.
+fn left_out_guard(
+    kind: ManagedKind,
+    name: &str,
+    file: &telltale_config::Config,
+    entries: &crate::managed::Entries,
+) -> Result<(), Problem> {
+    fn set<'a, T>(stored: &'a [(String, crate::managed::Ovr<T>)], name: &str) -> Option<&'a T> {
+        match stored.iter().find(|(n, _)| n == name) {
+            Some((_, crate::managed::Ovr::Set(v))) => Some(v),
+            _ => None,
+        }
+    }
+    let named: Option<Vec<String>> = match kind {
+        ManagedKind::UpstreamGroup => set(&entries.upstream_groups, name)
+            .map(|g| g.members.iter().map(ToString::to_string).collect()),
+        ManagedKind::Group => set(&entries.groups, name)
+            .and_then(|g| g.upstreams.as_ref())
+            .map(|u| vec![u.to_string()]),
+        _ => None,
+    };
+    let Some(named) = named else {
+        return Ok(());
+    };
+    let out = crate::managed::left_out_names(file, entries);
+    let (field, list, what) = if kind == ManagedKind::UpstreamGroup {
+        ("members", &out.upstreams, "upstream")
+    } else {
+        ("upstreams", &out.groups, "upstream group")
+    };
+    if let Some(n) = named.iter().find(|n| list.contains(*n)) {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            format!(
+                "`{field}`: {what} `{n}` isn't used: it names a program or a local socket, or has only upstreams that do"
+            ),
+        )
+        .hint("Plugin upstreams (`exec://`, `unix://`) are defined in the config file."));
+    }
+    Ok(())
+}
+
 /// REQ: API-002 (T7.5, ADR-069) — a change to an upstream, upstream group, list, or group: it
 /// may override or hide the files' entry of the same name. `PUT` stores a definition; `DELETE`
 /// removes what the API stored (so the files' entry, if any, is back), or else hides the
@@ -4647,13 +4880,44 @@ fn plan_override(
     let file = src.file_config.load_full();
     let mut entries = crate::managed::entries(state);
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
+    // REQ: API-002, T8.2 (ADR-181) — routers are an administrator's (checked again here, where
+    // every write is planned; `do_write_managed` checks before a body's keys are looked at).
+    router_guard(w)?;
+    // REQ: OBS-010, API-002 (ADR-179) — before anything else about the body is checked, so
+    // whoever is refused learns nothing more.
+    if w.kind == ManagedKind::AlertDestination {
+        let current = before_cfg
+            .alerts
+            .destination
+            .iter()
+            .find(|u| u.name() == name)
+            .map(|d| serde_json::to_value(d).unwrap_or_default());
+        credential_guard(w, current.as_ref())?;
+    }
+    // REQ: UPS-011, API-002 (ADR-180) — likewise first: plugin upstreams are the config file's.
+    if w.kind == ManagedKind::Upstream
+        && let Some(field) = w.body.as_ref().and_then(plugin_field_of)
+    {
+        return Err(plugin_refused(field));
+    }
+    // REQ: FLT-004, API-002 (ADR-180) — likewise first: a list's local file is an
+    // administrator's to choose.
+    if w.kind == ManagedKind::List {
+        let current = before_cfg
+            .list
+            .iter()
+            .find(|l| l.name() == name)
+            .and_then(|l| l.path.as_ref())
+            .map(ToString::to_string);
+        local_file_guard(w, current.as_deref())?;
+    }
     // REQ: API-002 (T9.22) — removing an upstream also takes it out of its upstream groups.
     // A DELETE that reverts an override of the files' entry (or un-hides it) brings the
     // upstream back: nothing to cascade.
     let reverting = entries.upstreams.iter().any(|(n, _)| *n == name)
         && file.upstream.iter().any(|u| u.name() == name);
     let (also, also_groups) = if w.kind == ManagedKind::Upstream && w.body.is_none() && !reverting {
-        upstream_cascade(&name, &file, &before_cfg, &mut entries)?
+        upstream_cascade(&name, &file, &mut entries)?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -4734,8 +4998,25 @@ fn plan_override(
             &mut entries.groups,
         )?,
     };
-    let merged = crate::managed::merge(&file, &entries)
-        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    // REQ: OBS-010, API-002 (ADR-179) — a credential file named here is in a folder meant for
+    // secrets, whoever writes it.
+    if w.kind == ManagedKind::AlertDestination
+        && let Some((_, crate::managed::Ovr::Set(d))) =
+            entries.alert_destinations.iter().find(|(n, _)| *n == name)
+    {
+        credential_place(d, file.node.data_dir.as_str())?;
+    }
+    left_out_guard(w.kind, &name, &file, &entries)?;
+    let merged = crate::managed::merge(&file, &entries).map_err(|errs| {
+        // REQ: API-002, T8.2 (ADR-181) — correctness R4: a router written here names no key
+        // file; a missing key is said as what to paste.
+        let errs = if w.kind == ManagedKind::Router {
+            crate::router_secrets::paste_wording(errs)
+        } else {
+            errs
+        };
+        Problem::new(Code::InvalidConfig, errs.join("; "))
+    })?;
     let after = match w.kind {
         ManagedKind::Upstream => named_json(&merged.upstream, &name),
         ManagedKind::UpstreamGroup => named_json(&merged.upstream_group, &name),
@@ -4980,127 +5261,207 @@ impl ApiBackend {
         out
     }
 
-    #[allow(clippy::too_many_lines)] // one write, from its plan to its reload
+    /// A write to an entry made through the API (ADR-069): planned, stored and applied. REQ:
+    /// API-002, T8.2 (ADR-181) — F3: a write that stores something runs to its end in a task of
+    /// its own, so a client that goes away can't stop it between writing a router's new key file
+    /// and storing the entry that names it, or between storing and applying. A dry run stores
+    /// nothing: it stays tied to its request (a simulation stops when its client goes). The API's
+    /// handler runs a change in a task of its own too; this one covers the writes that come
+    /// another way (a write a replica forwarded, on the primary: review round 2, R5).
     pub(crate) fn do_write_managed(
         &self,
-        mut w: ManagedWrite,
+        w: ManagedWrite,
     ) -> BoxFuture<Result<ConfigChange, Problem>> {
         let src = Arc::clone(&self.src);
+        if w.dry_run {
+            return Box::pin(run_managed_write(src, w));
+        }
         Box::pin(async move {
-            // REQ: API-002, API-010 (ADR-040) — one change at a time: the plan below is
-            // checked against what the store then changes, and the result is applied before
-            // the next write looks (two writes planned on the same snapshot could each be
-            // valid and together not: the reload would then fall back to the files alone).
-            let one_at_a_time = src.config_writes.lock().await;
-            // REQ: T8.2 (ADR-181) — a router's secrets, swapped for their files' paths.
-            let secrets = crate::router_secrets::prepare(&src, &mut w)?;
-            let state = src
-                .auth
-                .get()
-                .map(|a| Arc::clone(a.state()))
-                .ok_or_else(|| Problem::unavailable("the state database isn't open yet"))?;
-            let (plan, current) = {
-                let (src, state, w) = (Arc::clone(&src), Arc::clone(&state), w.clone());
-                tokio::task::spawn_blocking(move || {
-                    let current = state
-                        .config_version()
-                        .map_err(|e| Problem::internal(e.to_string()))?;
-                    plan_managed(&src, &state, &w).map(|p| (p, current))
-                })
-                .await
-                .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
-            };
-            // T7.5 — on a Git-managed node, what to add to Git to keep the change.
-            let keep_in_git = (src.config.load().cluster.config_source.as_str() == "gitops")
-                .then(|| keep_in_git(w.kind, &plan.name, w.body.as_ref(), plan.after.as_ref()));
-            let change = |applied, version| ConfigChange {
-                applied,
-                config_version: version,
-                before: plan.before.clone(),
-                after: plan.after.clone(),
-                recent_queries: plan.recent_queries,
-                impact: plan.impact.clone(),
-                warnings: plan.warnings.clone(),
-                keep_in_git: keep_in_git.clone(),
-                simulation: None,
-            };
-            if w.dry_run {
-                if let Some(v) = w.expect
-                    && v != current
-                {
-                    return Err(version_conflict(current));
-                }
-                let mut out = change(false, current);
-                // REQ: OBS-024 — `simulate`: what the change would have done to the logged
-                // queries (after the version check: a stale plan isn't worth replaying).
-                // Other writes needn't wait for the replay.
-                drop(one_at_a_time);
-                if let Some(opts) = &w.simulate {
-                    let baseline = Arc::new(
-                        crate::managed::merge(
-                            &src.file_config.load_full(),
-                            &crate::managed::entries(&state),
-                        )
-                        .map_err(|errs| Problem::internal(errs.join("; ")))?,
-                    );
-                    let candidate = Arc::new(plan.candidate.clone());
-                    out.simulation =
-                        crate::simulate::simulate(&src, baseline, candidate, opts).await?;
-                }
-                return Ok(out);
-            }
-            // ADR-181 — new files, removed again unless the change applies.
-            let written = secrets.write()?;
-            let stored = {
-                let (state, w, name, body, also) = (
-                    Arc::clone(&state),
-                    w.clone(),
-                    plan.name.clone(),
-                    plan.body.clone(),
-                    plan.also.clone(),
-                );
-                tokio::task::spawn_blocking(move || {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs());
-                    let kind = kind_name(w.kind);
-                    // REQ: API-002 (T9.22) — what the change also needs, first; the version
-                    // check applies to the first write.
-                    let mut expect = w.expect;
-                    for (k, n, b) in &also {
-                        let r = match b {
-                            Some(b) => state.put_managed(k, n, b, None, expect, now, &w.by),
-                            None => state.delete_managed(k, n, expect),
-                        };
-                        r?;
-                        expect = None;
-                    }
-                    match &body {
-                        Some(b) => state.put_managed(kind, &name, b, None, expect, now, &w.by),
-                        None => state.delete_managed(kind, &name, expect),
-                    }
-                })
-                .await
-                .map_err(|e| Problem::internal(format!("request worker failed: {e}")))?
-            };
-            let version = stored.map_err(|e| match e {
-                ManagedError::VersionConflict { current } => version_conflict(current),
-                ManagedError::NotFound { .. } => Problem::not_found(e.to_string()),
-                ManagedError::State(e) => Problem::internal(e.to_string()),
-            })?;
-            provenance(&w.by, version);
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let applied = src.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
-            if !applied {
-                return Err(Problem::internal(
-                    "the change was saved but couldn't be applied; the server log says why",
-                ));
-            }
-            written.keep();
-            secrets.prune(&src);
-            Ok(change(true, version))
+            tokio::spawn(run_managed_write(src, w)).await.map_err(|e| {
+                // Review round 2, R6: the runtime's text stays in the log.
+                tracing::error!(error = %e, "a configuration change's task failed");
+                Problem::internal("the change didn't finish; the server log says why")
+            })?
         })
     }
+}
+
+/// [`ApiBackend::do_write_managed`]'s work.
+#[allow(clippy::too_many_lines)] // one write, from its plan to its reload
+async fn run_managed_write(
+    src: Arc<Sources>,
+    mut w: ManagedWrite,
+) -> Result<ConfigChange, Problem> {
+    // REQ: API-002, API-010 (ADR-040) — one change at a time: the plan below is
+    // checked against what the store then changes, and the result is applied before
+    // the next write looks (two writes planned on the same snapshot could each be
+    // valid and together not: the reload would then fall back to the files alone).
+    let one_at_a_time = src.config_writes.lock().await;
+    // REQ: API-002, T8.2 (ADR-181) — routers are an administrator's: refused before the
+    // body's keys are looked at.
+    router_guard(&w)?;
+    let state = src
+        .auth
+        .get()
+        .map(|a| Arc::clone(a.state()))
+        .ok_or_else(|| Problem::unavailable("the state database isn't open yet"))?;
+    let (plan, current, secrets, w) = {
+        let (src, state) = (Arc::clone(&src), Arc::clone(&state));
+        tokio::task::spawn_blocking(move || {
+            // REQ: T8.2, API-002 (ADR-181) — a router's pasted secrets, swapped for new
+            // files' paths; a key file the body names is refused unless it's the
+            // router's own (against what the write is planned on, below).
+            let secrets = crate::router_secrets::prepare(&src, &state, &mut w)?;
+            let current = state
+                .config_version()
+                .map_err(|e| Problem::internal(e.to_string()))?;
+            plan_managed(&src, &state, &w).map(|p| (p, current, secrets, w))
+        })
+        .await
+        .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
+    };
+    // T7.5 — on a Git-managed node, what to add to Git to keep the change.
+    let keep_in_git = (src.config.load().cluster.config_source.as_str() == "gitops")
+        .then(|| keep_in_git(w.kind, &plan.name, w.body.as_ref(), plan.after.as_ref()));
+    let change = |applied, version| ConfigChange {
+        applied,
+        config_version: version,
+        before: plan.before.clone(),
+        after: plan.after.clone(),
+        recent_queries: plan.recent_queries,
+        impact: plan.impact.clone(),
+        warnings: plan.warnings.clone(),
+        keep_in_git: keep_in_git.clone(),
+        simulation: None,
+    };
+    if w.dry_run {
+        if let Some(v) = w.expect
+            && v != current
+        {
+            return Err(version_conflict(current));
+        }
+        let mut out = change(false, current);
+        // REQ: OBS-024 — `simulate`: what the change would have done to the logged
+        // queries (after the version check: a stale plan isn't worth replaying).
+        // Other writes needn't wait for the replay.
+        drop(one_at_a_time);
+        if let Some(opts) = &w.simulate {
+            out.simulation =
+                dry_run_simulation(&src, &state, &plan.candidate, opts, w.by_admin).await?;
+        }
+        return Ok(out);
+    }
+    // REQ: T8.2, API-002 (ADR-181) — new key files, recorded for the router as planned (its
+    // name, credential and endpoint), removed again unless the entry naming them is stored.
+    let secrets = Arc::new(secrets);
+    let written = {
+        let (secrets, planned) = (
+            Arc::clone(&secrets),
+            (w.kind == ManagedKind::Router)
+                .then(|| {
+                    plan.after.as_ref().and_then(|a| {
+                        serde_json::from_value::<telltale_config::RouterConfig>(a.clone()).ok()
+                    })
+                })
+                .flatten(),
+        );
+        tokio::task::spawn_blocking(move || secrets.write(planned.as_ref()))
+            .await
+            .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
+    };
+    let stored = {
+        let (state, w, name, body, also) = (
+            Arc::clone(&state),
+            w.clone(),
+            plan.name.clone(),
+            plan.body.clone(),
+            plan.also.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let kind = kind_name(w.kind);
+            // REQ: API-002 (T9.22) — what the change also needs, first; the version
+            // check applies to the first write.
+            let mut expect = w.expect;
+            for (k, n, b) in &also {
+                let r = match b {
+                    Some(b) => state.put_managed(k, n, b, None, expect, now, &w.by),
+                    None => state.delete_managed(k, n, expect),
+                };
+                r?;
+                expect = None;
+            }
+            let r = match &body {
+                Some(b) => state.put_managed(kind, &name, b, None, expect, now, &w.by),
+                None => state.delete_managed(kind, &name, expect),
+            };
+            // REQ: API-002, T8.2 (ADR-181) — F3, security F4: the entry naming the new key
+            // files is stored, so they stay, kept here as the store returns (a runtime shutdown
+            // after this can't remove them), whatever the reload says next. A store that failed
+            // removes them, on this blocking thread.
+            if r.is_ok() {
+                written.keep();
+            } else {
+                drop(written);
+            }
+            r
+        })
+        .await
+        .map_err(|e| Problem::internal(format!("request worker failed: {e}")))?
+    };
+    let version = stored.map_err(|e| match e {
+        ManagedError::VersionConflict { current } => version_conflict(current),
+        ManagedError::NotFound { .. } => Problem::not_found(e.to_string()),
+        ManagedError::State(e) => Problem::internal(e.to_string()),
+    })?;
+    provenance(&w.by, version);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let applied = src.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
+    if !applied {
+        return Err(Problem::internal(
+            "the change was saved but couldn't be applied; the server log says why",
+        ));
+    }
+    // Only once the change is in effect: the router's old files that nothing names now.
+    if w.kind == ManagedKind::Router {
+        let src = Arc::clone(&src);
+        let _ = tokio::task::spawn_blocking(move || secrets.prune(&src)).await;
+    }
+    Ok(change(true, version))
+}
+
+/// REQ: OBS-024 — a dry run's `simulate`: what `candidate` (the planned configuration) would have
+/// done to the logged queries, against the configuration the API's entries make now.
+async fn dry_run_simulation(
+    src: &Arc<Sources>,
+    state: &telltale_store::state::State,
+    candidate: &telltale_config::Config,
+    opts: &telltale_api::SimulateOpts,
+    by_admin: bool,
+) -> Result<Option<telltale_api::model::Simulation>, Problem> {
+    let baseline = Arc::new(
+        crate::managed::merge(
+            &src.file_config.load_full(),
+            &crate::managed::entries(state),
+        )
+        .map_err(|errs| Problem::internal(errs.join("; ")))?,
+    );
+    let candidate = Arc::new(candidate.clone());
+    // REQ: OBS-024 (ADR-180) — the rule of `POST /api/v1/simulate`, before anything is read:
+    // here the plan still answers, and its simulation says it wasn't run.
+    let running = src.config.load_full();
+    let asked = !opts.auto || running.simulate.plans_by_default;
+    if asked && !by_admin && crate::simulate::new_local_name(&baseline, &candidate).is_some() {
+        return Ok(Some(crate::simulate::local_name_unavailable()));
+    }
+    // REQ: OBS-024 (ADR-180) — likewise for a change that would fetch more lists than one
+    // simulation may on this node.
+    if asked && crate::simulate::over_fetch_limit(&running, &baseline, &candidate).is_some() {
+        return Ok(Some(crate::simulate::fetch_limit_unavailable()));
+    }
+    crate::simulate::simulate(src, baseline, candidate, opts).await
 }
 
 /// REQ: OBS-033 — the change about to be applied came from `by` and is configuration
@@ -5306,6 +5667,30 @@ fn keep_in_git(
             t
         }
         ManagedKind::Rule => after.map(|a| vec![("rule", a.clone())]).unwrap_or_default(),
+        // REQ: API-002, T8.2 (ADR-181) — F8: in Git a router's key is a Secret every pod can
+        // mount (the chart's `secretMounts`), not the file one node saved in its data directory.
+        ManagedKind::Router => {
+            let mut t = serde_json::Map::new();
+            t.insert("name".into(), name.into());
+            for (k, v) in body.as_object().into_iter().flatten() {
+                if k == "name" {
+                    continue;
+                }
+                let secret = telltale_api::ROUTER_CREDENTIALS
+                    .iter()
+                    .find(|(_, file_field)| *file_field == k.as_str());
+                // Security F8: one safe folder name, whatever the router's name holds.
+                let v = match secret {
+                    Some((field, _)) => serde_json::Value::String(format!(
+                        "/etc/telltale-secrets/{}/{field}",
+                        crate::router_secrets::slug(name)
+                    )),
+                    None => v.clone(),
+                };
+                t.insert(k.clone(), v);
+            }
+            vec![(section, serde_json::Value::Object(t))]
+        }
         _ => {
             let mut t = body.clone();
             if let Some(o) = t.as_object_mut() {
@@ -5321,6 +5706,9 @@ fn keep_in_git(
         }
     };
     let mut out = String::from(head);
+    if kind == ManagedKind::Router {
+        out.push_str("# Its keys: put each in a Kubernetes Secret mounted with the chart's `secretMounts` (name: the router's), or in a Docker secret under /run/secrets/ (then name that file), and paste nothing in the UI. The files this node saved stay on this node.\n");
+    }
     for (sec, t) in tables {
         let mut root = toml::Table::new();
         let Ok(toml::Value::Table(table)) = toml::Value::try_from(&t) else {
@@ -5570,6 +5958,69 @@ fn bad_maps(b: &mut TimeBucket, bad: &telltale_telemetry::agg::Bad, ups: &[Strin
 #[cfg(test)]
 mod keep_in_git_tests {
     use super::*;
+
+    /// REQ: API-002, T8.2 (ADR-181) — F8: "Keep it in Git" for a router names each key as a file
+    /// of a Kubernetes Secret mounted with the chart's `secretMounts`
+    /// (`/etc/telltale-secrets/<router>/<credential>`), not the file one node saved under its
+    /// data directory; it says so, and the rest of the router is as written.
+    #[test]
+    fn api_002_keep_in_git_names_a_secret_mount_for_a_router_key() {
+        let toml_text = keep_in_git(
+            ManagedKind::Router,
+            "fw",
+            Some(&serde_json::json!({
+                "type": "opnsense", "url": "https://opnsense.lan",
+                "api_key_file": "/var/lib/telltale/secrets/router-fw.api_key.0123456789abcdef",
+                "api_secret_file": "/var/lib/telltale/secrets/router-fw.api_secret.fedcba9876543210",
+            })),
+            None,
+        );
+        assert!(!toml_text.contains("/var/lib/telltale"), "{toml_text}");
+        assert!(toml_text.contains("secretMounts"), "{toml_text}");
+        let parsed: toml::Table = toml::from_str(&toml_text).unwrap();
+        let r = &parsed["router"][0];
+        assert_eq!(r["name"].as_str(), Some("fw"));
+        assert_eq!(r["url"].as_str(), Some("https://opnsense.lan"));
+        assert_eq!(
+            r["api_key_file"].as_str(),
+            Some("/etc/telltale-secrets/fw/api_key")
+        );
+        assert_eq!(
+            r["api_secret_file"].as_str(),
+            Some("/etc/telltale-secrets/fw/api_secret")
+        );
+        assert!(r.get("password_file").is_none());
+    }
+
+    /// REQ: API-002, T8.2 (ADR-181) — security F8: the Secret folder Keep it in Git names for a
+    /// router is one safe folder name, whatever the router's name holds (`/`, `..`).
+    #[test]
+    fn api_002_keep_in_git_uses_a_safe_folder_name() {
+        let toml_text = keep_in_git(
+            ManagedKind::Router,
+            "a/../b",
+            Some(&serde_json::json!({
+                "type": "unifi", "url": "https://192.168.1.1",
+                "api_key_file": "/var/lib/telltale/secrets/router-a_.._b-0123abcd.api_key.0123456789abcdef",
+            })),
+            None,
+        );
+        let parsed: toml::Table = toml::from_str(&toml_text).unwrap();
+        let f = parsed["router"][0]["api_key_file"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let rest = f.strip_prefix("/etc/telltale-secrets/").unwrap_or_default();
+        let parts: Vec<&str> = rest.split('/').collect();
+        assert_eq!(parts.len(), 2, "{f}");
+        assert!(
+            parts[0]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "{f}"
+        );
+        assert_eq!(parts[1], "api_key", "{f}");
+    }
 
     /// REQ: API-002 (T7.5) — the TOML that keeps an API change in Git.
     #[test]
@@ -6125,3 +6576,23 @@ mod rule_edit_tests {
         assert!(taken.created.is_some());
     }
 }
+
+// REQ: OBS-010, API-002 (ADR-179) — credential files on alert destinations made through the API.
+#[cfg(test)]
+#[path = "api_backend_cred_tests.rs"]
+mod cred_file_tests;
+
+// REQ: UPS-011, API-002 (ADR-180) — plugin upstreams and the API.
+#[cfg(test)]
+#[path = "api_backend_local_access_tests.rs"]
+mod local_access_tests;
+
+// REQ: FLT-004, OBS-024, OBS-010, API-002 (ADR-180) — local files named through the API.
+#[cfg(test)]
+#[path = "api_backend_local_file_tests.rs"]
+mod local_file_tests;
+
+// REQ: API-002, T8.2 (ADR-181) — routers made through the API, and their pasted keys.
+#[cfg(test)]
+#[path = "api_backend_router_tests.rs"]
+mod router_tests;

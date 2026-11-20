@@ -99,6 +99,7 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 | `telltale_client_queries_total` | counter | `node, client` **opt-in**, top-N capped (default off; N=100) |
 | `telltale_telemetry_dropped_total`, `telltale_qlog_write_seconds`, `telltale_qlog_bytes` | | `node` |
 | `telltale_cluster_snapshot_lag`, `telltale_cluster_peer_up`, `telltale_cluster_role` | gauge | `node, peer` |
+| `telltale_federated_refused_total` (CLU-004, ADR-174) | counter | `reason` (`waits`, `spent`, `ceiling`, `bytes`) |
 | `telltale_ratelimited_total`, `telltale_dnssec_validation_total{result}` | counter | |
 
 ### Others

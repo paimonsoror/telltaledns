@@ -17,6 +17,7 @@
   import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
   import { mode } from '../lib/mode.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import { plainHttpPage } from '../lib/plainHttp';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -33,40 +34,58 @@
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
   // REQ: T8.2, API-002 (ADR-181) — the routers, added and changed here (admins). A key or
-  // password is typed once: the server saves it to a new file under secrets/ in the data
-  // folder and never shows it again. Changing the address, type, or TLS settings needs it
-  // typed again.
-  const slug = (name: string) => name.replace(/[^A-Za-z0-9_-]/g, '_');
-  const defaultFile = (field: string) => (_: Record<string, unknown>, name: string) =>
-    `default: secrets/router-${name ? slug(name) + (slug(name) === name ? '' : '-…') : '<name>'}.${field}.…`;
-  const kept = (fileKey: string, what: string) => (v: Record<string, unknown>) =>
-    v[fileKey] ? `Saved. Type a new ${what} to replace it.` : `Paste the ${what}`;
-  const fileHelp =
-    'In the data folder\u2019s secrets/ (relative paths are in the data folder, /var/lib/telltale by default). Leave it empty for a new file there; or name a new one; or name a file you put in secrets/ yourself and leave the field above empty. A file elsewhere is set in telltale.toml.';
+  // password is pasted, never a file named: the server saves it to a new file under secrets/
+  // in the data folder of the node that took the change, and never shows it again. Changing the
+  // address, type, site or TLS settings needs it pasted again. Each row says whether the node
+  // that answered (on a replica, the primary) has its keys and uses them, or not (after a
+  // restore or a failover; a key in /run/secrets/ or /etc/telltale-secrets/ is used on any
+  // node). A key file a platform mounts, or a config file names, that isn't there is put back
+  // as a file, not pasted (review round 2, R7: `file_missing`).
+  type KeyStatus = { credentials?: Record<string, string> | null };
+  const kept = (field: string, what: string) => (_: Record<string, unknown>, __: string, e?: KeyStatus) => {
+    const s = e?.credentials?.[field];
+    if (s === 'saved') return `Saved. Type a new ${what} to replace it.`;
+    if (s === 'missing') return `Key missing: enter the ${what} again`;
+    if (s === 'file_missing') return `Key file missing: put the file there (or paste the ${what})`;
+    if (s === 'not_used') return `Not used: enter the ${what} again`;
+    return `Paste the ${what}`;
+  };
+  const routerStatus = (e: KeyStatus) => {
+    const s = Object.values(e.credentials ?? {});
+    if (s.length === 0) return null;
+    if (s.includes('missing')) return { text: 'key missing: enter it again', cls: 'bad' };
+    if (s.includes('file_missing')) return { text: 'key file missing: put the file there, or paste the key', cls: 'bad' };
+    if (s.includes('not_used')) return { text: 'key not used: enter it again', cls: 'bad' };
+    return { text: 'key saved', cls: 'ok' };
+  };
   const routerFields: Field[] = [
     { key: 'type', label: 'Type', type: 'select', options: ['unifi', 'opnsense', 'mikrotik'], optionLabels: { unifi: 'UniFi', opnsense: 'OPNsense', mikrotik: 'MikroTik (RouterOS 7)' }, initial: 'unifi' },
     { key: 'url', label: 'Address', type: 'text', placeholder: 'https://192.168.1.1',
-      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. MikroTik: https://192.168.88.1 (the www-ssl service). Changing it (or the type or TLS settings) needs the key typed again.' },
-    { key: 'api_key', label: 'API key', type: 'secret', placeholderFor: kept('api_key_file', 'API key'),
-      help: 'UniFi Network 9+: Settings → Control Plane → Integrations. OPNsense: System → Access → Users → API keys.' },
-    { key: 'api_key_file', label: 'API key file', type: 'text', placeholderFor: defaultFile('api_key'), help: fileHelp },
-    { key: 'api_secret', label: 'API secret (OPNsense)', type: 'secret', placeholderFor: kept('api_secret_file', 'API secret') },
-    { key: 'api_secret_file', label: 'API secret file (OPNsense)', type: 'text', placeholderFor: defaultFile('api_secret') },
+      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. MikroTik: https://192.168.88.1 (the www-ssl service). A pasted key is sent only over https://. Changing the address (or the type, site or TLS settings) needs the key pasted again.' },
+    { key: 'api_key', label: 'API key', type: 'secret', placeholderFor: kept('api_key', 'API key'),
+      help: 'UniFi Network 9+: Settings → Control Plane → Integrations. OPNsense: System → Access → Users → API keys. It is saved on the node that takes configuration changes, and not in backups.' },
+    { key: 'api_secret', label: 'API secret (OPNsense)', type: 'secret', placeholderFor: kept('api_secret', 'API secret') },
     { key: 'username', label: 'Username (MikroTik; UniFi without an API key)', type: 'text', placeholder: 'telltale',
       help: 'A local user on the router; read-only is enough. MikroTik: a user in a group with the read, api and rest-api policies.' },
-    { key: 'password', label: 'Password (MikroTik; UniFi without an API key)', type: 'secret', placeholderFor: kept('password_file', 'password') },
-    { key: 'password_file', label: 'Password file', type: 'text', placeholderFor: defaultFile('password'), advanced: true, help: fileHelp },
+    { key: 'password', label: 'Password (MikroTik; UniFi without an API key)', type: 'secret', placeholderFor: kept('password', 'password') },
     { key: 'site', label: 'Site (UniFi)', type: 'text', placeholder: 'default', advanced: true },
     { key: 'tls_ca', label: 'Console certificate', type: 'text', placeholder: '/etc/telltale/udm.pem',
       help: 'A self-signed console: a file with its certificate, so it is verified.' },
     { key: 'tls_server_name', label: 'Name in the certificate', type: 'text', placeholder: 'unifi.local',
       help: 'UniFi consoles name themselves unifi.local.' },
     { key: 'tls_insecure_skip_verify', label: "Don't check the certificate", type: 'bool',
-      help: 'Works with any console, but anything on your network could pose as it and receive the key.' },
+      help: 'Works with any console, but anything on your network could pose as it and receive the key. With a pasted key, give the address as a number (https://192.168.1.1).' },
     { key: 'interval_secs', label: 'Read every (seconds)', type: 'number', placeholder: '300', advanced: true },
     { key: 'offline_days', label: 'Offline devices seen within (days, UniFi and MikroTik)', type: 'number', placeholder: '30', advanced: true,
       help: '0: only the connected clients. MikroTik: static leases that are not bound now.' },
   ];
+  // REQ: API-002, T8.2 (ADR-181) — the key files stay the server's: never sent back.
+  const routerFiles = ['api_key_file', 'api_secret_file', 'password_file'];
+  // REQ: API-002, T8.2 (ADR-181) — security F2: a page opened over plain HTTP from another
+  // machine sends what is pasted into it unencrypted; say so (the server can't tell).
+  const plainHttpNotice = plainHttpPage(location)
+    ? 'You are on a plain-HTTP page: a key you paste crosses the network unencrypted. Open this page over https first.'
+    : null;
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   // REQ: OBS-025 — what each device looks like, by address.
   let identities = $state<Record<string, S['DeviceIdentity']>>({});
@@ -318,6 +337,7 @@
     </section>
     <ConfigEditor kind="router" path="routers" title="Routers" noun="router" fields={routerFields} role="admin"
       summary={(d) => `${String(d.type ?? '')} · ${String(d.url ?? '')}`}
+      status={routerStatus} omit={routerFiles} notice={plainHttpNotice}
       onchanged={load} />
   {/if}
   </TabPanel>

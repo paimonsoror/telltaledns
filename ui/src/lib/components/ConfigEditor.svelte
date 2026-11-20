@@ -11,8 +11,13 @@
     /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
     optionLabels?: Record<string, string>;
     placeholder?: string;
-    /** A placeholder from the draft and its name (T8.2: a key file's default path). */
-    placeholderFor?: (values: Record<string, unknown>, name: string) => string;
+    /** A placeholder from the draft, its name, and the entry being edited (T8.2, ADR-181: whether
+     *  a router's key is saved). */
+    placeholderFor?: (
+      values: Record<string, unknown>,
+      name: string,
+      entry?: { credentials?: Record<string, string> | null },
+    ) => string;
     help?: string;
     /** Only in the Advanced view. */
     advanced?: boolean;
@@ -49,6 +54,9 @@
     singleton = false,
     role,
     note,
+    status,
+    omit = [],
+    notice = null,
   }: {
     kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'router';
     path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'routers';
@@ -68,6 +76,13 @@
     role?: 'operator' | 'admin';
     /** A sentence about the draft, under the fields (CLU-013: who gets a change first). */
     note?: (values: Record<string, unknown>) => string;
+    /** A badge on a row from what the server says of the entry (T8.2, ADR-181: "key saved"). */
+    status?: (e: S['ConfigEntry']) => { text: string; cls: string } | null;
+    /** Keys of an entry the body never sends back (T8.2, ADR-181: a router's key files; the
+     *  server keeps them, or replaces them with a pasted value's new file). */
+    omit?: string[];
+    /** A warning at the top of the form (T8.2, ADR-181: a page opened over plain HTTP). */
+    notice?: string | null;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -92,7 +107,7 @@
 
   let entries = $state<S['ConfigEntry'][]>([]);
   let error = $state<unknown>(null);
-  let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown> } | null>(null);
+  let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown>; entry?: S['ConfigEntry'] } | null>(null);
   // Text of fields with `toText`/`fromText`, while editing.
   let texts = $state<Record<string, string>>({});
   let preview = $state<S['ConfigChange'] | null>(null);
@@ -130,7 +145,7 @@
     formOut = null;
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
-    editing = { name: e?.name ?? '', isNew: !e, values: { ...initial, ...def } };
+    editing = { name: e?.name ?? '', isNew: !e, values: { ...initial, ...def }, entry: e };
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
   }
 
@@ -139,6 +154,7 @@
   function body(): Record<string, unknown> {
     const v = { ...editing!.values };
     delete v.name;
+    for (const k of omit) delete v[k];
     for (const f of fields) if (f.fromText) v[f.key] = f.fromText(texts[f.key] ?? '');
     for (const f of fields) {
       const x = v[f.key];
@@ -167,6 +183,9 @@
     try {
       result = await api.putEntry(path, editing.name.trim(), body(), false);
       preview = null;
+      // T8.2 (ADR-181) — a pasted value is sent once: not kept in the page once it's saved
+      // (the form can stay open to show what to keep in Git).
+      for (const f of fields) if (f.type === 'secret') delete editing.values[f.key];
       await load();
       onchanged?.();
       if (!result.keepInGit) editing = null;
@@ -214,8 +233,9 @@
         <tbody>
           {#each entries as e (e.name)}
             {@const [label, cls] = badge[e.source] ?? [e.source, '']}
+            {@const st = status?.(e)}
             <tr data-testid="entry-row">
-              <td><strong>{e.name}</strong><span class="badge {cls}">{label}</span></td>
+              <td><strong>{e.name}</strong><span class="badge {cls}">{label}</span>{#if st}<span class="badge {st.cls}" data-testid="entry-status">{st.text}</span>{/if}</td>
               <td class="small muted">{e.definition ? summary(e.definition as Record<string, unknown>) : 'left out of the configuration'}</td>
               {#if writable}
                 <td class="actions">
@@ -251,6 +271,7 @@
       <button onclick={() => (editing = null)}>Done</button>
     {:else}
       <form class="form" onsubmit={check}>
+        {#if notice}<p class="notice warn small" role="note" data-testid="editor-notice">{notice}</p>{/if}
         <label>
           Name
           <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label="Name" />
@@ -310,14 +331,14 @@
                 autocomplete="new-password"
                 class="mono"
                 bind:value={editing.values[f.key]}
-                placeholder={f.placeholderFor?.(editing.values, editing.name) ?? f.placeholder}
+                placeholder={f.placeholderFor?.(editing.values, editing.name, editing.entry) ?? f.placeholder}
                 aria-label={f.label}
               />
             {:else}
               <input
                 class="mono"
                 bind:value={editing.values[f.key]}
-                placeholder={f.placeholderFor?.(editing.values, editing.name) ?? f.placeholder}
+                placeholder={f.placeholderFor?.(editing.values, editing.name, editing.entry) ?? f.placeholder}
                 aria-label={f.label}
               />
             {/if}

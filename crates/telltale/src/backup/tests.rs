@@ -137,6 +137,50 @@ fn api_007_backup_with_query_log() {
     );
 }
 
+/// REQ: API-007, T8.2 (ADR-181) — a backup never holds the router keys saved from the UI: with
+/// a `secrets/` folder of key files (nested too) and the API's list of them in the data
+/// directory, no entry of the archive is under it, and no byte of what they hold is in the
+/// archive, with or without the query log.
+#[test]
+fn api_007_a_backup_never_holds_router_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (files, cfg) = node(tmp.path());
+    let data = tmp.path().join("data");
+    let marker = format!(
+        "router-key-marker-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    );
+    fs::create_dir_all(data.join("secrets/nested")).unwrap();
+    fs::write(
+        data.join("secrets/router-udm.api_key.0123456789abcdef"),
+        &marker,
+    )
+    .unwrap();
+    fs::write(data.join("secrets/nested/key"), &marker).unwrap();
+    fs::write(
+        data.join("secrets/.written"),
+        format!("{{\"router\":\"udm\",\"field\":\"api_key\",\"file\":\"{marker}\"}}\n"),
+    )
+    .unwrap();
+    for qlog in [false, true] {
+        let out = tmp.path().join(format!("b-{qlog}.ttbk"));
+        create(&files, &cfg, qlog, &out).unwrap();
+        let m = show(&out).unwrap();
+        assert!(
+            paths(&m).iter().all(|p| !p.contains("secrets")),
+            "qlog={qlog}: {:?}",
+            paths(&m)
+        );
+        let raw = zstd::stream::decode_all(fs::File::open(&out).unwrap()).unwrap();
+        assert!(
+            !raw.windows(marker.len()).any(|w| w == marker.as_bytes()),
+            "qlog={qlog}: the archive holds a key"
+        );
+    }
+}
+
 // A damaged archive is refused before anything is written.
 #[test]
 fn api_007_backup_corruption_is_refused() {

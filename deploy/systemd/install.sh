@@ -16,11 +16,15 @@
 #
 # Options:
 #   --edge                   follow builds from main instead of tagged releases
-#   --yes                    ask nothing: the recommended settings
+#   --yes                    skip the guided questions: the recommended settings. (In a terminal,
+#                            the one about systemd-resolved's stub listener is still asked,
+#                            unless --disable-resolved-stub answers it.)
 #   --interactive            ask even without a terminal, reading answers from stdin
 #   --config-only FILE       ask, write the config to FILE, and stop (no root needed)
 #   --disable-resolved-stub  turn off systemd-resolved's stub listener on 127.0.0.53:53
-#                            (needed when it holds port 53; asked interactively otherwise)
+#                            (needed when it holds port 53; asked interactively otherwise).
+#                            The install then waits (up to 15 s) for port 53 to be free before
+#                            it starts the service, and says what holds it if it isn't.
 #   --no-start               install but don't enable or start the service
 #   --uninstall              stop and remove the service, its unit, and the binary; offers to
 #                            restore systemd-resolved if the install changed it, and keeps
@@ -28,7 +32,8 @@
 #   --purge                  with --uninstall: also delete the config, the data, and the user
 #   --keep-resolver          with --uninstall: leave systemd-resolved as the install set it
 # Environment (mirrors and tests): TELLTALE_RELEASE_URL (base URL of the release files),
-# TELLTALE_RELEASE_PUBKEY (minisign public key), TELLTALE_PREFIX (default /usr/local).
+# TELLTALE_RELEASE_PUBKEY (minisign public key), TELLTALE_PREFIX (default /usr/local),
+# TELLTALE_PORT_WAIT (seconds to wait for port 53 after turning the stub listener off; default 15).
 set -eu
 
 REPO_RAW="https://raw.githubusercontent.com/paimonsoror/telltaledns/main"
@@ -45,6 +50,7 @@ CONFIG_ONLY=
 UNINSTALL=no
 PURGE=ask
 RESTORE_RESOLVER=ask
+WAIT_PORT53=no
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -84,7 +90,8 @@ fi
 # REQ: OPS-001, DOC-001 (T7.6) — the guided setup. In a terminal, a new install asks first:
 # the recommended settings (Enter) or a walk through the options, each with its default shown
 # (Enter or `skip` keeps it). Piped or automated installs (no terminal), --yes, and re-runs
-# over an existing config ask nothing and behave as before. --interactive asks even without a
+# over an existing config skip these questions and behave as before (in a terminal, the one about
+# systemd-resolved's stub listener is still asked below). --interactive asks even without a
 # terminal, reading the answers from stdin (for automation and tests).
 
 # One answer: REPLY is the reply, or the default for Enter, `skip`, or the end of input.
@@ -95,14 +102,23 @@ ask() { # prompt default
   case "$REPLY" in ''|skip|s|S) REPLY="$2" ;; esac
 }
 
+# REPLY, when it is a whole number, without its leading zeros (`08` is 8, `007` is 7, `00` is 0).
+# `[ -le ]` reads them as decimal, but the answers go on as text: `08` would match no `case` (no
+# upstream, so the config couldn't be written) and `retention_days = 007` isn't valid TOML.
+plain_number() {
+  case "$REPLY" in ''|*[!0123456789]*) return 0 ;; esac
+  while [ "${#REPLY}" -gt 1 ] && [ "${REPLY#0}" != "$REPLY" ]; do REPLY="${REPLY#0}"; done
+}
+
 # A number from 1 to max (or 0 when zero is allowed); asks again on anything else, then gives up
 # on the default after three tries (so piped answers can't loop).
 choose() { # prompt default max [allow-zero]
   _tries=0
   while :; do
     ask "$1" "$2"
+    plain_number
     case "$REPLY" in
-      *[!0-9]*|'') ;;
+      *[!0123456789]*|'') ;;
       *) if [ "$REPLY" -le "$3" ] && { [ "$REPLY" -ge 1 ] || [ "${4:-}" = zero ]; }; then return; fi ;;
     esac
     _tries=$((_tries + 1))
@@ -340,7 +356,8 @@ guided() {
   _tries=0
   while :; do
     ask "   Keep it for how many days" "$RETENTION"
-    case "$REPLY" in *[!0-9]*|'') ;; *) [ "$REPLY" -ge 1 ] && [ "$REPLY" -le 400 ] && break ;; esac
+    plain_number
+    case "$REPLY" in *[!0123456789]*|'') ;; *) [ "$REPLY" -ge 1 ] && [ "$REPLY" -le 400 ] && break ;; esac
     _tries=$((_tries + 1))
     if [ "$_tries" -ge 3 ]; then REPLY=$RETENTION; break; fi
     echo "  Please type a number of days from 1 to 400."
@@ -534,6 +551,139 @@ if [ "$ADMIN" = create ]; then
 fi
 systemctl daemon-reload
 
+# BEGIN port53-wait — REQ: OPS-004. deploy/systemd/portwait-test.sh cuts this block out and runs
+# it against a fake `ss`, so keep it self-contained (it needs only `say` and $PREFIX).
+# After systemd-resolved's stub listener is turned off, the service must not start before port 53
+# is free: a start that finds it held dies at its first bind, and systemd allows five starts per
+# ten seconds.
+
+# The addresses TelltaleDNS binds on port 53, one per line, each once, from the effective config
+# (the binary prints it: a `[[listen]]` table per listener, with `addr = "host:port"`). `*` stands
+# for every address: when the config can't be read or `awk` fails on it, or it has no `[[listen]]`
+# (then the default is every address, port 53). Nothing when the config has listeners and none is
+# on port 53.
+port53_binds() { # config
+  _cfg="$("$PREFIX/bin/telltale" config check "$1" --no-env --print 2>/dev/null)" || { echo '*'; return 0; }
+  _addrs="$(printf '%s\n' "$_cfg" | awk '
+    /^\[\[listen\]\]/ { on = 1; blocks++; next }
+    /^\[/ { on = 0; next }
+    on && /^addr[ \t]*=/ {
+      v = $0; sub(/^[^=]*=[ \t]*"/, "", v); sub(/".*$/, "", v)
+      if (v ~ /:53$/) { sub(/:53$/, "", v); gsub(/[][]/, "", v); if (!seen[v]++) print v }
+    }
+    END { if (!blocks) print "*" }')" || { echo '*'; return 0; }
+  [ -z "$_addrs" ] || printf '%s\n' "$_addrs"
+}
+
+# The `ss -p` lines on stdin whose local address (the column numbered $2) overlaps one of the
+# addresses in $1: the same address, or either side is a wildcard. Lines of the process numbered
+# $3 (the telltale service's own, see port53_own_pid; 0 for none) are left out.
+port53_filter() { # binds column own-pid
+  awk -v binds="$(printf '%s' "$1" | tr '\n' ' ')" -v col="$2" -v own="${3:-0}" '
+    function wild(a) { return a == "*" || a == "0.0.0.0" || a == "::" }
+    BEGIN { nb = split(binds, b, " ") }
+    NF == 0 { next }
+    own != 0 && index($0, "pid=" own ",") { next }
+    {
+      a = $col; sub(/:[0-9]+$/, "", a); gsub(/[][]/, "", a); sub(/%.*$/, "", a)
+      hit = wild(a)
+      for (i = 1; i <= nb && !hit; i++) if (wild(b[i]) || b[i] == a) hit = 1
+      if (hit) print
+    }'
+}
+
+# The UDP and TCP sockets that listen on port 53, with their processes (we run as root); fails when
+# `ss` can't list them.
+port53_sockets() {
+  ss -Hlunp 'sport = :53' 2>/dev/null && ss -Hltnp 'sport = :53' 2>/dev/null
+}
+
+# The process id of the telltale service (0: it isn't running, or systemd can't say). An upgrade
+# re-run finds the old instance on port 53; its sockets are what the `restart` below replaces, so
+# they are not what the wait is for. Only the service's own process: a stray `telltale run` is.
+# Read again before every look, because the service can restart during the wait (a start that
+# failed at its bind is retried every two seconds): its new process is still its own.
+port53_own_pid() {
+  _own="$(systemctl show -p MainPID telltale 2>/dev/null | sed -n 's/^MainPID=//p')"
+  case "$_own" in ''|*[!0123456789]*) _own=0 ;; esac
+  echo "$_own"
+}
+
+# Whether something other than the service holds port 53 on an address TelltaleDNS binds: looks at
+# the `ss -p` lines in $_socks for the addresses in $_binds, leaving out the process $_own. Returns
+# 0 when something does, 1 when nothing does, 2 when `awk` failed (nothing can be said).
+port53_held() {
+  _held="$(printf '%s\n' "$_socks" | port53_filter "$_binds" 4 "$_own")" || return 2
+  [ -n "$_held" ]
+}
+
+# The clock the wait's deadline reads: hundredths of a second since boot, from /proc/uptime (it
+# never steps; a Pi without a battery clock has its time set in the middle of an install); the wall
+# clock's seconds times 100 where there is no usable /proc/uptime (then it can step, and only a
+# deadline that passes early or late comes of it: the poll count still ends the wait).
+port53_now() {
+  _up=
+  if [ -r /proc/uptime ]; then read -r _up _ < /proc/uptime || _up=; fi
+  _whole="${_up%%.*}"
+  _frac="${_up#*.}"; [ "$_frac" != "$_up" ] || _frac=
+  _frac="${_frac}00"; _frac="${_frac%"${_frac#??}"}"       # exactly two digits
+  case "$_whole" in ''|*[!0123456789]*) _whole= ;; esac
+  case "$_frac" in *[!0123456789]*) _whole= ;; esac
+  if [ -z "$_whole" ]; then _whole="$(date +%s 2>/dev/null)" || _whole=; _frac=00; fi
+  case "$_whole" in ''|*[!0123456789]*) _whole=0 ;; esac
+  while [ "${#_whole}" -gt 1 ] && [ "${_whole#0}" != "$_whole" ]; do _whole="${_whole#0}"; done
+  echo $((_whole * 100 + ${_frac#0}))
+}
+
+# Waits until nothing else holds UDP or TCP port 53 on an address TelltaleDNS binds (the config's
+# listeners; $1 is the config file), for up to $TELLTALE_PORT_WAIT seconds (whole seconds, 0 to
+# 300; default 15) by the clock, and no more polls than the seconds allow at four a second (each
+# look takes time of its own, longer on a slow machine). Returns 0 when the port is free, or can't
+# be checked (no `ss`, or one or the other tool fails: it says so in one line, and carries on as an
+# install always did); 1 when it is still held after the wait, after printing what holds it and
+# the next step.
+wait_for_port53() { # config
+  command -v ss >/dev/null 2>&1 || { say "ss isn't installed: not checking that port 53 is free"; return 0; }
+  _binds="$(port53_binds "$1")"
+  [ -n "$_binds" ] || { say "The config has no listener on port 53: not waiting for it"; return 0; }
+  _own="$(port53_own_pid)"
+  _socks="$(port53_sockets)" || { say "ss can't list sockets here: not checking that port 53 is free"; return 0; }
+  _rc=0; port53_held || _rc=$?
+  case "$_rc" in
+    1) return 0 ;;
+    2) say "awk can't read the socket list here: not checking that port 53 is free"; return 0 ;;
+  esac
+  # Plain decimal seconds. A leading zero is decimal, not octal: `08` in `$((...))` ends the shell.
+  _limit="${TELLTALE_PORT_WAIT:-15}"
+  while [ "${#_limit}" -gt 1 ] && [ "${_limit#0}" != "$_limit" ]; do _limit="${_limit#0}"; done
+  case "$_limit" in ''|*[!0123456789]*) _limit= ;; esac
+  if [ -z "$_limit" ] || [ "${#_limit}" -gt 3 ] || [ "$_limit" -gt 300 ]; then
+    say "TELLTALE_PORT_WAIT=${TELLTALE_PORT_WAIT:-} isn't a whole number of seconds from 0 to 300: waiting up to 15s"
+    _limit=15
+  fi
+  if [ "$_limit" -gt 0 ]; then say "Waiting up to ${_limit}s for port 53 to be free"; fi
+  # A quarter-second step where `sleep` takes fractions, else a second: the limit holds either way.
+  if sleep 0.1 2>/dev/null; then _step=0.25; _left=$((_limit * 4)); else _step=1; _left=$_limit; fi
+  _end=$(( $(port53_now) + _limit * 100 ))
+  while [ "$_left" -gt 0 ] && [ "$(port53_now)" -lt "$_end" ]; do
+    sleep "$_step"
+    _own="$(port53_own_pid)"
+    _socks="$(port53_sockets)" || return 0
+    _rc=0; port53_held || _rc=$?
+    case "$_rc" in
+      1) say "Port 53 is free"; return 0 ;;
+      2) say "awk can't read the socket list here: not checking that port 53 is free"; return 0 ;;
+    esac
+    _left=$((_left - 1))
+  done
+  _own="$(port53_own_pid)"
+  say "Port 53 is still held after ${_limit}s, by:"
+  ss -Hlunpt 'sport = :53' 2>/dev/null | port53_filter "$_binds" 5 "$_own" | sed 's/^/    /'
+  say "Starting TelltaleDNS anyway. If it can't bind, stop what holds port 53 (or set [[listen]] in /etc/telltale/telltale.toml to an address it doesn't hold), then: sudo systemctl restart telltale"
+  return 1
+}
+# END port53-wait
+
 # systemd-resolved's stub listener holds 127.0.0.53:53, which blocks binding 0.0.0.0:53.
 if systemctl is-active --quiet systemd-resolved 2>/dev/null \
    && ! grep -qs '^DNSStubListener=no' /etc/systemd/resolved.conf /etc/systemd/resolved.conf.d/*.conf; then
@@ -553,13 +703,22 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null \
       "$was" > "$RESOLVED_DROPIN"
     ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
     systemctl restart systemd-resolved
+    WAIT_PORT53=yes   # checked before the service starts, below
   else
     say "Leaving systemd-resolved as is: if port 53 is busy, set [[listen]] to this machine's LAN address"
   fi
 fi
 
 if [ "$START" = yes ]; then
-  systemctl enable --now telltale >/dev/null 2>&1 || true
+  # REQ: OPS-004 — port 53 must be free first (a just-restarted systemd-resolved may take a moment
+  # to let go of it); if it isn't after the wait, the message says what holds it and the start is
+  # tried anyway, so the health check below reports the rest.
+  PORT_BUSY=no
+  if [ "$WAIT_PORT53" = yes ]; then wait_for_port53 /etc/telltale/telltale.toml || PORT_BUSY=yes; fi
+  # One start: `restart` starts a stopped service and swaps a running one onto the new binary.
+  # (`enable --now` followed by `restart` started it twice within milliseconds: two of systemd's
+  # five starts per ten seconds, and the first instance killed before it handled SIGTERM.)
+  systemctl enable telltale >/dev/null 2>&1 || true
   systemctl restart telltale
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     "$PREFIX/bin/telltale" health >/dev/null 2>&1 && break
@@ -570,6 +729,7 @@ if [ "$START" = yes ]; then
     say "TelltaleDNS is running"
   else
     systemctl --no-pager status telltale | tail -n 15 || true
+    if [ "$PORT_BUSY" = yes ]; then echo "Port 53 was still held when the service started (see above): that is the likely reason." >&2; fi
     die "the service didn't become ready (journalctl -u telltale)"
   fi
   ip="$(hostname -I 2>/dev/null | cut -d' ' -f1)"

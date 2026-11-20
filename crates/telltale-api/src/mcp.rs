@@ -2593,6 +2593,7 @@ impl Mcp {
                 Err(e) => tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
             };
         }
+        let was = plans.get(&id).map(|p| p.state);
         let plan = match plans.transition(
             &id,
             &["ready", "approved"],
@@ -2620,6 +2621,23 @@ impl Mcp {
                 &extra,
             )
             .await;
+        // REQ: AGT-007, AGT-003 (ADR-181) — review round 3 (F3): too many changes running at once
+        // (503), or this plan's first apply still running (409 `change_in_progress`): the plan
+        // isn't spent; it goes back to what it was, to be applied again.
+        let busy = status == StatusCode::SERVICE_UNAVAILABLE
+            || body.get("code").and_then(Value::as_str) == Some("change_in_progress");
+        if busy
+            && let Some(was) = was.filter(|w| w == "ready" || w == "approved")
+            && plans
+                .transition(&id, &["applying"], &was, Some(&caller.owner), None)
+                .is_ok()
+        {
+            return tool_result(
+                json!({"planId": id, "state": was, "summary": plan.summary, "result": body,
+                    "hint": "The node is busy with other changes, or this plan's first apply is still running: call apply_plan again in a few seconds."}),
+                true,
+            );
+        }
         let state = if status.is_success() {
             "applied"
         } else if status == StatusCode::PRECONDITION_FAILED {

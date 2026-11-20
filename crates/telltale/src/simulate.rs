@@ -146,6 +146,15 @@ impl Drop for BusyGuard {
     }
 }
 
+/// Tests that may take the node's one simulation slot (a static, so one per test binary) run one
+/// at a time: those that need it free (`simulate::tests`) don't meet one that holds it.
+#[cfg(test)]
+pub(crate) fn slot_tests() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The 409 for a node already simulating.
 pub(crate) fn busy() -> Problem {
     Problem::new(
@@ -419,6 +428,168 @@ pub(crate) fn unavailable(reason: &str) -> Simulation {
         reason: Some(reason.to_owned()),
         ..Simulation::default()
     }
+}
+
+/// REQ: OBS-024 (ADR-180) — the first field of `candidate` that names a local file, a program or
+/// a local socket that `current` doesn't name in the same field: a list's `path`, a zone's
+/// `file`, a hosts file, an upstream's TLS file, or a plugin upstream (`exec://`, `unix://`,
+/// with its `args`). A simulation run by someone below admin can't name one: it would read that
+/// file on their behalf, and its errors or counts would tell them what is in it, or whether it is
+/// there. What the configuration in effect already names is the administrator's choice.
+pub(crate) fn new_local_name(current: &Config, candidate: &Config) -> Option<String> {
+    type Tls = fn(&telltale_config::Upstream) -> Option<&telltale_config::SafeString>;
+    for (i, l) in candidate.list.iter().enumerate() {
+        if let Some(p) = &l.path
+            && !current.list.iter().any(|c| c.path.as_ref() == Some(p))
+        {
+            return Some(format!("list[{i}].path"));
+        }
+    }
+    for (i, z) in candidate.zone.iter().enumerate() {
+        if let Some(f) = &z.file
+            && !current.zone.iter().any(|c| c.file.as_ref() == Some(f))
+        {
+            return Some(format!("zone[{i}].file"));
+        }
+    }
+    for (i, f) in candidate.local.hosts_files.iter().enumerate() {
+        if !current.local.hosts_files.contains(f) {
+            return Some(format!("local.hosts_files[{i}]"));
+        }
+    }
+    let tls: [(&str, Tls); 3] = [
+        ("tls_ca", |u| u.tls_ca.as_ref()),
+        ("tls_client_cert", |u| u.tls_client_cert.as_ref()),
+        ("tls_client_key", |u| u.tls_client_key.as_ref()),
+    ];
+    for (i, u) in candidate.upstream.iter().enumerate() {
+        for (field, get) in &tls {
+            if let Some(p) = get(u)
+                && !current.upstream.iter().any(|c| get(c) == Some(p))
+            {
+                return Some(format!("upstream[{i}].{field}"));
+            }
+        }
+        if crate::managed::is_plugin_url(u.url.as_str())
+            && !current
+                .upstream
+                .iter()
+                .any(|c| c.url == u.url && c.args == u.args)
+        {
+            return Some(format!("upstream[{i}].url"));
+        }
+    }
+    None
+}
+
+/// REQ: OBS-024 (ADR-180) — `candidate` as this node fetches and compiles its lists for a
+/// simulation: with this node's `[filter]` link-local switch, byte cap and timeout, and its
+/// `compile_memory` and `max_regexes` (a candidate's take effect only after a restart: `[filter]`
+/// needs one), and each list's own `max_bytes` no larger than this node allows for that list now
+/// (the byte cap, or the list's own cap in effect if that is larger). For every caller: what this
+/// node may reach, and how much it downloads and compiles, are its own settings (and what one
+/// simulation fetches in all: [`over_fetch_limit`]).
+pub(crate) fn with_this_nodes_downloads(running: &Config, candidate: &Config) -> Config {
+    let mut c = candidate.clone();
+    let f = &running.filter;
+    c.filter.allow_link_local_urls = f.allow_link_local_urls;
+    c.filter.max_list_bytes = f.max_list_bytes;
+    c.filter.fetch_timeout_secs = f.fetch_timeout_secs;
+    c.filter.compile_memory = f.compile_memory;
+    c.filter.max_regexes = f.max_regexes;
+    for l in &mut c.list {
+        if l.max_bytes.is_some() {
+            l.max_bytes = Some(list_cap(running, l));
+        }
+    }
+    c
+}
+
+/// The most this node reads of `l` for a simulation: its own `max_bytes` or this node's byte
+/// cap, and no more than this node allows for a list of that name now.
+fn list_cap(running: &Config, l: &FilterList) -> telltale_config::ByteSize {
+    let f = &running.filter;
+    let allowed = running
+        .list
+        .iter()
+        .find(|r| r.name == l.name)
+        .and_then(|r| r.max_bytes)
+        .map_or(f.max_list_bytes, |m| m.max(f.max_list_bytes));
+    l.max_bytes.map_or(f.max_list_bytes, |m| m.min(allowed))
+}
+
+/// REQ: OBS-024 (ADR-180) — the most lists one simulation reads by URL or from a file, and how many
+/// times this node's `[filter] max_list_bytes` their caps may add up to. 4 is the default
+/// `fetch_concurrency`: one simulation holds no more list text at once than this node's own refresh
+/// does with the default settings (each changed list's text is kept until the side snapshot is
+/// compiled), and a change made in the UI touches one list, or a few, at a time.
+pub(crate) const MAX_FETCHED_LISTS: usize = 4;
+
+/// REQ: OBS-024 (ADR-180) — why this node doesn't simulate `candidate` against `current` (`None`:
+/// it does): the changed lists it would read by URL (or from its stored copy) or from a file are
+/// more than [`MAX_FETCHED_LISTS`], or their caps ([`list_cap`]) add up to more than that many
+/// times this node's byte cap. Decided from the configurations alone, before anything is fetched.
+pub(crate) fn over_fetch_limit(
+    running: &Config,
+    current: &Config,
+    candidate: &Config,
+) -> Option<String> {
+    let read: Vec<FilterList> = changed_lists(current, candidate)
+        .into_iter()
+        .filter(|l| l.rules.is_empty() && (l.url.is_some() || l.path.is_some()))
+        .collect();
+    if read.len() > MAX_FETCHED_LISTS {
+        return Some(format!(
+            "a simulation reads at most {MAX_FETCHED_LISTS} lists by URL or from a file on this node; this change has {}",
+            read.len()
+        ));
+    }
+    let cap = running.filter.max_list_bytes.bytes();
+    let budget = cap.saturating_mul(u64::try_from(MAX_FETCHED_LISTS).unwrap_or(u64::MAX));
+    let total = read
+        .iter()
+        .map(|l| list_cap(running, l).bytes())
+        .fold(0, u64::saturating_add);
+    (total > budget).then(|| {
+        format!(
+            "a simulation reads at most {} of lists on this node ({MAX_FETCHED_LISTS} times `[filter] max_list_bytes`); the lists this change reads may take {}",
+            telltale_config::ByteSize(budget),
+            telltale_config::ByteSize(total)
+        )
+    })
+}
+
+/// REQ: OBS-024 (ADR-180) — `POST /api/v1/simulate`'s refusal of a change [`over_fetch_limit`]
+/// names.
+pub(crate) fn fetch_limit_refused(why: &str) -> Problem {
+    Problem::new(Code::InvalidConfig, why.to_owned())
+        .hint("Simulate fewer new or changed lists at a time.")
+}
+
+/// REQ: OBS-024 (ADR-180) — a dry run's simulation that [`over_fetch_limit`] keeps from running: the
+/// plan still answers.
+pub(crate) fn fetch_limit_unavailable() -> Simulation {
+    stats().unavailable.fetch_add(1, Ordering::Relaxed);
+    unavailable("download_limit")
+}
+
+/// REQ: OBS-024 (ADR-180) — `POST /api/v1/simulate`'s refusal of a [`new_local_name`]: the same
+/// whatever is, or isn't, at the path.
+pub(crate) fn local_name_refused(field: &str) -> Problem {
+    Problem::new(
+        Code::InvalidConfig,
+        format!(
+            "`{field}`: a simulation run by someone who isn't an administrator names only the local files, programs and sockets that the configuration in effect names"
+        ),
+    )
+    .hint("An administrator can run this simulation; anyone else can simulate the change without the new file, program or socket.")
+}
+
+/// REQ: OBS-024 (ADR-180) — a dry run's simulation that [`new_local_name`] keeps from running: the
+/// plan still answers.
+pub(crate) fn local_name_unavailable() -> Simulation {
+    stats().unavailable.fetch_add(1, Ordering::Relaxed);
+    unavailable("local_file")
 }
 
 /// An answer for a change that can't affect a decision.
@@ -852,12 +1023,7 @@ pub(crate) async fn side_sources(
                 .join("\n")
                 .into_bytes()
         } else if let Some(p) = &l.path {
-            tokio::fs::read(p.as_str()).await.map_err(|e| {
-                Problem::new(
-                    Code::InvalidConfig,
-                    format!("list {}: {}: {e}", l.name.as_str(), p.as_str()),
-                )
-            })?
+            read_list_file(candidate, &l, p.as_str()).await?
         } else if let Some(url) = &l.url {
             // Only the options changed: the stored download is the same text.
             let same_source = now.iter().any(|o| o.name == l.name && o.url == l.url);
@@ -874,6 +1040,25 @@ pub(crate) async fn side_sources(
         out.push(SideSource { list: l, data });
     }
     Ok(out)
+}
+
+/// REQ: OBS-024 (ADR-180) — a list file, no larger than the list's cap (as this node's own refresh
+/// reads it).
+async fn read_list_file(cfg: &Config, l: &FilterList, p: &str) -> Result<Vec<u8>, Problem> {
+    let failed = |e: String| {
+        Problem::new(
+            Code::InvalidConfig,
+            format!("list {}: {p}: {e}", l.name.as_str()),
+        )
+    };
+    let max = l.max_bytes.unwrap_or(cfg.filter.max_list_bytes).bytes();
+    let meta = tokio::fs::metadata(p)
+        .await
+        .map_err(|e| failed(e.to_string()))?;
+    if meta.len() > max {
+        return Err(failed(format!("larger than the {max}-byte limit")));
+    }
+    tokio::fs::read(p).await.map_err(|e| failed(e.to_string()))
 }
 
 async fn download(cfg: &Config, l: &FilterList, url: &str) -> Result<Vec<u8>, Problem> {
@@ -998,26 +1183,31 @@ pub(crate) struct Inputs {
     pub(crate) label: Box<dyn Fn(IpAddr) -> Option<String> + Send>,
 }
 
-/// Runs a simulation on this node (blocking: call from a background thread). Takes the
-/// node's one-at-a-time slot; `Err(busy)` when it's taken.
-pub(crate) fn run(inputs: Inputs) -> Result<Tally, Problem> {
+/// Runs a simulation on this node (blocking: call from a background thread), holding the node's
+/// one-at-a-time slot ([`take_slot`], taken before the changed lists were fetched).
+fn run_holding(_slot: &BusyGuard, inputs: Inputs) -> Result<Tally, Problem> {
     metered(|started| run_inner(inputs, started))
 }
 
 /// REQ: OBS-024 — privacy level 1 and a change to devices only: each logged query of a device
 /// whose groups change is unchanged when the new groups decide alike (same settings apart
 /// from their names and networks), else undetermined (the names, hashed, can't be decided
-/// again).
-pub(crate) fn run_devices_only(inputs: &Inputs) -> Result<Tally, Problem> {
+/// again). Holding the slot, as [`run_holding`].
+fn devices_only_holding(_slot: &BusyGuard, inputs: &Inputs) -> Result<Tally, Problem> {
     metered(|started| devices_only_inner(inputs, started))
 }
 
-/// Takes the slot, runs `f`, and counts the outcome for `/metrics`.
-fn metered(f: impl FnOnce(Instant) -> Result<Tally, Problem>) -> Result<Tally, Problem> {
-    let Some(_slot) = BusyGuard::take() else {
+/// REQ: OBS-024 (ADR-180) — the node's one-at-a-time slot, or `Err(busy)` (counted for
+/// `/metrics`).
+fn take_slot() -> Result<BusyGuard, Problem> {
+    BusyGuard::take().ok_or_else(|| {
         stats().busy.fetch_add(1, Ordering::Relaxed);
-        return Err(busy());
-    };
+        busy()
+    })
+}
+
+/// Runs `f` (with the slot taken) and counts the outcome for `/metrics`.
+fn metered(f: impl FnOnce(Instant) -> Result<Tally, Problem>) -> Result<Tally, Problem> {
     let started = Instant::now();
     let r = f(started);
     let s = stats();
@@ -1262,7 +1452,7 @@ fn classify(b: &Verdict, c: &Verdict) -> Option<(usize, Option<String>)> {
 pub(crate) enum Mode {
     /// Every logged query decided again.
     Full,
-    /// Privacy level 1 and a change to devices only ([`run_devices_only`]).
+    /// Privacy level 1 and a change to devices only ([`devices_only_holding`]).
     DevicesOnly,
     /// The change can't move a decision: nothing to replay.
     NotApplicable,
@@ -1426,6 +1616,9 @@ async fn local_part(
     window: Window,
     devices_only: bool,
 ) -> Result<Tally, Problem> {
+    // REQ: OBS-024 (ADR-180) — one simulation at a time includes fetching its lists: the slot is
+    // taken first, and kept until the replay ends (on its thread, even if the caller goes away).
+    let slot = take_slot()?;
     let sources = if devices_only {
         Vec::new()
     } else {
@@ -1457,9 +1650,9 @@ async fn local_part(
     };
     on_background_thread(move || {
         if devices_only {
-            run_devices_only(&inputs)
+            devices_only_holding(&slot, &inputs)
         } else {
-            run(inputs)
+            run_holding(&slot, inputs)
         }
     })
     .await
@@ -1479,6 +1672,13 @@ pub(crate) async fn simulate(
     let running = src.config.load_full();
     if opts.auto && !running.simulate.plans_by_default {
         return Ok(None);
+    }
+    // REQ: OBS-024 (ADR-180) — the candidate's lists are fetched under this node's rules, and the
+    // peers get it that way too; a change that would fetch more than one simulation may is
+    // refused before anything is fetched, here or on a peer.
+    let candidate = Arc::new(with_this_nodes_downloads(&running, &candidate));
+    if let Some(why) = over_fetch_limit(&running, &current, &candidate) {
+        return Err(fetch_limit_refused(&why));
     }
     let unavailable_counted = |reason: &str| {
         stats().unavailable.fetch_add(1, Ordering::Relaxed);
@@ -1591,7 +1791,7 @@ pub(crate) async fn handle(
             })
         };
         let current = merge(&req.current)?;
-        let mut candidate = merge(&req.candidate)?;
+        let candidate = merge(&req.candidate)?;
         // REQ: OBS-024 (T10.7) — a peer says what to simulate, not what this node reads or
         // reaches: a list file must be one this node's configuration already names, downloads
         // follow this node's link-local setting, and the window and limits are this node's.
@@ -1605,9 +1805,17 @@ pub(crate) async fn handle(
                 l.name.as_str()
             )));
         }
-        candidate.filter.allow_link_local_urls = current.filter.allow_link_local_urls;
-        let (current, candidate) = (Arc::new(current), Arc::new(candidate));
         let running = src.config.load();
+        // REQ: OBS-024 (ADR-180) — and the byte caps, the timeout, the compile limits and what one
+        // simulation may fetch in all are this node's too.
+        let candidate = with_this_nodes_downloads(&running, &candidate);
+        if let Some(why) = over_fetch_limit(&running, &current, &candidate) {
+            return Err(Problem::new(
+                Code::InvalidConfig,
+                format!("not on this node: {why}"),
+            ));
+        }
+        let (current, candidate) = (Arc::new(current), Arc::new(candidate));
         let mut window = req.window;
         window.max_rows = window.max_rows.min(running.simulate.max_rows);
         window.max_secs = window.max_secs.min(running.simulate.max_secs);

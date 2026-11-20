@@ -421,6 +421,13 @@ pub struct Auth {
     audit_gap: Mutex<Option<(u64, String)>>,
     /// Password checks in flight (at most [`MAX_PASSWORD_CHECKS`]).
     password_checks: std::sync::atomic::AtomicU32,
+    /// REQ: API-004 (issue #63, ADR-175) — when the hint about a same-host proxy was last logged.
+    proxy_hint: routes::ProxyHint,
+    /// REQ: API-002, AGT-003 (ADR-181) — the key of [`Auth::request_digest`]: random per process
+    /// until the server sets this node's ([`Auth::set_request_key`]).
+    request_key: Mutex<[u8; 32]>,
+    /// REQ: API-002, AGT-003 (ADR-181) — the configuration changes running on this node.
+    write_gate: Arc<crate::config_api::WriteGate>,
 }
 
 /// A slot for one password check; given back when dropped.
@@ -503,7 +510,38 @@ impl Auth {
             identity_primary: Mutex::new(None),
             password_checks: std::sync::atomic::AtomicU32::new(0),
             audit_gap: Mutex::new(None),
+            proxy_hint: routes::ProxyHint::new(),
+            request_key: Mutex::new(rand::random()),
+            write_gate: Arc::new(crate::config_api::WriteGate::new()),
         }
+    }
+
+    /// REQ: API-002, AGT-003 (ADR-181) — the configuration changes running on this node: the
+    /// Idempotency-Keys whose first request hasn't finished, and the places for changes at once.
+    pub(crate) fn write_gate(&self) -> &Arc<crate::config_api::WriteGate> {
+        &self.write_gate
+    }
+
+    /// REQ: API-002, AGT-003 (ADR-181) — this node's request key, kept in a file so a retry
+    /// after a restart still replays (the server loads or creates it at start-up).
+    pub fn set_request_key(&self, key: [u8; 32]) {
+        *self
+            .request_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = key;
+    }
+
+    /// REQ: API-002, AGT-003 (ADR-181) — security F5: `secret` as a keyed BLAKE3 hash (hex), for
+    /// a request kept with its Idempotency-Key: the same secret gives the same text on this node,
+    /// and without the key the text says nothing about the secret.
+    pub fn request_digest(&self, secret: &str) -> String {
+        let key = *self
+            .request_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        blake3::keyed_hash(&key, secret.as_bytes())
+            .to_hex()
+            .to_string()
     }
 
     /// REQ: CLU-003 (T9.1) — the replication sets where identities come from (`None`: here).

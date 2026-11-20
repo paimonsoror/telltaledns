@@ -58,26 +58,16 @@ docker run -d --name telltale --restart unless-stopped \
 Build it yourself with `docker buildx build -t telltale:dev .` (add `--platform linux/amd64,linux/arm64,linux/arm/v7` for all three). The build cross-compiles, so it doesn't need QEMU.
 
 ## Raspberry Pi and Linux
-Two ways, both with real client addresses (host networking) and port 53 without running as a full root process. Pi 3, 4, 5, and Zero 2 W are supported (64-bit or 32-bit OS); ARMv6 boards (Pi 1, Zero W) aren't.
+Two ways, both with real client addresses (host networking) and port 53 without running as a full root process. Native is the simplest on a Pi or any Linux machine, because it needs no Docker; use the Docker Compose bundle (described after the native steps) if you already run Docker. Pi 3, 4, 5, and Zero 2 W are supported (64-bit or 32-bit OS); ARMv6 boards (Pi 1, Zero W) aren't.
 
-**Docker Compose (recommended):** `deploy/compose/` has `compose.yaml` and a starter `telltale.toml` (encrypted upstreams, one balanced blocklist, a 7-day query log).
-```sh
-mkdir telltale && cd telltale
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
-docker compose up -d
-docker compose exec telltale telltale auth setup-token     # then open http://<pi>:8053/
-```
-The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: `docker compose kill -s HUP`.
-
-**Native (systemd):** `deploy/systemd/install.sh` downloads the static binary for your CPU, checks the release signature (minisign) and its SHA-256, creates a `telltale` system user, installs a sandboxed systemd unit (`ProtectSystem=strict`, only `CAP_NET_BIND_SERVICE`, `MemoryMax=256M`) and the starter config (an existing `/etc/telltale/telltale.toml` is kept), then starts the service and waits until it's ready.
+**Native (systemd), recommended:** `deploy/systemd/install.sh` downloads the static binary for your CPU, checks the release signature (minisign) and its SHA-256, creates a `telltale` system user, installs a sandboxed systemd unit (`ProtectSystem=strict`, only `CAP_NET_BIND_SERVICE`, `MemoryMax=256M`) and the starter config (an existing `/etc/telltale/telltale.toml` is kept), then starts the service and waits until it's ready.
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
 less install.sh                     # read before running as root
 sudo sh install.sh                  # the latest release; --edge: builds from main
-sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
+sudo -u telltale /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml
 ```
-**Guided setup.** Run in a terminal on a new machine, the installer asks one question first: press Enter for the recommended settings (the starter config above), or choose **Walk me through the options**. Each step shows its default in `[brackets]`; Enter or `skip` keeps it:
+**Guided setup.** Run in a terminal on a new machine, the installer asks one question first: press Enter for the recommended settings (the starter config: encrypted upstreams, one balanced blocklist, a 7-day query log), or choose **Walk me through the options**. Each step shows its default in `[brackets]`; Enter or `skip` keeps it:
 1. **Builds:** releases or edge.
 2. **Upstreams:** Cloudflare and Quad9 (encrypted, the default), one provider (Cloudflare, Quad9, Google, Mullvad, AdGuard), plain DNS for networks that block port 853, or your own server.
 3. **Starting blocklists:** one or more of HaGeZi Pro (the default), Light, Pro++, Threat Intelligence, Steven Black's hosts, and OISD small, or none (add lists later on the Lists page).
@@ -87,7 +77,7 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
 7. **The query log:** how many days to keep, and how much it records (privacy level 0 to 3).
 
 A summary comes before anything is installed. The answers become `/etc/telltale/telltale.toml`, checked with `telltale config check` before the service starts.
-- **No questions** when stdin isn't a terminal (`curl … | sh`, automation), with `--yes`, or when `/etc/telltale/telltale.toml` already exists (re-runs only upgrade). To see the questions again on a machine that already has TelltaleDNS, run `sh install.sh --config-only /tmp/test.toml` (it changes nothing), or uninstall first (below).
+- **No guided questions** when stdin isn't a terminal (`curl … | sh`, automation), with `--yes`, or when `/etc/telltale/telltale.toml` already exists (a re-run upgrades the binary and keeps your config). One question can still come, in a terminal, even on a re-run or with `--yes`: when systemd-resolved is running with its stub listener on (Ubuntu and some Debian setups), the installer asks `[Y/n]` whether to turn the stub off. `--disable-resolved-stub` answers it in advance; without a terminal the installer leaves systemd-resolved as it is. To see the guided questions again on a machine that already has TelltaleDNS, run `sh install.sh --config-only /tmp/test.toml` (it changes nothing), or uninstall first (below).
 - **Automation:** `--interactive` asks even without a terminal and reads the answers from stdin; `--config-only FILE` writes the config and stops (no root needed), to see what the answers produce.
 - **The first admin "now"** is created on the service's first start from an Argon2id hash in a root-only systemd drop-in, which the installer removes once the service is up. The password itself isn't stored.
 
@@ -98,7 +88,17 @@ Re-running it upgrades the binary in place. `sudo telltale self-update --restart
 - **Config and data** (`/etc/telltale`, `/var/lib/telltale`: users, query log, lists) are kept, so a later install picks them up. It asks whether to delete them; `--purge` deletes them and the `telltale` user without asking.
 - Point your router's DNS setting back at your previous server if it handed out this machine.
 
-**Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` offers to turn it off (`--disable-resolved-stub` does it without asking: the machine then resolves through TelltaleDNS); for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
+**Docker Compose:** `deploy/compose/` has `compose.yaml` and a starter `telltale.toml` (encrypted upstreams, one balanced blocklist, a 7-day query log).
+```sh
+mkdir telltale && cd telltale
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+docker compose up -d
+docker compose exec telltale telltale auth setup-token     # then open http://<host>:8053/
+```
+The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: `docker compose kill -s HUP`.
+
+**Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` turns it off with the recommended settings of a new install in a terminal, asks in the walk-through (step 5), and asks `[Y/n]` on a re-run or with `--yes` in a terminal; without a terminal it leaves it as it is, unless `--interactive` feeds the answers of a new install; `--disable-resolved-stub` turns it off without asking (the walk-through still asks, and its answer wins). The machine then resolves through TelltaleDNS. After turning it off the installer waits up to 15 seconds for port 53 to be free before it starts the service; if something still holds it, the installer prints what (the `ss` line, with the process) and the next step; for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
 
 **Small Pis and SD cards:** the query log writes continuously; keep `[telemetry.qlog] retention_days` short (the starter config uses 7) or put `/var/lib/telltale` on a USB SSD. On a Pi Zero 2 W (512 MB) also set `[node] workers = 2` and `[cache] max_bytes = "16MiB"`, and prefer smaller blocklists.
 
@@ -211,7 +211,8 @@ Admins can also download one in the web UI (**Settings → System → Download a
 **Left out:**
 - sign-in sessions (everyone signs in again);
 - downloaded lists, compiled snapshots, and the cache, which are rebuilt;
-- the cluster identity and its CA key. A restored cluster member starts on its own: run `telltale cluster init` or join it again.
+- the cluster identity and its CA key. A restored cluster member starts on its own: run `telltale cluster init` or join it again;
+- router keys pasted in the UI (`secrets/` in the data folder): after a restore, each such router says **key missing: enter it again** until an administrator pastes it again. A copy of the whole data folder, a volume snapshot, or a Kubernetes PVC snapshot does hold those keys in plain text: keep `secrets/` at mode 0700 and its files at 0600, keep such copies private, and encrypt the volume or the snapshot storage.
 
 The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written owner-only (`0600`); keep it private.
 
@@ -275,12 +276,12 @@ Rarely, a process can hang with its service still `active`: DNS, the web UI, the
 enabled = true
 stall_secs = 60             # 20 to 600
 action = "restart"          # "dump": write the dump and keep running
-max_restarts_per_hour = 6   # past it, only the dump is written; 0 never restarts
+max_restarts_per_hour = 6   # past it, no restart: the dump and the log say so; 0 never restarts
 ```
 
 It watches only whether the node answers. A node that is slow, or busy for a few seconds, still passes; one that is stuck never does. A restart is limited to `max_restarts_per_hour` (counted from `<data_dir>/watchdog/restarts`), so a false alarm can't become an endless loop.
 
-Know its limits. Past `max_restarts_per_hour` (6) restarts in an hour, a node that is still stuck stays stuck and only the dump is written, so alert on `telltale_watchdog_check_age_seconds`. A partial stall, where one worker of several is blocked and the others still run tasks, isn't seen, because the runtime check still passes. And recovery takes about a minute (`stall_secs` plus the restart), during which TCP, DoT, DoH, DoQ and every query the cache can't answer go unanswered. It is the backstop for a hang nobody has found yet. One cause is closed: a cluster read, such as a replica's read of its primary, can no longer wait on a stuck runtime for ever; it gives up at its deadline (ADR-174).
+Know its limits. Past `max_restarts_per_hour` (6) restarts in an hour, a node that is still stuck stays stuck: it is not restarted again, and the watchdog says so. The dump's first line reads `TelltaleDNS watchdog dump: restart cap reached; not restarting`, the log gets one error line with the words `restart cap reached; not restarting` (again every hour while the node stays stuck, with no new dump) and one line when the node answers again by itself, and `telltale_watchdog_restart_cap_reached_total` counts these stalls since the process started (it starts again at 0 when the node restarts, so the log and the dump are the record, not the counter). A stuck runtime can't answer a scrape, so the counter shows after the node recovers, or while only its UDP listener is stuck; otherwise alert on the node's scrape failing, and read the log and the newest dump. A partial stall, where one worker of several is blocked and the others still run tasks, isn't seen, because the runtime check still passes. And recovery takes about a minute (`stall_secs` plus the restart), during which TCP, DoT, DoH, DoQ and every query the cache can't answer go unanswered. It is the backstop for a hang nobody has found yet. One cause is closed: a cluster read, such as a replica's read of its primary, can no longer wait on a stuck runtime for ever; it gives up at its deadline (ADR-174).
 
 **The dump** is `<data_dir>/watchdog/hang-<UTC time>.txt` (directory `0750`, files `0640`, the newest five kept). It says which check failed and for how long, the build, the uptime, memory and load, every thread (its name, state, what the kernel has it waiting on, its CPU time), **each thread's stack as raw addresses**, the executable's mappings, and the last 200 lines of the log (see Support package). It holds no client data and no settings. A support package includes the newest dump. The log says at start when the previous run ended by the watchdog, and `telltale_watchdog_last_action_timestamp_seconds` holds the time.
 
@@ -292,7 +293,7 @@ addr2line -e telltale.debug -f -C -i 0x4a1b2c3 0x4a1b2d4      # function and fil
 ```
 The addresses are the ones in the dump, as they are in a static (non-relocated) binary; if the mappings show the binary loaded at a base other than `00400000`, subtract that base first. The first frame of each thread is the call it is stuck in, and the next ones are who called it. A thread that shows "no answer" couldn't run the handler at all, which means it is stuck inside the kernel. Attach the dump (or the support package) to an issue.
 
-**Metrics:** `telltale_watchdog_enabled`, `telltale_watchdog_check_age_seconds{check="runtime"|"listener"}` (seconds since each check last passed: near `stall_secs` means the node is about to be called stuck), and `telltale_watchdog_last_action_timestamp_seconds`.
+**Metrics:** `telltale_watchdog_enabled`, `telltale_watchdog_check_age_seconds{check="runtime"|"listener"}` (seconds since each check last passed: near `stall_secs` means the node is about to be called stuck), `telltale_watchdog_last_action_timestamp_seconds`, and `telltale_watchdog_restart_cap_reached_total` (stalls that found the restart limit used up).
 
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).
@@ -315,7 +316,7 @@ the chart's schema rejects a mistyped value with its path.
 - **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network; with `disable_local_login`, read **Break-glass sign-in** under Users and sign-in first: where the ingress hides the client address, address checks can't be trusted).
 - **Configuration**: `config:` is merged after the chart's own settings (listeners, data directory, ports): upstreams, lists, groups, `[auth.oidc]`, everything in `docs/configuration.md`.
 - **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
-- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, lists whose last good copy is over 48 hours old and whose latest refresh failed, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
+- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, lists whose last good copy is over 48 hours old and whose latest refresh failed, lists that have never loaded, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - **Encrypted DNS**: `encrypted.dot.enabled` (853), `encrypted.doh.enabled` (443, plus `encrypted.doh.http3`), and `encrypted.doq.enabled` add DoT, DoH, and DoQ to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
 - **One replica or many.** `mode: allInOne` (the default) is one StatefulSet with a volume for lists, the query log, and users. **`mode: scaled`** adds resolver pods:
@@ -757,6 +758,8 @@ args = ["--datacenter", "home"]
 ```
 - With `exec://`, TelltaleDNS starts the program and tells it where to listen in `TELLTALE_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `TELLTALE_UPSTREAM` has the upstream's name). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to TelltaleDNS's log. It's stopped when the configuration changes or TelltaleDNS stops.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
+- **Plugin upstreams are defined in the config file** (`telltale.toml`, the Helm values, or Git), since they name a program the node starts or a socket it connects to. The UI and the API refuse an upstream with `exec://`, `unix://` or `args`, and a forwarded domain with such a server, for every role, an administrator included (422, saying which field), and **Test it** (`POST /api/v1/checks/upstream`) refuses such a draft before anything is started (ADR-180).
+- **After upgrading,** a plugin upstream made earlier in the UI or the API isn't used: nothing is started for it, and an upstream of the same name in the config files is the one in effect. A forwarded domain made there keeps its other servers, under the same names (`forward:<domain>#<n>` counts a server's place among the domain's servers); with none left it isn't used, and its names go to the `default` upstream group (or a route that matches them). What named such an upstream is adjusted, so everything else made in the UI or the API stays in effect: an upstream group made there loses it as a member (left with none, the group isn't used, and the config files' group of that name, if any, is back; a `parallel` group races the members it has left, or with one uses `failover`), and a client group made there that sent its queries to a group that isn't used now goes to the config files' choice or the default. The node logs one warning for each of these, naming it, and a new change that names one of them (an upstream group's member, a client group's upstream group) is refused (422). The entries stay until you remove them (`DELETE /api/v1/upstreams/{name}` or `/api/v1/forwards/{domain}`); define the plugin in the config file instead. In a cluster, **upgrade the primary first**: a replica can't tell an entry an older primary made through the API from one in that primary's config files. On a primary that was promoted from a replica, such an entry can come with the configuration it was promoted with; `DELETE` answers 404 there, and you replace the upstream with a plain one of the same name instead (`PUT /api/v1/upstreams/{name}` with, say, a `udp://` URL).
 
 ## How a query is answered
 ```mermaid
@@ -871,9 +874,10 @@ allow_link_local_urls = false           # true: allow list URLs on 169.254.0.0/1
 ```
 - **Link-local and cloud-metadata addresses are refused** (169.254.0.0/16, fe80::/10, AWS's fd00:ec2::254), whatever name or redirect leads there, so a list URL can't read what a cloud instance serves there. Private LAN addresses are fine. When an agent's pre-save check can't reach a list or an upstream, it's told only that it was unreachable; the UI and the audit log show why.
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
-- **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
-- **A list that suddenly shrinks waits for a second look.** When a URL list's new download has lost more than `[filter] max_shrink_percent` of the stored copy's lines (default 50: a list of 2 million names arriving with fewer than 1 million), it isn't used yet: a truncated mirror or a source caught mid-rewrite would otherwise drop half your blocking. The previous copy keeps answering, the Lists page says why, and the next scheduled refresh accepts the smaller list if the source serves the same content again. **Refresh now** accepts it at once. Lists under 1,000 lines, local files, and inline rules are never held; `100` turns the check off.
+- **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Inline rules that are refused (blank, or mostly not rules) have nothing to download again, so they're tried once and shown as failing until you change something: edit the rules, switch the list off and reload and then on and reload (the node has to see it off), restart, or send `SIGUSR1` (see below). An inline list that can't be stored (a full or read-only disk) isn't held: it's retried on the same 5-minute-to-hourly ladder. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
+- **A list that suddenly shrinks waits for a second look.** When a URL list's new download has lost more than `[filter] max_shrink_percent` of the stored copy's lines (default 50: a list of 2 million names arriving with fewer than 1 million), it isn't used yet: a truncated mirror or a source caught mid-rewrite would otherwise drop half your blocking. The previous copy keeps answering, the Lists page says why, and the next scheduled refresh accepts the smaller list if the source serves the same content again. `SIGUSR1` (see below) accepts it at once. Lists under 1,000 lines, local files, and inline rules are never held; `100` turns the check off.
 - Lists are stored compressed in `<data_dir>/lists/` (`<name>.src.zst` plus `<name>.meta.json`). Removing a list from the config deletes its files; `enabled = false` keeps them.
+- **A list read from a local file (`path`) is an administrator's to set** when it's made in the UI or the API: a write that points a list at a file it didn't read before needs an admin's sign-in or an admin API token (no agent token, whoever owns it); others get 403. The operator role still covers URL lists, inline rules, a file list's other settings (on, off, kind, mode) while it reads the same file, and deleting any list. Lists in the config files are unaffected, and their files can be anywhere. When a local file can't be used, the Lists page and `GET /api/v1/lists` show an administrator the whole message and everyone else a generic one, and the health reason and the `list_failing` alert name the list without the message; the node's log always has it (ADR-180).
 - List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
 - Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.
 - Adding, removing, or editing lists applies on reload (`SIGHUP`). `[filter]` changes need a restart.
@@ -986,18 +990,24 @@ Among rules of the same kind, the one reported is an exact-name rule first, then
 
 Lookups take well under a microsecond: about 0.3 µs typically and under 1 µs at p99 on an x86 server with 2.6M blocked names. They use an in-memory index built from the snapshot (about 10 bytes per name, on top of the snapshot's 9). A new snapshot is served the moment it's loaded, and the index is swapped in about a second later, without pausing queries. Memory with HaGeZi Pro + TIF + OISD big + StevenBlack + AdGuard (2.7M names): about 85 MiB in total; HaGeZi Pro alone (227k names): about 10 MiB.
 
-Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `telltale_filter_paused_until_seconds{group}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. Inline lists (`rules = [...]`) are never fetched, so they have no `telltale_list_last_success_timestamp_seconds`. To alert on a list whose last good copy is over two days old and whose latest refresh failed (the Helm chart's `TelltaleDNSListStale` does this):
+Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `telltale_filter_paused_until_seconds{group}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. Inline lists (`rules = [...]`) are never fetched, so they have no `telltale_list_last_success_timestamp_seconds`. A list that is **disabled** (`enabled = false`) isn't exported at all: its fetch state is kept, so enabling it again brings the values back, but nothing alerts for a list nobody is fetching. The Helm chart has two alerts for a list that fails to refresh. `TelltaleDNSListStale` is for a list whose last good copy is over two days old and whose latest refresh failed:
 ```
 (time() - telltale_list_last_success_timestamp_seconds > 172800)
   and on(instance, list) (telltale_list_fetch_consecutive_failures > 0)
 ```
-Age alone isn't enough: a list with `refresh_secs` over two days is legitimately older than that between refreshes, and a list disabled while the server runs keeps its last value until a restart.
+Age alone isn't enough: a list with `refresh_secs` over two days is legitimately older than that between refreshes. `TelltaleDNSListNeverLoaded` is for a list that has never succeeded, which has a failure count but no last-success time:
+```
+(telltale_list_fetch_consecutive_failures > 0)
+  unless on(instance, list) telltale_list_last_success_timestamp_seconds
+```
 
-What this alert covers, so you know when to rely on it:
-- It fires (after 30 minutes, with the chart's `for: 30m`) when the last success is over 48 hours ago **and** the latest refresh failed. It isn't a literal "failing for 48 hours": with the default `refresh_secs` (one day) it fires about a day after the first failed refresh, and for a list refreshed less often than every two days, shortly after its first failed refresh. The last good copy keeps blocking meanwhile.
-- A list that has **never succeeded** (a new list with a mistyped URL, or an empty data directory) has no `telltale_list_last_success_timestamp_seconds`, so it isn't covered. A list **held** by `max_shrink_percent` isn't a failed refresh (its failure count stays 0), so it isn't covered either. The in-app alert rule `list_failing` reports both.
-- A list that was failing when you disabled it keeps alerting until the node restarts (the metrics of a disabled list are kept until then).
-- It is unrelated to the in-app `list_stale` (content unchanged for 30 days, see [Lists that stopped changing](#lists-that-stopped-changing)): that one is about a source that keeps answering with the same content.
+What these alerts cover, so you know when to rely on them:
+- `TelltaleDNSListStale` fires (after 30 minutes, with the chart's `for: 30m`) when the last success is over 48 hours ago **and** the latest refresh failed. It isn't a literal "failing for 48 hours": with the default `refresh_secs` (one day) it fires about a day after the first failed refresh, and for a list refreshed less often than every two days, shortly after its first failed refresh. The last good copy keeps blocking meanwhile.
+- `TelltaleDNSListNeverLoaded` fires after an hour of failures (`for: 1h`) for a list that has never succeeded on that node: a new list with a mistyped URL, or a list whose data directory was empty (a pod restarted without a persistent volume) and whose source can't be reached. The failure count starts only once the first refresh, with its download attempts, has failed, so a node still on its first fetch doesn't count. After that a failing URL or file list is retried 5, 10, 20, and 40 minutes after its previous refresh started, then hourly. With fast failures the refreshes start about 0, 5, 15, 35, and 75 minutes after the first one (refreshes that time out stretch the gaps), so an hour of failures is four failed refreshes in a row. A network that is back in time for the refresh at about 35 minutes never alerts; one that returns later can start the alert at the hour, and it clears by itself when the next refresh (about 75 minutes after the first) succeeds. An inline list whose rules can't be loaded is reported the same way (it never exports a last success either); the retry times above are not promised for it.
+- A list that succeeded once, however long ago, has a last-success time: it belongs to `TelltaleDNSListStale` and never to `TelltaleDNSListNeverLoaded`, so the two don't fire for the same list.
+- A list **held** by `max_shrink_percent` isn't a failed refresh (its failure count stays 0), so neither alert covers it. The in-app alert rule `list_failing` reports it, and a list that has never loaded too, without the hour's wait.
+- A list that was failing when you disabled it stops alerting at once, since its metrics are no longer exported. If you enable it again and it still fails, the alerts start again.
+- They are unrelated to the in-app `list_stale` (content unchanged for 30 days, see [Lists that stopped changing](#lists-that-stopped-changing)): that one is about a source that keeps answering with the same content.
 
 ### Lists that stopped changing
 A list whose maintainer gave up can keep answering HTTP 200 with the same content forever: it downloads fine, so nothing fails, but it stops keeping up. A URL list whose content hasn't changed in 30 days is called **stale**:
@@ -1305,7 +1315,16 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 ### Names from your router (UniFi, OPNsense, MikroTik)
 TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and TelltaleDNS can read its client list, so devices show up by name.
 
-**In the UI (admins):** **Clients → Discovered → Routers → Add router**. Pick UniFi, OPNsense, or MikroTik, give its address, and paste the API key (for OPNsense, the key and the secret; for MikroTik, or UniFi without a key, a username and password). TelltaleDNS saves each pasted value to a new file only it can read, under `secrets/` in the data folder (`secrets/router-<name>.api_key.<random>` unless you name a new file there), and never shows it again. Editing the router later keeps the key unless you type a new one, except that changing the address, the type, or the TLS settings needs the key typed again, so a key is never sent somewhere it wasn't entered for. A file you put in `secrets/` yourself can be named instead of pasting; a file elsewhere (a Docker or Kubernetes secret) is set in the configuration file. A router added, changed, or removed is read (or dropped) within 5 seconds, without a restart; replacing or removing one removes the key files TelltaleDNS wrote for it, and never others. Through the API: `PUT`/`DELETE /api/v1/routers/{name}` with the fields below, plus `api_key`, `api_secret`, or `password` in place of their files (admins; agents need `config:write:routers`, which `config:write:*` doesn't include). In a cluster, the key file is on the primary that took the change: after a failover, enter it again on the new primary.
+**In the UI (admins):** **Clients → Discovered → Routers → Add router**. Pick UniFi, OPNsense, or MikroTik, give its `https://` address, and paste the API key (for OPNsense, the key and the secret; for MikroTik, or UniFi without a key, a username and password). TelltaleDNS saves each pasted value to a new file only it can read, `secrets/router-<name>.<key>.<random>` in the data folder (mode 0600, folder 0700), and never shows it again; the router's row says **key saved**. Editing the router later keeps the key unless you type a new one, except that changing the address, the type, the site, or the TLS settings needs the key typed again, so a saved key isn't sent to a router address or TLS setting other than the one it was entered with (where a host name resolves is another matter: see the next points). A router added or changed is read within 5 seconds after the reads in progress end, and a removed router's names go after the next round of reads, without a restart.
+- **Only administrators** add, change, or remove routers: their own sign-in or an admin API token. Agent tokens can't, whatever scopes they hold. Others see the routers without their key files or user names, and whether each key is saved.
+- **Paste the key; don't name a file.** The UI and the API take the key itself. A key that lives in a file elsewhere (a Docker secret in `/run/secrets/`, a Kubernetes Secret through the chart's `secretMounts`) is named in the configuration file instead.
+- **`https://` only for a pasted key** (or a loopback address such as `http://127.0.0.1`): over `http://` the key could be read on the way. A self-signed console works over `https://` with `tls_ca` and `tls_server_name`, below.
+- **With "Don't check the certificate", give the address as a number** (`https://192.168.1.1`, not a host name): with the certificate unchecked, whoever can change where the name resolves (a local name or a forward on this resolver, say) could choose who receives the key. A host name works with the certificate checked (`tls_ca` and `tls_server_name`).
+- **The request key.** Changes sent with an `Idempotency-Key` keep a hash of a pasted key, keyed with `secrets/.request-key` in the data folder (made on the first start). On a filesystem without hard links (some SMB or FUSE volumes) that file can't be made: the node logs a warning at every start and uses a key for that run only, so a retry after a restart gets 409 instead of the first answer.
+- **Open the UI over `https://` to paste a key.** On a plain-HTTP page reached from another machine, what you paste crosses the network unencrypted; the Routers editor says so ("You are on a plain-HTTP page..."). A page on the machine itself (`http://127.0.0.1`, `http://localhost`) doesn't leave it.
+- **A pasted key is on the node that saved it,** the primary. It isn't copied to other nodes, and it isn't in backups. After a restore on another machine, or a failover to another primary, the router says **key missing: enter it again**, and isn't read there until an administrator pastes the key again on the node that takes configuration changes. A key kept in `/run/secrets/` or `/etc/telltale-secrets/` on every node (below) needs no re-entry. Each node removes the key files it saved once no router names them (a key replaced or a router removed): only files in the data folder's `secrets/` itself that are named like the ones it makes (`router-<name>.<key>.<random>`) and listed in its `secrets/.written`, plus the temporary files a stopped write left there (`.written.<random>.tmp`, `.request-key.<random>.tmp`) once they are ten minutes old. Anything else there (an alert's token file, `.request-key`) is never removed. While a router entry in `state.db` can't be read (a hand edit), no key file is removed, and each try logs "router keys: the sweep of key files no router names didn't run".
+- Through the API: `PUT`/`DELETE /api/v1/routers/{name}` with the fields below, plus `api_key`, `api_secret`, or `password` instead of their files. `GET /api/v1/config/entries?kind=router` lists them, with each key's status in `credentials` as the node that answered sees it: `saved`; `missing` (enter it again); `file_missing` (a key file a platform mounts or a config file names isn't there: put the file there); or `not_used` (a file there that that node doesn't send for that router). A router without its key is refused by the name to paste (`api_key`, `api_secret`, `password`).
+- In a cluster, upgrade every node before adding routers in the UI: an older primary refuses a router change a replica sends it.
 
 **In the configuration file:**
 ```toml
@@ -1313,9 +1332,9 @@ TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and Tellta
 name = "udm"
 type = "unifi"                         # UniFi OS consoles (UDM, UCG, Cloud Key) and the Network application
 url = "https://192.168.1.1"            # the classic Network application: https://controller:8443
-api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
+api_key_file = "/etc/telltale-secrets/udm/api_key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
 # username = "telltale"                # or a local read-only user...
-# password_file = "/etc/telltale/unifi-pass"
+# password_file = "/etc/telltale-secrets/udm/password"
 # site = "default"
 # offline_days = 30                    # also name clients that are offline now, if UniFi saw them this recently (0: only connected ones)
 tls_ca = "/etc/telltale/udm.pem"       # the console's own certificate (self-signed)
@@ -1325,15 +1344,15 @@ tls_server_name = "unifi.local"        # the name in it (UniFi consoles name the
 name = "firewall"
 type = "opnsense"
 url = "https://opnsense.lan"
-api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
-api_secret_file = "/etc/telltale/opn-secret"
+api_key_file = "/etc/telltale-secrets/firewall/api_key"     # System → Access → Users → API keys
+api_secret_file = "/etc/telltale-secrets/firewall/api_secret"
 
 [[router]]
 name = "mikrotik"
 type = "mikrotik"                      # RouterOS 7.1 or later (the REST API)
 url = "https://192.168.88.1"           # the www-ssl service
 username = "telltale"                  # a read-only RouterOS user (below)
-password_file = "/etc/telltale/mikrotik-pass"
+password_file = "/etc/telltale-secrets/mikrotik/password"
 tls_ca = "/etc/telltale/mikrotik-ca.crt"   # the CA that signed the router's certificate (below)
 # tls_server_name = "router.lan"       # when the certificate doesn't name the address in url
 # offline_days = 30                    # also name static leases that aren't bound now, seen this recently
@@ -1349,8 +1368,11 @@ tls_ca = "/etc/telltale/mikrotik-ca.crt"   # the CA that signed the router's cer
 - A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
 - Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
 - Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).
-- Credentials stay in files, out of the configuration (a key pasted in the UI is saved to a file too). Routers in the file are read at startup; ones added or changed in the UI apply within 5 seconds, and a router made in the UI with the name of one in the file replaces it until it's removed (**Revert to the file**).
+- Credentials stay in files, out of the configuration (a key pasted in the UI is saved to a file too). Keep them in `/etc/telltale-secrets/<router>/` (mode 0600, owned by the service user; the folder 0700), as above, or in `/run/secrets/` for Docker: in a cluster those are the folders a replica reads a key from (below). Routers in the file apply at start and on reload (`SIGHUP`), within 5 seconds after the reads in progress end, as do ones added or changed in the UI, and a router made in the UI with the name of one in the file replaces it until it's removed (**Revert to the file**).
 - In a cluster, only one node needs to read the router (or hear mDNS). Every node asks the others for the device names they know, once a minute, so a resolver pod without the router's key names devices the same way the primary does.
+- **Which key files a node sends.** A node reads a router with a key file only if, for each of its key files: the file is in `/run/secrets/` (Docker, Compose) or `/etc/telltale-secrets/` (the Helm chart's `secretMounts`), on any node, links followed; or this node's own configuration files define that router with that file at the same address; or this node saved that key itself, through the UI, for that router and address. A key in those folders is read whatever the node's own file says (a replica's older copy of the primary's `[[router]]`, which it ignores anyway, doesn't stop it). A router made or changed in the UI may name only a key pasted there (in the data folder's `secrets/`) or the very key file and address the config file gives that router. So an override made in the UI that kept a key from the config file (in those folders or anywhere else) is used only while the config file gives that router the same key file and address: once the file moves the router to another address or removes it, the node that applies the UI's changes (a standalone node, or the primary) leaves the override out, logs a warning saying why, and the config file's router (if any) is the one in effect; the configuration it shares never carries the override, so no replica sends the key to the old address. (On a primary promoted after a failover, the configuration it was promoted with stands in for the config file.) Edit the router in the UI to save it for the new address, or remove the override (`DELETE /api/v1/routers/{name}`). An entry from the UI that names some other file in the data folder's `secrets/` (restored from a backup or edited in `state.db`, say) isn't left out: it stays in effect in place of the config file's router of that name, but no node reads it unless that node saved that key for that router and address itself; it is held back as below. A router held back is logged once as a warning, with why and what to do (information on a Helm resolver pod, which has no keys by design). On the node that takes configuration changes, its row says **key not used: enter it again** (or, when the file isn't there, **key missing** or **key file missing**). **A replica's Routers page shows the primary's status** (its own only while the primary can't be reached), not what the replica does: that is in the replica's log.
+- **On a replica, or a primary promoted after a failover,** a router that only the primary's configuration file defines is read when its key files are in one of those two folders on that node. Keys kept anywhere else (`/etc/telltale/opn-secret`, as earlier versions of this guide showed) aren't read there: in a cluster of native nodes, put the files in `/etc/telltale-secrets/` (for example `/etc/telltale-secrets/firewall/api_secret`, mode 0600, owned by the service user) on each node that should read the router, and name those paths. If a key under `/etc/telltale-secrets/` is a link, it must lead to a file inside that folder (`readlink -f` shows where it goes). Defining the router in a replica's own configuration file also lets that replica send the key, but the replica then logs, as for any shared setting in its file, that the section is ignored (the shared routers come from the primary, CLU-006): the folder is the cleaner way. With the Helm chart every pod has the same configuration and the controller mounts `secretMounts`, so nothing changes there.
+- Who decides that a node sends a key from those folders, and where to: whoever writes a configuration file or Git repository a node takes routers from. The UI and the API can't name a new file there for a router; an administrator's change can only keep the file a router already has, at the same address.
 
 ### Names devices announce (mDNS)
 Phones, speakers, printers, and NAS boxes announce themselves on the local network (`Kitchen-HomePod.local`). TelltaleDNS can listen and use those names for devices you haven't named:
@@ -1359,7 +1381,7 @@ Phones, speakers, printers, and NAS boxes announce themselves on the local netwo
 mdns = true
 ```
 - Listen only: TelltaleDNS never sends mDNS. It shares port 5353 with avahi or the system's responder.
-- It has to hear the LAN: a native install, the Pi bundle, or a pod with host networking. In a bridge or pod network nothing arrives.
+- It has to hear the LAN: a native install, the Docker Compose bundle, or a pod with host networking. In a bridge or pod network nothing arrives.
 - Names you give devices win, then the routers' DHCP leases, then mDNS. Names are lowercase, as mDNS compares them. At most 4096 devices are remembered (until a restart).
 - `GET /api/v1/dhcp/leases` lists them with `source = mdns` (no MAC), and **Clients → Discovered** shows every device found by a router or mDNS. Naming one from there (or from any address in the UI) suggests the name it gave.
 - Changing it needs a restart.
@@ -1377,7 +1399,7 @@ curl -X PUT 'https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=tr
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"match": ["192.168.1.42"], "groups": ["default"]}'   # what would change; nothing is saved
 ```
-Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
+Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours, and a retry sent while the first request is still running gets 409 with `Retry-After` (retry after it for the first answer) instead of making the change twice. At most 32 changes run at once; one more gets 503 with `Retry-After`. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
 
 ### What is this device?
 TelltaleDNS guesses what each address is, so a new one isn't just a number. It uses what it already sees:
@@ -1523,6 +1545,8 @@ How it works, and its limits:
 - **Devices** are recognized again by address. A device that was recognized by its MAC address or client ID when it asked keeps the group its queries were logged with, and the result notes it.
 - **Bounds:** one simulation runs at a time per node (a second one gets `409 simulation_busy`, retry in a few seconds). Each node reads at most `[simulate] max_rows` queries, newest first, for at most `max_secs` seconds, at background priority; past either bound the answer says `partial`. The window is at most 7 days.
 - **Clusters:** every node replays its own log, and a controller also replays the logs its resolver pods ship to it. The counts are added up, and a node that didn't answer is listed in `missingNodes`.
+- **Local files:** a simulation run by someone who isn't an administrator can name only the local files (a list's `path`, a zone's `file`, `[local] hosts_files`, an upstream's `tls_ca`, `tls_client_cert` and `tls_client_key`) and plugin upstreams that the configuration in effect already names. Anything else is refused before it's read: `POST /api/v1/simulate` answers 422 naming the field, and a dry run's simulation answers `"available": false, "reason": "local_file"` (the dry run itself is unchanged). An administrator's simulation is unchanged (ADR-180).
+- **Downloads follow this node's rules:** a list the candidate adds or changes is fetched and compiled with this node's `[filter]` settings for link-local addresses, size, time, `compile_memory` and `max_regexes` (a candidate's `[filter]` applies only after a restart), and a list's own `max_bytes` can't go past what this node allows for that list now. One simulation reads at most 4 added or changed lists by URL or from a file, whose size limits add up to no more than 4 times this node's `max_list_bytes` (the default `fetch_concurrency` is 4, so it holds no more list text than the node's own refresh does). Past that, `POST /api/v1/simulate` answers 422 naming the limit and a dry run's simulation answers `"available": false, "reason": "download_limit"`, before anything is fetched: simulate fewer list changes at a time. The one-at-a-time bound covers the downloads too. That holds for every caller (ADR-180).
 - **Privacy:** at query-log privacy level 1 names are stored hashed, so a change that depends on names can't be replayed (`"available": false, "reason": "privacy_level"`). Moving a device between groups still can: its queries count as unchanged when the new groups decide alike, else as undetermined. At level 2 and above nothing can be replayed.
 - DNS answering never waits for a simulation, and a simulation never asks an upstream or touches the cache. It's about decisions: it can't count names nobody asked, and it doesn't predict latency or what an upstream would answer.
 
@@ -1819,8 +1843,35 @@ groups, query log, and live query stream cover every node:
   windows of 240 buckets a node (over 17 hours of seconds, 42 days of minutes, or 7 years of
   hours) is answered from this node alone, with the other nodes in `missingNodes`. Every range
   the API documents (15 minutes of seconds, 7 days of minutes, 400 days of hours, and every
-  day) is well under it. A node that refuses cluster reads, because too many are waiting or
-  one asks for too much, says so in its log as a warning, once a minute at most.
+  day) is well under it. Reads that ask many nodes about many windows are limited by count as
+  well: one read makes at most 4,096 calls (a node and a window of time is one call, so all of
+  history by the day is 87 calls a node, and a cluster of 48 nodes, this one and 47 others, can
+  ask for it whole; the range gains a window every 240 days, and the number of nodes is 4,096
+  divided by the windows, rounded down, plus this node, so it falls by one every one or two
+  windows), and all the reads together have at most 32,768 calls running or holding an answer
+  their read hasn't taken yet. They are limited in bytes too: the answers the other nodes send to
+  one read can be at most 20 MiB, and the answers all reads hold 40 MiB. An answer that would
+  pass that is dropped as it arrives, and its node is listed in `missingNodes` as one that didn't
+  answer; the rest of the read is kept. On a cluster of 3 or more nodes that happens to the API's
+  longest ranges (7 days of minutes or 400 days of hours, about 15 MiB of answers from each other
+  node). The dashboard at 48 hours makes two minute reads on each refresh (the summary and the
+  chart), each up to 2,881 buckets from every other node; a refresh stays whole while those
+  buckets average under about 3.6 KB each as JSON on 3 nodes, 2.4 KB on 4 or 1.8 KB on 5 (a
+  4-node home cluster measured 0.5 to 0.9 KB, about 1.8 MiB a read), and comes back partial
+  above that. Two viewers refreshing at the same moment share the 40 MiB, so one of them can see
+  a partial refresh, which the next poll heals. The limit is there because reading a range takes
+  the node that merges it about 7 times the answers' bytes in resident memory (4 to 6 times in
+  heap): on a node with no data of its own, one read at 20 MiB took it to about 185 MiB. It
+  bounds the other nodes' answers only, not this node's own part of the read and not reads that
+  merge at the same moment, so two such reads, or one on a node with a week of its own minutes in
+  big buckets, can still pass the 256 MiB the Pi's service may use. A read over the 4,096 is
+  answered from this node alone, with the other nodes in `missingNodes`, every time, and so is
+  the part of a read over 20 MiB: narrow the `scope`, or ask for a coarser `step` or a shorter
+  range. A read that finds too many reads waiting, the call limit spent, or the 40 MiB held is
+  answered the same way, and works again a moment later. In Kubernetes, the controller counts
+  each resolver pod as a node. A node that refuses cluster reads, for any of these reasons,
+  says so in its log as a warning, once a minute at most, and counts them in
+  `telltale_federated_refused_total{reason}` (`waits`, `spent`, `ceiling`, `bytes`).
 - `scope` on a stats or query-log request narrows it: `cluster` (the default, every node),
   `site:<name>` (the nodes of one site, e.g. `site:k8s`), `node:<name or ID>` (one node, by
   site, pod, or node ID), or `node:local` (the node you're asking). For example
@@ -2003,6 +2054,23 @@ and whom it waits for. Ephemeral members (resolver pods) don't hold it up. A nod
 for the whole rotation can't connect afterwards and must join again with a token. Join tokens
 made before a rotation pin the old CA, so make new ones afterwards.
 
+Trust moves forward only. Each step comes with a new configuration version, and a node takes
+the CAs of a version only if it isn't older than the one it last took them from (a new epoch,
+after a failover, counts as newer whatever its number). It keeps that version in
+`cluster/ca.version`; a file it can't read counts as none. So a step of an older version sent
+again, by a node that was the primary or by any member, can't bring a retired CA back. One rare
+case is left. A primary can crash, or fail to save `cluster/published.json`, right after it
+publishes a step, and then publish the same version number again with other content. Someone who
+kept both can then switch the nodes between the two until the next version.
+
+If the primary's version goes backwards (its data directory put back from an older copy, or
+`cluster/published.json` lost or unreadable, for example after its disk filled up and it
+restarted), the other nodes take neither trust nor configuration from it until its version
+passes theirs, and a rotation waits; DNS keeps answering. Promote another node: a new epoch
+beats any version. If no other node can be promoted, stop each of the other nodes, delete its
+`cluster/ca.version` and start it again. That is safe (with no mark, the next version is taken),
+but configuration still waits until the primary's version passes what each node applied.
+
 Rotation helps when the cluster key may have leaked but hasn't been used. Whoever holds the
 current key can sign configuration and rotate trust to a CA of their own, exactly as the
 primary does. If that may already have happened (configuration or a rotation you didn't make),
@@ -2023,7 +2091,11 @@ telltale cluster set-failover auto
 - **How it decides:** every eligible node and witness is a voter. The primary renews a 15 s
   *lease* with a majority every 5 s, and publishes only while the lease holds. If it disappears,
   the eligible nodes wait for the lease to run out, and one is elected by a majority vote in a
-  new epoch, typically within 15–25 s.
+  new epoch, typically within 15–25 s. When two nodes are free to stand at the same moment, the
+  one whose node ID sorts first goes first and the other gives way. With three voters that
+  means they don't split the vote, short of a lost or badly delayed message, a restart, or a
+  disagreement over the epoch; with more voters (two witnesses, say) a split is rarer than it
+  used to be but still possible. A split costs one more lease.
 - **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator
@@ -2170,7 +2242,14 @@ telltale cluster status
     primary, the other voters under automatic failover, and any other node only while a link
     to it is open or it was heard from in the last 15 seconds;
   - this node: `telltale_cluster_config_seq`, `telltale_cluster_behind_seconds`,
-    `telltale_cluster_sync_error` and `telltale_cluster_cert_expiry_timestamp_seconds`.
+    `telltale_cluster_sync_error` and `telltale_cluster_cert_expiry_timestamp_seconds`;
+  - the cluster reads this node refused since it started: `telltale_federated_refused_total{reason}`,
+    a counter. `waits`: too many reads were already waiting for a slow node; `spent`: the
+    32,768 calls all reads may have were in use; `ceiling`: the read asked for too much at once
+    (over 4,096 calls, or over 256 windows of time a node); `bytes`: it was sent, but an answer
+    was dropped because it would have passed the 20 MiB a read may hold or the 40 MiB all may.
+    The nodes it was for are in that read's `missingNodes`. A rate above zero for long means the
+    pages show partial results: see "One view of the whole cluster" under [Clusters](#clusters).
 
   The Helm chart's PrometheusRule alerts on a peer down for over a minute, configuration behind
   for over 30 s, failing syncs, and a certificate within 14 days of expiry.
@@ -2976,10 +3055,15 @@ Rules watch:
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
 - A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
-- Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
+- Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`. `webhook` and `slack` send no token, so they don't read a `token_file`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
-- **In the UI:** **Alerts** (under System) shows what's firing now and how the last delivery to each destination went, and adds, changes, or removes destinations and rules like other configuration (a dry run first; on a Git-managed cluster it says what to add to Git). **Send test** on a destination sends a test message and shows the result, a wrong password or an unreachable server included.
+- **In the UI:** **Alerts** (under System) shows what's firing now and how the last delivery to each destination went, and adds, changes, or removes destinations and rules like other configuration (a dry run first; on a Git-managed cluster it says what to add to Git). **Send test** on a destination sends a test message and shows the result, a wrong password or an unreachable server included. When an email destination's private CA file (`tls_ca`) can't be used, only an administrator is told why (ADR-180).
 - **API:** `GET /api/v1/alerts` (firing alerts and deliveries), `PUT`/`DELETE /api/v1/alerts/destinations/{name}` and `/api/v1/alerts/rules/{name}` (same fields as the configuration, with `?dryRun=true`, `If-Match`, and `Idempotency-Key`), and `POST /api/v1/alerts/destinations/{name}/test`. Agent tokens need `config:write:alerts`. Passwords and tokens stay in files on the node: only their paths go through the API.
+- **Credential files are set by an administrator.** The node reads `token_file` and `password_file` when it sends and passes what they hold to the destination, so a destination that names either one, before or after the change, is added or changed in the UI or the API only by an administrator (an admin's sign-in or API token; no agent token, whoever owns it). Anyone with the operator role (agents: `config:write:alerts`) keeps every destination without one, can delete any destination, and can send a test to any. Destinations in the config files aren't affected (ADR-179).
+- **Credential files set in the UI or the API live in a folder meant for secrets:** `/run/secrets/` (Docker and Compose secrets), `/etc/telltale-secrets/` (the Helm chart's `secretMounts`), or the data directory's `secrets/` folder (`/var/lib/telltale/secrets/` by default; create it with mode 0700 and the file with 0600, owned by the service's user). Give an absolute path, without `.` or `..`; links are followed, so a Kubernetes Secret's files work, and one that leads out of the folder doesn't. Anything else is refused (422, saying which field). The file doesn't have to exist yet. The folders bound where a file may be, not which secret it is: `/etc/telltale-secrets/` also holds the chart's other mounts (an OIDC client secret), and a Compose host's `/run/secrets/` can hold other services' secrets, so give a destination a file of its own.
+- **Which destinations are checked when they send:** every one that names a credential file, unless this node's own config files (or, on a Git-managed primary, the commit in use) define it exactly the same way; those keep any path. So the check also covers an API override of a file's destination, a replica's **Send test**, a primary promoted after a failover (its destinations came from another node), and a primary pinned to a version (its destinations come from an earlier version of its own configuration). One that fails isn't read or sent to: the log names it once per configuration change (`not sent: ...`), and the Alerts page and **Send test** show why. **On a node that follows another,** a destination from the primary's config files whose file is outside the folders isn't sent from this node unless its own files define it the same way, and **after a failover the new primary doesn't send to it** until its file moves into a folder or that node's own files define it the same way. With the Helm chart every pod mounts the same ConfigMap, so that case doesn't arise there. **While the cluster is pinned,** editing a config-file destination whose file is outside the folders stops it being sent until the pin ends: the pinned version still has the old definition. If the check itself can't run, no destination with a credential file is sent until it can; if the config files couldn't be read at start-up, every destination with a credential file is held to the folder rule until a reload reads them.
+- **After upgrading,** a destination made in the UI or the API whose file is somewhere else stops sending until an administrator saves it with a file in one of those folders. Review the destinations made in the UI or the API that have a credential file (**Alerts**, or `GET /api/v1/config/entries?kind=alert_destination`), and look in the audit log for `alert_destination.put` by someone who isn't an administrator.
+- **Prefer `https://` for a destination with a credential file.** On a node whose own resolver is TelltaleDNS, anyone who may add local names or forwarded domains can change where an `http://` destination's host resolves, and a token sent over `http://` would go to that address. `https://`, `smtps://` and STARTTLS check the server's certificate.
 
 ### Email
 Any mail account that allows SMTP sign-in works; you don't need a mail server of your own:
@@ -3043,13 +3127,13 @@ The Upstreams page (servers and upstream groups), the Lists page, and the Groups
 | overrides the file | the UI's version replaces the file's entry of that name; **Revert to the file** brings the file's version back |
 | hidden | the file's entry is left out; **Revert to the file** brings it back |
 
-Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. For upstreams and lists, **Test it** also tries the draft from this node: an upstream is asked for the root's NS records (it shows the answer and the time, or the error: a bad URL, a TLS name that doesn't match, a timeout), and a list is downloaded and parsed (how many rules, and the first lines it can't use). The API calls are `POST /api/v1/checks/upstream` and `POST /api/v1/checks/list`, with the same body as saving; agents use the MCP tools `check_upstream` and `check_list`. An agent's list check says how many lines couldn't be used and why, but not their text, since that is whatever the URL served; people see the lines in the UI. A change that would leave the configuration invalid is refused with the reason. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
+Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. For upstreams and lists, **Test it** also tries the draft from this node: an upstream is asked for the root's NS records (it shows the answer and the time, or the error: a bad URL, a TLS name that doesn't match, a timeout), and a list is downloaded and parsed (how many rules, and the first lines it can't use). The API calls are `POST /api/v1/checks/upstream` and `POST /api/v1/checks/list`, with the same body as saving; agents use the MCP tools `check_upstream` and `check_list`. An agent's list check says how many lines couldn't be used and why, but not their text, since that is whatever the URL served; people see the lines in the UI. When a TLS file an upstream draft names (`tls_ca`, `tls_client_cert`, `tls_client_key`) can't be used, an administrator is told why and anyone else only that it couldn't be, not what the file holds or why (the node's log has the detail). A valid certificate file builds, so the check then answers as for any upstream. A change that would leave the configuration invalid is refused with the reason. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
 
 Changes are stored in `state.db`, next to named devices and local names. **The config files are never rewritten**: what's in the files stays as written, and `telltale config check` on the files alone still shows the file configuration. Simple view shows the common fields; switch to Advanced for timeouts, TLS names, refresh intervals, blocked-answer modes, priorities, and colors.
 
 **Keep it in Git.** On a node whose configuration comes from Git (`[cluster] config_source = "gitops"`, as with the Helm chart and Argo CD or Flux), the change works at once, but a rebuild from Git won't have it. After **Apply** the UI shows the TOML to add to the repository (with the Helm chart: under `config:` in the values) with a **Copy** button, or which block to remove. Once Git has it, **Revert to the file** removes the UI's copy. The API returns the same text as `keepInGit`.
 
-The same through the API: `PUT` or `DELETE` on `/api/v1/upstreams/{name}`, `/api/v1/upstream-groups/{name}`, `/api/v1/lists/{name}`, and `/api/v1/groups/{name}`, with `?dryRun=true` to preview. The body has the same fields as the TOML section. `GET /api/v1/config/entries?kind=list` lists the entries with their sources.
+The same through the API: `PUT` or `DELETE` on `/api/v1/upstreams/{name}`, `/api/v1/upstream-groups/{name}`, `/api/v1/lists/{name}`, and `/api/v1/groups/{name}`, with `?dryRun=true` to preview. The body has the same fields as the TOML section. `GET /api/v1/config/entries?kind=list` lists the entries with their sources. Plugin upstreams (`exec://`, `unix://`) aren't made here: they're defined in the config file ([Plugin upstreams](#plugin-upstreams)).
 
 ## API
 A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:
@@ -3342,7 +3426,7 @@ At the provider, create a confidential client with the redirect URI `<public_url
 
 **Break-glass sign-in.** Before you rely on `disable_local_login`:
 - **Narrow the list to the machines you manage from.** For one workstation, `allowed_admin_networks = ["192.168.1.10/32"]` (a list of single addresses like this is information at start-up; any range, even a `/31`, still gets the warning); for the host itself, loopback (`["127.0.0.0/8", "::1/128"]`) and an SSH tunnel. `[]` turns password sign-in off for everyone: nobody can then sign in with a password while the provider is down, and the way back is to set `disable_local_login = false` and restart (`telltale config check` warns about an empty list). Look at the address the audit log records for your own sign-in before you narrow it: in a container the server may see the Docker network's gateway instead of your machine, and that address differs from one Docker network to the next (it is not always `172.17.0.1`).
-- **A reverse proxy on the same host needs `trusted_proxies = ["127.0.0.1/32"]`.** Unless `127.0.0.1` is inside a network of `[api] trusted_proxies` (an ingress's network does not count), every browser a proxy serves appears to come from the proxy. For Caddy or nginx on `127.0.0.1` that is loopback, so a loopback-only list leaves password sign-in open to everyone the proxy serves, the Internet included if the proxy is exposed. Loopback counts on its own only for `X-Forwarded-Proto` (so HTTP Basic works behind a TLS proxy on the same host), never for `X-Forwarded-For`.
+- **A reverse proxy on the same host needs `trusted_proxies = ["127.0.0.1/32"]`.** Unless `127.0.0.1` is inside a network of `[api] trusted_proxies` (an ingress's network does not count), every browser a proxy serves appears to come from the proxy. For Caddy or nginx on `127.0.0.1` that is loopback, so a loopback-only list leaves password sign-in open to everyone the proxy serves, the Internet included if the proxy is exposed. Loopback counts on its own only for `X-Forwarded-Proto` (so HTTP Basic works behind a TLS proxy on the same host), never for `X-Forwarded-For`. When a request from this machine carries `X-Forwarded-For` and the proxy isn't listed, the log says so (an info line, at most once in ten minutes, naming the address the request came from and never the header); list the proxy and it stops. This node reads a client's address only from `X-Forwarded-For`, never from the standard `Forwarded` header, so for a proxy that sends only `Forwarded` the log says to make it send `X-Forwarded-For` first: listing it alone would silence the line and leave every client looking like the proxy.
 - **List only the proxies in `trusted_proxies`, never your LAN.** For requests from a listed address the client address is read from `X-Forwarded-For`, so any other machine on the list can send that header itself and claim to be `127.0.0.1`.
 - **If the proxy hides the client address, don't rely on addresses.** Behind source NAT (a Kubernetes Service with `externalTrafficPolicy: Cluster`, some ingress and load-balancer setups) every client arrives from a private address of the cluster, so a list of private networks lets everyone in. Use `allowed_admin_networks = []` there, and keep the provider, and the way back above, as your way in.
 - **The gate stays in force when a provider fails to set up.** A missing secret file doesn't open password sign-in: with the list narrowed or empty you can be left without either way in. Start-up logs the break-glass line whether or not the provider was set up.
@@ -3384,14 +3468,14 @@ curl -s -H "Authorization: Bearer $TOKEN" http://dns.lan:8053/api/v1/audit/verif
 Keep the `head` hash somewhere else from time to time: a later `verify` with a different head and fewer entries means entries were removed from the end.
 
 ## Reload without restarting
-Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):
+Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`). A `SIGHUP` sent while the node is still starting is kept, and the reload runs once it is up:
 - The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.
 - Applied immediately, with no dropped queries: upstreams, groups, routes, local records and hosts files, `[access]`, `[ratelimit]`, `[special]`, and `[[listen]]` (new listeners are bound before removed ones are closed).
 - Applied at the next restart (a warning names them): `[cache]`, `[telemetry]`, `[node]`. The cache is kept across reloads, so warm answers aren't lost.
 - Upstream health starts fresh after a reload and is re-learned within a few queries.
 
 ## Stop
-`SIGTERM` or `SIGINT` (Ctrl-C) shuts down gracefully:
+`SIGTERM` or `SIGINT` (Ctrl-C) shuts down gracefully, also when it arrives while the node is still starting (it is kept, and the shutdown below runs once the node is up). A stop during a cluster join ends the join and stops the node at once (exit 0): it isn't ready yet, so there is nothing to drain. Otherwise:
 1. `/readyz` turns 503, so load balancers stop sending new queries.
 2. TCP listeners stop accepting and finish the queries already received.
 3. Upstream lookups still in flight get up to 3 seconds to complete and reply.

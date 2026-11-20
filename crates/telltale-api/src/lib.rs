@@ -213,17 +213,26 @@ pub trait Backend: Send + Sync + 'static {
         model::AlertsStatus::default()
     }
     /// REQ: OBS-010 (T9.6) — sends a test alert to destination `name` from this node.
-    fn alert_test(&self, name: &str) -> BoxFuture<Result<model::AlertTest, Problem>> {
-        let _ = name;
+    /// REQ: OBS-010 (ADR-180) — `by_admin`: the caller is an administrator, who alone is told what
+    /// went wrong reading the destination's private CA file.
+    fn alert_test(
+        &self,
+        name: &str,
+        by_admin: bool,
+    ) -> BoxFuture<Result<model::AlertTest, Problem>> {
+        let _ = (name, by_admin);
         Box::pin(async { Err(Problem::unavailable("alerts aren't available on this node")) })
     }
     /// REQ: API-002 (T9.12) — a draft upstream (the `PUT /upstreams/{name}` body) asked a
     /// probe from this node, before it's saved.
+    /// REQ: API-002 (ADR-180) — `by_admin`: the caller is an administrator, who alone is told
+    /// what went wrong reading a TLS file the draft names.
     fn check_upstream(
         &self,
         body: serde_json::Value,
+        by_admin: bool,
     ) -> BoxFuture<Result<model::CheckResult, Problem>> {
-        let _ = body;
+        let _ = (body, by_admin);
         Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
     }
     /// REQ: API-002 (T9.12) — a draft list (the `PUT /lists/{name}` body) downloaded and
@@ -550,12 +559,15 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: OBS-024 (T13.1) — what the shared configuration `config` (JSON) would have done to
     /// the logged queries over `opts`' window, compared with the configuration in effect
     /// (`POST /api/v1/simulate`).
+    /// REQ: OBS-024 (ADR-180) — `by_admin`: the caller is an administrator; anyone else's
+    /// candidate names no local file, program or socket the configuration in effect doesn't.
     fn simulate(
         &self,
         config: serde_json::Value,
         opts: SimulateOpts,
+        by_admin: bool,
     ) -> BoxFuture<Result<model::Simulation, Problem>> {
-        let _ = (config, opts);
+        let _ = (config, opts, by_admin);
         Box::pin(async {
             Err(Problem::unavailable(
                 "simulation isn't available on this node",
@@ -828,6 +840,16 @@ pub enum ManagedKind {
     Router,
 }
 
+/// REQ: T8.2, API-002 (ADR-181) — the credentials of a router, as a body pastes them, and the
+/// `[[router]]` field naming the file each is saved to: the one list the API layer (hashing a
+/// pasted value for the idempotency record, what a caller below admin is shown) and the backend
+/// (saving, using and removing the files) both use.
+pub const ROUTER_CREDENTIALS: [(&str, &str); 3] = [
+    ("api_key", "api_key_file"),
+    ("api_secret", "api_secret_file"),
+    ("password", "password_file"),
+];
+
 /// A write to a local name or a forwarded domain.
 #[derive(Debug, Clone)]
 pub struct ManagedWrite {
@@ -842,6 +864,12 @@ pub struct ManagedWrite {
     pub by: String,
     /// REQ: OBS-024 — with `dry_run`: also replay the query log (`simulation`).
     pub simulate: Option<SimulateOpts>,
+    /// REQ: OBS-010, API-002 (ADR-179) — the caller is an administrator: an admin's own sign-in,
+    /// HTTP Basic, or API token, not an agent token. Only an administrator adds or changes an
+    /// alert destination that names a credential file, or writes a router (ADR-181). Writes the
+    /// server makes itself, and a forwarded write that doesn't say (from an older node), are not
+    /// an administrator's.
+    pub by_admin: bool,
 }
 
 /// REQ: OBS-024 (T13.1) — a dry run's `simulate` and `simulateUntil` parameters.
@@ -1558,7 +1586,9 @@ async fn stats_slo(
 ///
 /// Buckets by status, query type, and response code, plus upstream exchanges. `step=second`
 /// covers the last 15 minutes, `step=minute` 7 days (48 hours live), `step=hour` 400 days,
-/// `step=day` everything. Buckets without queries are omitted. Example:
+/// `step=day` everything. On a cluster the longest ranges can come back partial: the nodes
+/// whose answers were left out are in `missingNodes`. Buckets without queries are omitted.
+/// Example:
 /// `GET /api/v1/stats/timeseries?from=-30d&step=hour`.
 #[utoipa::path(get, path = "/api/v1/stats/timeseries", tag = "stats", params(TimeseriesParams),
     responses((status = 200, body = Items<TimeBucket>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
@@ -1846,10 +1876,15 @@ async fn explain(
 ///
 /// Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
 /// `pending`) and last error, size, and how many names it contributes to the active snapshot.
-/// `hits` adds up every node's in a cluster.
+/// `hits` adds up every node's in a cluster. For a list read from a local file, the error is
+/// shown in full to an administrator; anyone else sees a generic reason (ADR-180).
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
-async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
+async fn lists(
+    State(b): State<Shared>,
+    ext: axum::http::Extensions,
+) -> Result<Json<Items<ListInfo>>, Problem> {
+    let admin = auth::routes::principal(&ext).is_ok_and(|p| config_api::by_admin(&p));
     let bk = Arc::clone(&b);
     // REQ: OBS-009 (T7.14) — hits from every node: in a cluster the API's node may answer
     // few or no queries itself.
@@ -1858,6 +1893,11 @@ async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem
         let mut items = bk.lists();
         for l in &mut items {
             l.hits = hits.get(&l.name).copied().unwrap_or(0);
+            // REQ: FLT-004, API-002 (ADR-180) — what went wrong reading a local file (a line of
+            // it, whether it is there) is an administrator's to see; the node's log has it too.
+            if !admin && l.error.is_some() && l.local {
+                l.error = Some(LOCAL_LIST_ERROR.to_owned());
+            }
         }
         Ok(items)
     })
@@ -1867,6 +1907,10 @@ async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem
         items,
     }))
 }
+
+/// REQ: FLT-004 (ADR-180) — what a caller below admin sees of a failing list read from a local
+/// file.
+const LOCAL_LIST_ERROR: &str = "the list's local file couldn't be used; an administrator sees why here, and the node's log says";
 
 /// Blockable services.
 ///
@@ -1982,8 +2026,8 @@ async fn anomalies(
 ///
 /// The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense,
 /// MikroTik), then the names devices announce over mDNS (`[clients] mdns`), each with the name
-/// the device has in TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
-/// because these are the router's DHCP leases.
+/// the device has in TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the
+/// path keeps its name because these are the router's DHCP leases.
 #[utoipa::path(get, path = "/api/v1/dhcp/leases", tag = "config",
     responses((status = 200, body = Items<DhcpLease>, description = "The result.")))]
 async fn dhcp_leases(State(b): State<Shared>) -> Json<Items<DhcpLease>> {
@@ -2123,20 +2167,93 @@ async fn forwards(State(b): State<Shared>) -> Result<impl IntoResponse, Problem>
 /// from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
 /// config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
 /// it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-/// files' version back. Secrets aren't part of these sections.
+/// files' version back. Secrets aren't part of these sections. A router's key-file paths and
+/// `username` are shown to an administrator only (their own sign-in or an admin API token);
+/// everyone gets each router's `credentials` status.
 #[utoipa::path(get, path = "/api/v1/config/entries", tag = "config",
     params(EntriesQuery),
     responses((status = 200, body = Items<ConfigEntry>, description = "The entries, by kind and name.")))]
 async fn config_entries(
     State(b): State<Shared>,
     Query(q): Query<EntriesQuery>,
+    ext: axum::http::Extensions,
 ) -> Result<Json<Items<ConfigEntry>>, Problem> {
+    // REQ: API-002, T8.2 (ADR-181) — F7: who may see where a router's keys are.
+    let admin = auth::routes::principal(&ext).is_ok_and(|p| config_api::by_admin(&p));
     // REQ: CLU-004 (ADR-174) — a replica asks the primary for the entries: off the worker.
-    let items = blocking(move || Ok(b.config_entries(q.kind.as_deref()))).await?;
+    let mut items = blocking(move || Ok(b.config_entries(q.kind.as_deref()))).await?;
+    if !admin {
+        items.iter_mut().for_each(redact_router);
+    }
     Ok(Json(Items {
         missing_nodes: Vec::new(),
         items,
     }))
+}
+
+/// The router fields a caller below admin isn't shown: where its keys are, who it signs in as.
+fn router_hidden(field: &str) -> bool {
+    field == "username" || ROUTER_CREDENTIALS.iter().any(|(_, f)| *f == field)
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — security F3: a pin's diff (JSON Patch over the shared
+/// configuration) as a caller below admin sees it. A router's key-file paths and `username` read
+/// "(hidden)", in an operation on one of those fields and inside an added or replaced router (or
+/// list of routers); every other operation is as it was. Before this change the same diff showed
+/// them for routers in the config files.
+pub(crate) fn mask_router_diff(ops: &mut [serde_json::Value]) {
+    fn hide_in(v: &mut serde_json::Value) {
+        if let Some(o) = v.as_object_mut() {
+            for (k, x) in o.iter_mut() {
+                if router_hidden(k) {
+                    *x = "(hidden)".into();
+                }
+            }
+        }
+    }
+    for op in ops {
+        let path = op
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        if parts.first() != Some(&"router") {
+            continue;
+        }
+        let Some(value) = op.get_mut("value") else {
+            continue;
+        };
+        match parts.get(2) {
+            None if parts.len() == 1 => match value.as_array_mut() {
+                Some(a) => a.iter_mut().for_each(hide_in),
+                None => hide_in(value),
+            },
+            None => hide_in(value),
+            Some(field) if router_hidden(field) => *value = "(hidden)".into(),
+            Some(_) => {}
+        }
+    }
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — F7: a router as a caller below admin sees it (a viewer, an
+/// operator, any agent token, an MCP resource read): without where its keys are (the `*_file`
+/// fields) and who it signs in as (`username`). Its `credentials` status stays. Applied where
+/// the answer leaves the node, so a replica's copy of the primary's entries is redacted too.
+fn redact_router(e: &mut ConfigEntry) {
+    if e.kind != "router" {
+        return;
+    }
+    if let Some(o) = e
+        .definition
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (_, file_field) in ROUTER_CREDENTIALS {
+            o.remove(file_field);
+        }
+        o.remove("username");
+    }
 }
 
 /// Quick rules: per-device and per-group allow and block (T6.12, ADR-067).

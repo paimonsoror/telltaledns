@@ -41,6 +41,12 @@ pub(crate) enum Write {
         /// REQ: OBS-024 — absent from older nodes (N−1): no simulation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         simulate: Option<SimulateOpts>,
+        /// REQ: OBS-010, API-002 (ADR-179) — the entry node found the caller to be an
+        /// administrator. Absent from older nodes (N−1): not an administrator's write, so the
+        /// primary refuses it whatever needs one (it trusts the entry node for who the caller
+        /// is, as it does for `by`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_admin: bool,
     },
     Client {
         name: String,
@@ -65,6 +71,7 @@ impl From<ManagedWrite> for Write {
             expect: w.expect,
             by: w.by,
             simulate: w.simulate,
+            by_admin: w.by_admin,
         }
     }
 }
@@ -84,7 +91,7 @@ impl From<ClientWrite> for Write {
 
 /// A [`Problem`] across the channel (its code, so the entry node answers with the same status).
 #[derive(Debug, Serialize, Deserialize)]
-struct WireProblem {
+pub(crate) struct WireProblem {
     code: Code,
     detail: String,
     hint: Option<String>,
@@ -116,7 +123,7 @@ impl From<WireProblem> for Problem {
 /// The primary's answer: the change, or why it was refused.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Answer {
+pub(crate) enum Answer {
     Ok(serde_json::Value),
     Err(WireProblem),
 }
@@ -131,7 +138,14 @@ pub(crate) async fn handle(
 ) -> Result<Vec<u8>, String> {
     let write: Write = serde_json::from_slice(&body).map_err(|e| format!("bad write: {e}"))?;
     let answer = if cluster.is_primary() {
-        apply(&src, &local, &cluster, &peer, write).await
+        let via = cluster
+            .members()
+            .into_iter()
+            .find(|m| m.node_id == peer)
+            .map(|m| m.site)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| peer.clone());
+        apply(&src, &local, &peer, &via, write).await
     } else {
         Answer::Err(
             Problem::new(Code::Conflict, "this node isn't the primary any more")
@@ -142,14 +156,16 @@ pub(crate) async fn handle(
     serde_json::to_vec(&answer).map_err(|e| e.to_string())
 }
 
-async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: Write) -> Answer {
-    let via = cluster
-        .members()
-        .into_iter()
-        .find(|m| m.node_id == peer)
-        .map(|m| m.site)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| peer.to_owned());
+/// Applies a forwarded write from `peer` (named `via`: its site, or its ID) on this node, the
+/// primary, through the same planning as a local write (REQ: OBS-010, API-002 — so the
+/// credential-file rule of ADR-179 is the primary's to apply, with the entry node's `by_admin`).
+pub(crate) async fn apply(
+    src: &Sources,
+    local: &Shared,
+    peer: &str,
+    via: &str,
+    w: Write,
+) -> Answer {
     let (action, target, result) = match w {
         Write::Managed {
             kind,
@@ -159,6 +175,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
             expect,
             by,
             simulate,
+            by_admin,
         } => {
             let action = match kind {
                 ManagedKind::Record => "record",
@@ -189,6 +206,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                     expect,
                     by: format!("{by} via {via}"),
                     simulate,
+                    by_admin,
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
@@ -216,7 +234,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
             (verb("client", deleting), (name, by), r)
         }
-        Write::AnomalyAck(w) => return apply_ack(src, local, peer, &via, w).await,
+        Write::AnomalyAck(w) => return apply_ack(src, local, peer, via, w).await,
     };
     match result {
         Ok(c) => {
@@ -424,6 +442,7 @@ mod tests {
                 auto: false,
                 until_s: None,
             }),
+            by_admin: false,
         }
         .into();
         let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
@@ -448,5 +467,37 @@ mod tests {
             panic!("expected managed")
         };
         assert!(simulate.is_none());
+    }
+
+    // REQ: OBS-010, API-002 (ADR-179) — whether the caller is an administrator crosses the
+    // channel; a write from an older node, which doesn't say, is not an administrator's, and a
+    // write that isn't one's sends nothing new (an older primary reads it as before).
+    #[test]
+    fn obs_010_a_forwarded_write_says_whether_an_admin_made_it() {
+        let w = |by_admin| -> Write {
+            ManagedWrite {
+                kind: ManagedKind::AlertDestination,
+                name: "phone".into(),
+                body: Some(serde_json::json!({"type": "ntfy", "url": "https://ntfy.sh/x"})),
+                dry_run: false,
+                expect: None,
+                by: "root".into(),
+                simulate: None,
+                by_admin,
+            }
+            .into()
+        };
+        let admin = serde_json::to_vec(&w(true)).unwrap();
+        let Write::Managed { by_admin, .. } = serde_json::from_slice(&admin).unwrap() else {
+            panic!("expected managed")
+        };
+        assert!(by_admin);
+        let plain = serde_json::to_string(&w(false)).unwrap();
+        assert!(!plain.contains("by_admin"), "{plain}");
+        let old = br#"{"write":"managed","kind":"alert_destination","name":"x","body":null,"dry_run":false,"expect":null,"by":"bob"}"#;
+        let Write::Managed { by_admin, .. } = serde_json::from_slice(old).unwrap() else {
+            panic!("expected managed")
+        };
+        assert!(!by_admin, "an older node's write isn't an administrator's");
     }
 }

@@ -45,6 +45,20 @@ pub(crate) fn load_files(files: &[PathBuf]) -> Option<Config> {
     load_files_logging(files, true)
 }
 
+/// REQ: OBS-010 (ADR-179) — the config files as start-up keeps them (`file_config`), and whether
+/// they couldn't be read: they were read once already to make `cfg`, and a change since can
+/// make them unreadable. The running configuration then stands in for them until a reload reads
+/// them, and the alert check counts nothing in it as this node's own (logged once, here).
+pub(crate) fn files_at_start(files: &[PathBuf], cfg: &Config) -> (Config, bool) {
+    if let Some(f) = load_files(files) {
+        return (f, false);
+    }
+    warn!(
+        "the config files couldn't be read again at start-up: until a reload reads them, every alert destination with a credential file is held to the folder rule (ADR-179)"
+    );
+    (cfg.clone(), true)
+}
+
 /// Like [`load_files`], logging only errors: for re-checking the node's own files on every
 /// replicated change, where its warnings (a replica's file has no upstreams, by design)
 /// would repeat what start-up already said.
@@ -842,6 +856,15 @@ async fn start_http(
 // The startup sequence and the main loop read best in one place.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
+    // REQ: OPS-007, OPS-009 — the signals are this process's from the start, before DNS answers
+    // (review round 3, F2): one that arrives during start-up (a stop, `systemctl reload`) is kept
+    // by the runtime and acted on once the node is up, a drained stop or a reload, rather than
+    // ending the process by the signal's default action (systemd counts a death by SIGHUP as
+    // clean, so `Restart=on-failure` wouldn't bring it back).
+    let mut term = signal(SignalKind::terminate())?;
+    let mut hup = signal(SignalKind::hangup())?;
+    let mut usr1 = signal(SignalKind::user_defined1())?;
+    let mut int = signal(SignalKind::interrupt())?;
     // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
     telltale_upstream::set_node_tag(rand::random());
     let workers = workers(&cfg);
@@ -956,7 +979,42 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     // REQ: CLU-009 — create or join the cluster on first start (the Helm chart's controller
     // and resolver pods). A resolver pod that can't join exits, so Kubernetes retries it.
-    if let Err(e) = crate::cluster::bootstrap(&cfg, Duration::from_secs(120)).await {
+    // REQ: OPS-007 (review round 4, N1) — a stop during the join (it waits up to two minutes)
+    // ends the join and the node at once: nothing is ready yet, so there is nothing to drain,
+    // and systemd's or Kubernetes' stop timeout would otherwise kill it first. A SIGHUP or
+    // SIGUSR1 meanwhile stays queued for the loop. `biased`: with no join to make, the
+    // bootstrap is ready at once and a stop already queued is drained by the loop as before.
+    let joined = tokio::select! {
+        biased;
+        r = crate::cluster::bootstrap(&cfg, Duration::from_secs(120)) => Some(r),
+        _ = term.recv() => {
+            info!(signal = "SIGTERM", "shutting down during the cluster join");
+            None
+        }
+        _ = int.recv() => {
+            info!(signal = "SIGINT", "shutting down during the cluster join");
+            None
+        }
+    };
+    let Some(joined) = joined else {
+        // What runs so far: the DNS listeners (stopped here), the health checks, the
+        // aggregator thread (joined when its guard drops) and the rollups writer (a task the
+        // runtime drops). Not yet opened or started: the state database, the API, the cluster
+        // channel, the lists; a join that was cut short saved no identity (it saves only once
+        // the primary has answered, in one step). The warm cache is kept, as on any stop.
+        for (_, s) in listeners.streams.drain(..) {
+            s.shutdown().await;
+        }
+        for (_, l) in listeners.udp.drain(..) {
+            l.shutdown();
+        }
+        health.abort();
+        if cfg.cache.persist {
+            save_cache(&cfg, &cache);
+        }
+        return Ok(());
+    };
+    if let Err(e) = joined {
         if cfg.cluster.ephemeral {
             return Err(io::Error::other(format!("cluster: {e}")));
         }
@@ -972,6 +1030,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         cluster.clone(),
         crate::maintenance::now_ms(),
     ));
+    let (own_files, files_unread) = files_at_start(&files, &cfg);
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
         cache: Arc::clone(&cache),
@@ -992,7 +1051,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
-        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
+        file_config: ArcSwap::from_pointee(own_files),
+        files_unread: std::sync::atomic::AtomicBool::new(files_unread),
         config_files: files.clone(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(
             cfg.updates.check,
@@ -1182,14 +1242,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         );
     }
 
-    let mut term = signal(SignalKind::terminate())?;
-    let mut hup = signal(SignalKind::hangup())?;
-    let mut usr1 = signal(SignalKind::user_defined1())?;
     let mut current = cfg;
     loop {
         tokio::select! {
             _ = term.recv() => { info!(signal = "SIGTERM", "shutting down"); break; }
-            _ = tokio::signal::ctrl_c() => { info!(signal = "SIGINT", "shutting down"); break; }
+            _ = int.recv() => { info!(signal = "SIGINT", "shutting down"); break; }
             _ = hup.recv() => { reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists, false).await; }
             // ADR-040 — a change made through the API: re-read files + state.db and apply.
             Some(done) = reload_rx.recv() => {
@@ -1443,8 +1500,13 @@ async fn reload(
         .telemetry
         .set_privacy(new.telemetry.qlog.privacy_level);
     config_marker(sources, current, &new);
-    sources.config.store(Arc::new(new.clone()));
+    // REQ: OBS-010 (ADR-179) — the files before the configuration made from them, so whoever
+    // reads the new configuration also reads its files (the alert check compares the two).
     sources.file_config.store(Arc::new(file));
+    sources
+        .files_unread
+        .store(false, std::sync::atomic::Ordering::Release);
+    sources.config.store(Arc::new(new.clone()));
     *current = new;
     // REQ: FLT-017 — a `[[kubernetes.map]]` rule or a group change reaches the workload table
     // before the next query, not on the watcher's next tick.

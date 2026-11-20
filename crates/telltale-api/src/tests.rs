@@ -17,6 +17,8 @@ struct Fake {
     notes: Mutex<Vec<crate::model::Annotation>>,
     /// REQ: OPS-011 — the fake's one pseudonym map has been handed out.
     map_taken: std::sync::atomic::AtomicBool,
+    /// REQ: OBS-010 (ADR-179) — each managed write's name and whether an admin made it.
+    by_admin: Mutex<Vec<(String, bool)>>,
 }
 
 /// The one finding the fake reports.
@@ -35,6 +37,10 @@ impl Backend for Fake {
         &self,
         w: crate::ManagedWrite,
     ) -> crate::BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        self.by_admin
+            .lock()
+            .unwrap()
+            .push((w.name.clone(), w.by_admin));
         self.seen.lock().unwrap().push(format!(
             "managed {:?} {} {}",
             w.kind,
@@ -286,6 +292,7 @@ impl Backend for Fake {
             enabled: true,
             mode: "enforce".into(),
             source: "inline".into(),
+            local: false,
             state: "ok".into(),
             error: None,
             bytes: 0,
@@ -3230,6 +3237,7 @@ impl Backend for ParkingBackend {
             name: "from-the-gate".into(),
             source: "added".into(),
             definition: None,
+            credentials: None,
         }]
     }
     /// 4242 when the gate opened (the primary's version), 0 otherwise (a replica's own).
@@ -3459,4 +3467,663 @@ fn clu_004_direct_handlers_never_park_a_runtime_worker() {
         "these requests did not complete on a runtime of one worker:\n{}",
         failed.join("\n")
     );
+}
+
+/// REQ: OBS-010, API-002 (ADR-179) — a configuration write tells the backend whether an
+/// administrator made it: an admin's session or admin-scoped token is; an operator, an admin's
+/// token capped below admin, and any agent token (an admin's, even with `cluster:admin`) aren't.
+#[tokio::test]
+async fn obs_010_a_write_says_whether_an_administrator_made_it() {
+    let (app, fake) = app();
+    let olga = app
+        .auth
+        .create_user(
+            "olga",
+            "an operator password",
+            auth::Role::Operator,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let root = app.auth.state().user_by_name("root").unwrap().unwrap();
+    let token = |user: i64, scope: &str, agent: Option<&str>| {
+        let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+        app.auth
+            .state()
+            .create_token(
+                &id,
+                user,
+                "t",
+                &auth::crypto::secret_hash(&secret),
+                scope,
+                None,
+                NOW,
+            )
+            .unwrap();
+        if let Some(s) = agent {
+            app.auth
+                .state()
+                .set_token_agent(&id, s, None, None)
+                .unwrap();
+        }
+        format!("tt_{id}_{secret}")
+    };
+    let body = serde_json::json!({ "type": "webhook", "url": "https://hooks.example.com/x" });
+    let put = |bearer: String, name: &str| {
+        Request::put(format!("/api/v1/alerts/destinations/{name}"))
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-telltale-reason", "tests")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    for (name, req) in [
+        ("admin-token", put(app.bearer.clone(), "admin-token")),
+        (
+            "admin-session",
+            app.signed_in(
+                "PUT",
+                "/api/v1/alerts/destinations/admin-session",
+                body.clone(),
+            ),
+        ),
+        ("operator", put(token(olga.id, "write", None), "operator")),
+        (
+            "admin-write-scope",
+            put(token(root.id, "write", None), "admin-write-scope"),
+        ),
+        (
+            "admin-agent",
+            put(
+                token(root.id, "write", Some("config:write:alerts cluster:admin")),
+                "admin-agent",
+            ),
+        ),
+        (
+            "operator-agent",
+            put(
+                token(olga.id, "write", Some("config:write:alerts")),
+                "operator-agent",
+            ),
+        ),
+    ] {
+        let (s, _, v) = send(&app, req).await;
+        assert_eq!(
+            s,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{name}: reached the backend: {v}"
+        );
+    }
+    let seen = fake.by_admin.lock().unwrap().clone();
+    let admin: Vec<(&str, bool)> = seen.iter().map(|(n, a)| (n.as_str(), *a)).collect();
+    assert_eq!(
+        admin,
+        [
+            ("admin-token", true),
+            ("admin-session", true),
+            ("operator", false),
+            ("admin-write-scope", false),
+            ("admin-agent", false),
+            ("operator-agent", false),
+        ]
+    );
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — security F3: a pinned primary whose routers differ from the
+/// pinned version. The rollout status and a write's `409 cluster_pinned` carry the diff the pin
+/// holds back. Everything else is [`Fake`]'s.
+struct PinnedBackend {
+    inner: Fake,
+}
+
+/// A pin's diff that touches routers (key files, a username) and an upstream.
+fn pin_ops() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({"op": "replace", "path": "/router/0/api_key_file",
+            "value": "/data/secrets/router-udm.api_key.0123456789abcdef"}),
+        serde_json::json!({"op": "add", "path": "/router/1", "value": {
+            "name": "fw", "type": "opnsense", "url": "https://fw.example.test",
+            "api_key_file": "/data/secrets/router-fw.api_key.fedcba9876543210",
+            "api_secret_file": "/data/secrets/router-fw.api_secret.fedcba9876543210",
+            "username": "reader-one"}}),
+        serde_json::json!({"op": "add", "path": "/router", "value": [
+            {"name": "ctl", "type": "unifi", "url": "https://ctl.example.test",
+             "username": "reader-two", "password_file": "/data/secrets/router-ctl.password.0"}]}),
+        serde_json::json!({"op": "replace", "path": "/router/2/username", "value": "reader-three"}),
+        serde_json::json!({"op": "replace", "path": "/upstream/0/url", "value": "tls://9.9.9.9"}),
+    ]
+}
+
+/// The required [`Backend`] methods, answered by the backend's `inner` [`Fake`].
+macro_rules! fake_reads {
+    () => {
+        fn now_unix_seconds(&self) -> u64 {
+            NOW
+        }
+        fn system_info(&self) -> SystemInfo {
+            self.inner.system_info()
+        }
+        fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
+            self.inner.timeseries(step, from_s, to_s)
+        }
+        fn top(
+            &self,
+            kind: TopKind,
+            hour: Hour,
+            limit: usize,
+            client: Option<IpAddr>,
+        ) -> Vec<TopItem> {
+            self.inner.top(kind, hour, limit, client)
+        }
+        fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
+            self.inner.latency(by, hour)
+        }
+        fn queries(
+            &self,
+            q: &QueryParams,
+            from_us: u64,
+            to_us: u64,
+            limit: usize,
+        ) -> Result<QueryPage, Problem> {
+            self.inner.queries(q, from_us, to_us, limit)
+        }
+        fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
+            self.inner.explain(p)
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            self.inner.lists()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            self.inner.groups()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            self.inner.clients()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            self.inner.upstreams()
+        }
+    };
+}
+
+impl Backend for PinnedBackend {
+    fake_reads!();
+    fn rollout_command(
+        &self,
+        w: crate::RolloutWrite,
+    ) -> BoxFuture<Result<crate::model::RolloutAction, Problem>> {
+        let dry_run = w.dry_run();
+        Box::pin(async move {
+            Ok(crate::model::RolloutAction {
+                done: "would pin".into(),
+                dry_run,
+                diff: pin_ops(),
+                changes: vec!["router: changed".into()],
+                config_version: 7,
+            })
+        })
+    }
+    fn rollout_status(&self) -> BoxFuture<Result<crate::model::RolloutStatus, Problem>> {
+        Box::pin(async {
+            Ok(crate::model::RolloutStatus {
+                stage: "pinned".into(),
+                pinned: Some(crate::model::ClusterPin {
+                    to: "3.124".into(),
+                    diff: pin_ops(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        })
+    }
+    fn write_managed(
+        &self,
+        w: ManagedWrite,
+    ) -> BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Err(
+                Problem::new(crate::problem::Code::ClusterPinned, "the cluster is pinned")
+                    .diff(serde_json::Value::Array(pin_ops())),
+            )
+        })
+    }
+}
+
+/// A bearer token for a new user of `role`.
+fn bearer_for(app: &TestApp, name: &str, role: auth::Role, scope: &str) -> String {
+    let user = app
+        .auth
+        .create_user(name, "a long enough password", role, false, NOW)
+        .unwrap();
+    let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &id,
+            user.id,
+            "tests",
+            &auth::crypto::secret_hash(&secret),
+            scope,
+            None,
+            auth_now(),
+        )
+        .unwrap();
+    format!("tt_{id}_{secret}")
+}
+
+/// REQ: API-002, T8.2 (ADR-181) — security F3: the diff a pin holds back names no router key
+/// file or username to a caller below admin (the rollout status, which viewers read, and the
+/// `409 cluster_pinned` an operator's write gets); the rest of the diff is as it was, and an
+/// administrator sees all of it.
+#[tokio::test]
+async fn api_002_a_pin_diff_names_no_router_key_file() {
+    let app = app_over(Arc::new(PinnedBackend {
+        inner: Fake::default(),
+    }));
+    let viewer = bearer_for(&app, "vic", auth::Role::Viewer, "read");
+    let operator = bearer_for(&app, "olga", auth::Role::Operator, "write");
+    let hidden = [
+        "router-udm.api_key",
+        "router-fw.api_key",
+        "router-fw.api_secret",
+        "router-ctl.password",
+        "reader-one",
+        "reader-two",
+        "reader-three",
+    ];
+    let call = |bearer: &str, method: &str, uri: &str| {
+        let mut r = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"));
+        let body = if method == "PUT" {
+            r = r.header("content-type", "application/json");
+            Body::from(serde_json::json!({"url": "udp://9.9.9.9"}).to_string())
+        } else {
+            Body::empty()
+        };
+        r.body(body).unwrap()
+    };
+    for (who, bearer) in [("viewer", &viewer), ("operator", &operator)] {
+        let (s, _, v) = send(&app, call(bearer, "GET", "/api/v1/cluster/rollout")).await;
+        assert_eq!(s, StatusCode::OK, "{who}: {v}");
+        let text = v.to_string();
+        for h in hidden {
+            assert!(!text.contains(h), "{who} sees {h}: {text}");
+        }
+        assert!(
+            text.contains("tls://9.9.9.9"),
+            "{who}: the rest stays: {text}"
+        );
+        assert!(text.contains("https://fw.example.test"), "{who}: {text}");
+    }
+    let (s, _, v) = send(&app, call(&operator, "PUT", "/api/v1/upstreams/up")).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let text = v.to_string();
+    for h in hidden {
+        assert!(!text.contains(h), "the operator's 409 shows {h}: {text}");
+    }
+    assert!(text.contains("tls://9.9.9.9"), "{text}");
+    // An administrator sees the whole diff.
+    let (s, _, v) = send(&app, call(&app.bearer, "GET", "/api/v1/cluster/rollout")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let text = v.to_string();
+    for h in hidden {
+        assert!(text.contains(h), "the admin sees {h}: {text}");
+    }
+}
+
+// ---- Review round 2.
+
+/// A token of `kind` (`agent`, with `scopes`) made by the admin's session; its bearer.
+async fn agent_token(app: &TestApp, name: &str, scopes: &[&str]) -> String {
+    let body = serde_json::json!({"name": name, "kind": "agent", "scopes": scopes});
+    let (s, _, v) = send(app, app.signed_in("POST", "/api/v1/tokens", body)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    v["token"].as_str().unwrap().to_owned()
+}
+
+/// One MCP `tools/call` as `bearer`; the result.
+async fn mcp_call(
+    app: &TestApp,
+    bearer: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let req = Request::post("/mcp")
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .body(Body::from(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": tool, "arguments": args}})
+            .to_string(),
+        ))
+        .unwrap();
+    send(app, req).await.2
+}
+
+/// REQ: API-002, T8.2, AGT-007 (ADR-181) — security N1: the diff a pin or an unpin command
+/// answers with names no router key file or username below admin: an agent's dry run (an agent
+/// is never an administrator), and so the MCP plans made from those dry runs, which every operator
+/// reads through `GET /api/v1/plans` (a viewer sees only its own). An administrator's own dry run
+/// shows them.
+#[tokio::test]
+async fn api_002_a_pin_command_diff_names_no_router_key_file_below_admin() {
+    let app = app_over(Arc::new(PinnedBackend {
+        inner: Fake::default(),
+    }));
+    app.auth.agents().set_require_approval(true);
+    let agent = agent_token(&app, "pinner", &["cluster:admin"]).await;
+    let hidden = [
+        "router-udm.api_key",
+        "router-fw.api_key",
+        "router-ctl.password",
+        "reader-one",
+        "reader-two",
+        "reader-three",
+    ];
+    let pin = |bearer: &str, uri: &str, method: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "a test of the pin preview")
+            .body(Body::from(
+                serde_json::json!({"reason": "a test of the pin preview"}).to_string(),
+            ))
+            .unwrap()
+    };
+    // The agent's own dry runs.
+    for (method, uri) in [
+        ("POST", "/api/v1/cluster/versions/3.124/pin?dryRun=true"),
+        ("DELETE", "/api/v1/cluster/pin?dryRun=true"),
+    ] {
+        let (s, _, v) = send(&app, pin(&agent, uri, method)).await;
+        assert_eq!(s, StatusCode::OK, "{method} {uri}: {v}");
+        let text = v.to_string();
+        for h in hidden {
+            assert!(
+                !text.contains(h),
+                "the agent's {method} answer shows {h}: {text}"
+            );
+        }
+        assert!(text.contains("tls://9.9.9.9"), "the rest stays: {text}");
+    }
+    // Plans made through MCP, read by an operator and a viewer.
+    for (tool, args) in [
+        (
+            "plan_pin_version",
+            serde_json::json!({"epoch": 3, "seq": 124, "reason": "a test of the pin preview"}),
+        ),
+        (
+            "plan_unpin",
+            serde_json::json!({"reason": "a test of the pin preview"}),
+        ),
+    ] {
+        let v = mcp_call(&app, &agent, tool, args).await;
+        assert_eq!(v["result"]["isError"], false, "{tool}: {v}");
+    }
+    let operator = bearer_for(&app, "olga", auth::Role::Operator, "write");
+    let viewer = bearer_for(&app, "vic", auth::Role::Viewer, "read");
+    for (who, bearer) in [("operator", &operator), ("viewer", &viewer)] {
+        let req = Request::get("/api/v1/plans")
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap();
+        let (s, _, v) = send(&app, req).await;
+        assert_eq!(s, StatusCode::OK, "{who}: {v}");
+        let text = v.to_string();
+        // Operators see every plan (they approve them); a viewer sees only its own.
+        let listed = text.contains("plan_pin_version") && text.contains("plan_unpin");
+        assert_eq!(listed, who == "operator", "{who}: {text}");
+        for h in hidden {
+            assert!(!text.contains(h), "the {who} sees {h} in a plan: {text}");
+        }
+    }
+    // An administrator's own dry run shows the whole diff.
+    let (s, _, v) = send(
+        &app,
+        pin(
+            &app.bearer,
+            "/api/v1/cluster/versions/3.124/pin?dryRun=true",
+            "POST",
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let text = v.to_string();
+    for h in hidden {
+        assert!(text.contains(h), "the admin sees {h}: {text}");
+    }
+}
+
+/// A backend whose configuration writes wait for `gate` (a dry run, or a body with `"fail"`,
+/// answers at once), or panic; it counts the writes waiting.
+struct GatedBackend {
+    inner: Fake,
+    gate: Arc<tokio::sync::Semaphore>,
+    waiting: Arc<std::sync::atomic::AtomicUsize>,
+    panics: bool,
+}
+
+impl GatedBackend {
+    fn new(panics: bool) -> Self {
+        Self {
+            inner: Fake::default(),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            waiting: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            panics,
+        }
+    }
+}
+
+impl Backend for GatedBackend {
+    fake_reads!();
+    fn write_managed(
+        &self,
+        w: ManagedWrite,
+    ) -> BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        let (gate, waiting, panics) = (
+            Arc::clone(&self.gate),
+            Arc::clone(&self.waiting),
+            self.panics,
+        );
+        Box::pin(async move {
+            let change = crate::model::ConfigChange {
+                applied: !w.dry_run,
+                config_version: 2,
+                before: None,
+                after: w.body.clone(),
+                recent_queries: 0,
+                impact: String::new(),
+                warnings: Vec::new(),
+                keep_in_git: None,
+                simulation: None,
+            };
+            if w.dry_run {
+                return Ok(change);
+            }
+            assert!(
+                !panics,
+                "a test write that panics with an internal detail: /secret/path"
+            );
+            if w.body.as_ref().is_some_and(|b| b.get("fail").is_some()) {
+                return Err(Problem::new(crate::problem::Code::InvalidConfig, "refused"));
+            }
+            waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(p) = gate.acquire().await {
+                p.forget();
+            }
+            waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(change)
+        })
+    }
+}
+
+/// An admin's `PUT /api/v1/upstreams/{name}` with `body`, a dry run or not.
+#[allow(clippy::needless_pass_by_value)] // called with `json!(..)` like the other helpers
+fn put_upstream(app: &TestApp, name: &str, dry: bool, body: serde_json::Value) -> Request<Body> {
+    let uri = format!(
+        "/api/v1/upstreams/{name}{}",
+        if dry { "?dryRun=true" } else { "" }
+    );
+    Request::put(uri)
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// REQ: API-002, NFR-005 (ADR-181) — security N3: at most 32 configuration changes run at once
+/// (each in a task of its own, which a client that goes away no longer cancels); one more gets
+/// 503 with `Retry-After`. Dry runs aren't counted. A change that fails, or finishes, gives its
+/// place back.
+#[tokio::test]
+async fn api_002_configuration_changes_running_at_once_are_bounded() {
+    let backend = Arc::new(GatedBackend::new(false));
+    let app = app_over(Arc::clone(&backend) as Shared);
+    let up = serde_json::json!({"url": "udp://192.0.2.53"});
+    // Changes that fail give their place back: more of them than there are places, one by one.
+    for i in 0..40 {
+        let (s, _, v) = send(
+            &app,
+            put_upstream(
+                &app,
+                &format!("f{i}"),
+                false,
+                serde_json::json!({"fail": true}),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{i}: {v}");
+    }
+    // 32 changes waiting.
+    let mut running = Vec::new();
+    for i in 0..32 {
+        let router = app.router.clone();
+        let req = put_upstream(&app, &format!("u{i}"), false, up.clone());
+        running.push(tokio::spawn(async move {
+            router.oneshot(req).await.unwrap().status()
+        }));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while backend.waiting.load(std::sync::atomic::Ordering::SeqCst) < 32 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the 32 changes didn't start"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // One more: refused, not queued.
+    let (s, h, v) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        send(&app, put_upstream(&app, "one-more", false, up.clone())),
+    )
+    .await
+    .expect("refused at once, not queued");
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(h.get("retry-after").is_some(), "{h:?}");
+    // A dry run isn't counted.
+    let (s, _, v) = send(&app, put_upstream(&app, "dry", true, up.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // They finish, and give their places back.
+    backend.gate.add_permits(32);
+    for r in running {
+        assert_eq!(r.await.unwrap(), StatusCode::OK);
+    }
+    backend.gate.add_permits(1);
+    let (s, _, v) = send(&app, put_upstream(&app, "after", false, up)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+/// REQ: API-002 (ADR-181) — correctness R6: a change whose task fails (a panic) answers a fixed
+/// 500, never the runtime's text about the task or the panic's message.
+#[tokio::test]
+async fn api_002_a_change_whose_task_fails_answers_a_fixed_500() {
+    let app = app_over(Arc::new(GatedBackend::new(true)));
+    let (s, _, v) = send(
+        &app,
+        put_upstream(
+            &app,
+            "up",
+            false,
+            serde_json::json!({"url": "udp://192.0.2.53"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    let text = v.to_string();
+    for leak in ["panicked", "task", "/secret/path", "JoinError"] {
+        assert!(!text.contains(leak), "{leak}: {text}");
+    }
+    assert!(
+        v["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("server log")),
+        "{v}"
+    );
+}
+
+// ---- Review round 3.
+
+/// REQ: AGT-007, AGT-003 (ADR-181) — review round 3 (F3): an MCP `apply_plan` that finds the node
+/// busy (every place for a change taken: 503) or the plan's first apply still running (409
+/// `change_in_progress`) doesn't spend the plan: it is `ready` again and the agent is told to
+/// apply it again. Once the node is free, the plan is applied.
+#[tokio::test]
+async fn agt_007_a_busy_apply_leaves_the_plan_to_apply_again() {
+    let backend = Arc::new(GatedBackend::new(false));
+    let app = app_over(Arc::clone(&backend) as Shared);
+    let agent = agent_token(&app, "planner", &["config:write:records"]).await;
+    let made = mcp_call(
+        &app,
+        &agent,
+        "plan_set_local_name",
+        serde_json::json!({"name": "nas.home.arpa", "records": [{"type": "A", "value": "192.168.1.10"}],
+            "reason": "a test of a busy apply"}),
+    )
+    .await;
+    assert_eq!(made["result"]["isError"], false, "{made}");
+    let id = made["result"]["structuredContent"]["planId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let apply = || {
+        mcp_call(
+            &app,
+            &agent,
+            "apply_plan",
+            serde_json::json!({"planId": id}),
+        )
+    };
+    let busy = |v: &serde_json::Value, why: &str| {
+        assert_eq!(v["result"]["isError"], true, "{why}: {v}");
+        assert_eq!(
+            v["result"]["structuredContent"]["state"], "ready",
+            "{why}: {v}"
+        );
+        assert!(
+            v["result"]["structuredContent"]["hint"]
+                .as_str()
+                .is_some_and(|h| h.contains("again")),
+            "{why}: {v}"
+        );
+    };
+    // Every place taken.
+    let all = app.auth.write_gate().take_every_place().unwrap();
+    busy(&apply().await, "503");
+    drop(all);
+    // The plan's first apply still running (its Idempotency-Key is the plan's ID).
+    let root = app.auth.state().user_by_name("root").unwrap().unwrap();
+    let key = format!("{}:{id}", root.id);
+    app.auth.write_gate().hold_key(&key, true);
+    busy(&apply().await, "409");
+    app.auth.write_gate().hold_key(&key, false);
+    // Free: applied.
+    backend.gate.add_permits(1);
+    let v = apply().await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    assert_eq!(v["result"]["structuredContent"]["state"], "applied", "{v}");
 }

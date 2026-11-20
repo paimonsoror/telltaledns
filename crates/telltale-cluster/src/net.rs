@@ -35,7 +35,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, watch};
 use tracing::{debug, info, warn};
 
-use crate::node::{Identity, JoinRequest, JoinResponse, Role};
+use crate::node::{Identity, JoinRequest, JoinResponse, Role, TrustStep, TrustVersion};
 use crate::pki::CLUSTER_NAME;
 use crate::sync::{BlobRef, BlobStore, ClusterManifest, Signed};
 use crate::token::Token;
@@ -3190,14 +3190,46 @@ async fn futures_join_all<F: std::future::Future>(
 /// How long a failed fetch or apply waits before trying the same manifest again.
 const SYNC_RETRY: Duration = Duration::from_secs(2);
 
+/// REQ: CLU-001, CLU-005 (T5.4c) — checks a manifest's signature against the CAs this node
+/// trusts now (`ca.crt` on disk, which a CA rotation changes while the node runs), not the ones
+/// it started with. Every reader of the primary's manifests uses it: the replica's [`follow`],
+/// [`follow_trust`], and the witness.
+pub fn verify_now(cluster: &Cluster, signed: &Signed) -> Result<ClusterManifest, String> {
+    signed.verify(&cluster.identity.reload().ca_pem)
+}
+
 /// REQ: CLU-001 (T5.4c) — adopts the CAs a verified manifest says to trust (step by step,
 /// never dropping every CA this node trusts) and rebuilds TLS for new connections.
-pub fn adopt_manifest_trust(cluster: &Cluster, m: &ClusterManifest) {
+///
+/// REQ: CLU-001, CLU-005 (ADR-177) — in order only: nothing from a manifest of an older epoch
+/// than the one this node knows, nor from one older than the manifest it last took its CAs from
+/// (a replay, or a former primary's last manifest, still verifies). Returns `false` for such a
+/// manifest: it is older than one already taken, so it isn't applied either.
+pub fn adopt_manifest_trust(cluster: &Cluster, m: &ClusterManifest) -> bool {
     if m.ca_bundle.is_empty() {
-        return;
+        return true;
     }
-    match cluster.identity.adopt_trust(&m.ca_bundle) {
-        Ok(true) => {
+    let step = if m.epoch < cluster.role().1 {
+        Ok(TrustStep::Older)
+    } else {
+        let at = TrustVersion {
+            cluster_id: m.cluster_id.clone(),
+            epoch: m.epoch,
+            seq: m.seq,
+        };
+        cluster.identity.adopt_trust(&m.ca_bundle, &at)
+    };
+    match step {
+        Ok(TrustStep::Older) => {
+            // One line, at debug: a replay can repeat it as often as it likes.
+            debug!(
+                epoch = m.epoch,
+                seq = m.seq,
+                "cluster: not taking the CAs of an older manifest"
+            );
+            return false;
+        }
+        Ok(TrustStep::Changed) => {
             cluster.bump_cert_generation();
             let n = crate::pki::certs_of(&m.ca_bundle).len();
             info!(cas = n, "cluster: trusted CAs updated from the primary");
@@ -3207,9 +3239,10 @@ pub fn adopt_manifest_trust(cluster: &Cluster, m: &ClusterManifest) {
                 format!("{n} CA(s) trusted"),
             );
         }
-        Ok(false) => {}
+        Ok(TrustStep::Unchanged) => {}
         Err(e) => warn!("cluster: the primary's CA bundle was refused: {e}"),
     }
+    true
 }
 
 /// For nodes that don't apply configuration (witnesses): follows the primary's manifests only
@@ -3225,7 +3258,7 @@ pub async fn follow_trust(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>
         let Some(signed) = incoming.borrow_and_update().clone() else {
             continue;
         };
-        match signed.verify(&cluster.identity.reload().ca_pem) {
+        match verify_now(&cluster, &signed) {
             Ok(m) if m.cluster_id == cluster.identity.meta.cluster_id => {
                 adopt_manifest_trust(&cluster, &m);
             }
@@ -3265,7 +3298,7 @@ pub async fn follow<F, Fut>(
                 break;
             };
             // T5.4c — the trusted CAs change during a rotation: read them fresh.
-            let m = match signed.verify(&cluster.identity.reload().ca_pem) {
+            let m = match verify_now(&cluster, &signed) {
                 Ok(m) if m.cluster_id == cluster.identity.meta.cluster_id => m,
                 Ok(_) => {
                     warn!("ignoring a manifest from another cluster");
@@ -3278,8 +3311,9 @@ pub async fn follow<F, Fut>(
                     break;
                 }
             };
-            adopt_manifest_trust(&cluster, &m);
-            if !m.newer_than(epoch, seq) || m.epoch < cluster.role().1 {
+            // REQ: CLU-001 (ADR-177) — the CAs first, in order; one out of order isn't applied.
+            let in_order = adopt_manifest_trust(&cluster, &m);
+            if !in_order || !m.newer_than(epoch, seq) || m.epoch < cluster.role().1 {
                 break;
             }
             let t = tokio::time::Instant::now();
@@ -3358,3 +3392,7 @@ pub async fn follow<F, Fut>(
 #[cfg(test)]
 #[path = "net_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "net_trust_tests.rs"]
+mod trust_tests;

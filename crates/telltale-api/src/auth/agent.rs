@@ -54,12 +54,9 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:groups",
         "add, change, and remove client groups",
     ),
-    // REQ: T8.2 (ADR-181) — routers hold credentials and say where they're sent: their own
-    // scope, for an admin's token, and not part of `config:write:*`.
-    (
-        "config:write:routers",
-        "add, change, and remove router integrations (UniFi, OPNsense, MikroTik) and their credentials (admin; not in config:write:*)",
-    ),
+    // REQ: T8.2, API-002 (ADR-181) — no scope for routers: they hold credentials and say where
+    // they're sent, so only an administrator's own sign-in or admin API token writes one (as for
+    // a credential file, ADR-179).
     (
         "config:write:ratelimit",
         "change the per-client rate limit, or go back to the config file's",
@@ -100,15 +97,12 @@ pub const SCOPES: &[(&str, &str)] = &[
     ),
 ];
 
-/// REQ: T8.2 (ADR-181) — the routers' scope: an admin's, and not in `config:write:*`.
-const ROUTERS: &str = "config:write:routers";
-
 /// What an agent token gets when none are named: read-only, without the query log.
 pub const DEFAULT_SCOPES: &[&str] = &["analytics:read", "config:read"];
 
 /// The role a scope needs from the token's owner (a token never exceeds its owner).
 fn scope_role(scope: &str) -> Role {
-    if scope == "cluster:admin" || scope == ROUTERS {
+    if scope == "cluster:admin" {
         Role::Admin
     } else if scope.starts_with("config:write:") || scope.starts_with("ops:") {
         Role::Operator
@@ -126,7 +120,7 @@ pub fn parse_scopes(list: &[String]) -> Result<BTreeSet<String>, Problem> {
             out.extend(
                 SCOPES
                     .iter()
-                    .filter(|(n, _)| n.starts_with("config:write:") && *n != ROUTERS)
+                    .filter(|(n, _)| n.starts_with("config:write:"))
                     .map(|(n, _)| (*n).to_owned()),
             );
         } else if SCOPES.iter().any(|(n, _)| *n == s) {
@@ -244,9 +238,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/groups") || under("/api/v1/schedules") {
             return Need::Scope("config:write:groups");
         }
-        // REQ: T8.2 (ADR-181)
+        // REQ: T8.2, API-002 (ADR-181) — not for agents, whatever a token holds (a token an
+        // earlier build made may hold `config:write:routers`).
         if under("/api/v1/routers") {
-            return Need::Scope("config:write:routers");
+            return Need::Forbidden;
         }
         // REQ: OBS-010 (T9.6)
         if under("/api/v1/alerts") {
@@ -819,6 +814,29 @@ mod tests {
         );
     }
 
+    /// REQ: API-002, T8.2 (ADR-181, as ADR-179) — no agent token writes a router: there is no
+    /// scope for it (`config:write:*` and a named `config:write:routers` alike), and the routes
+    /// are refused to agents whatever a token holds.
+    #[test]
+    fn api_002_agents_never_write_routers() {
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(required(&m, "/api/v1/routers/udm"), Need::Forbidden, "{m}");
+        }
+        assert!(parse_scopes(&["config:write:routers".into()]).is_err());
+        assert!(
+            !parse_scopes(&["config:write:*".into()])
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("router"))
+        );
+        assert!(!SCOPES.iter().any(|(n, _)| n.contains("router")));
+        // Reading the configuration (routers included, redacted) is `config:read` as before.
+        assert_eq!(
+            required(&Method::GET, "/api/v1/config/entries"),
+            Need::Scope("config:read")
+        );
+    }
+
     #[test]
     fn agt_004_scopes_parse_and_imply_roles() {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
@@ -828,12 +846,6 @@ mod tests {
             "twelve write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate; not routers) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
-        // REQ: T8.2 (ADR-181) — routers only when named, and only for an admin's token.
-        assert!(!s.contains("config:write:routers"));
-        assert_eq!(
-            implied_role(&parse_scopes(&["config:write:routers".into()]).unwrap()),
-            Role::Admin
-        );
         assert!(s.contains("config:write:rules"));
         assert_eq!(implied_role(&s), Role::Operator);
         assert_eq!(

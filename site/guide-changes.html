@@ -90,13 +90,13 @@ plans_by_default = false   # true: agents' plans simulate even when they don't a
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"action":"block","domain":"tiktok.com","groups":["kids"]}'</code></pre>
       <p>The window ends now, including the second the request arrives in, so a query logged a moment ago is replayed. <code>simulateUntil</code> moves the end back (<code>-24h</code>, or an RFC 3339 time); <code>now</code> is the same as leaving it out.</p>
-      <p>To test a whole configuration, such as a Git commit before you push it, use <code>POST /api/v1/simulate</code>, or let <code>telltale config simulate</code> read the TOML for you. Node-local sections in the file are ignored.</p>
+      <p>To test a whole configuration, such as a Git commit before you push it, use <code>POST /api/v1/simulate</code>, or let <code>telltale config simulate</code> read the TOML for you. Node-local sections in the file are ignored. Someone who isn't an administrator can name only the files on the node (list, zone, hosts, and TLS files) that the configuration already uses.</p>
 <pre><code>TELLTALE_TOKEN=... telltale config simulate shared.toml --window 24h --url https://dns.example.com:8053</code></pre>
     </div>
   </div>
   <div class="callout">
     <p><b>What it can't tell you.</b> A simulation is about decisions. It never asks an upstream or touches the cache, it can't count names nobody asked, and it doesn't predict latency or what an upstream would answer.</p>
-    <p><b>Limits.</b> One simulation runs at a time per node (another gets <code>409 simulation_busy</code>; retry in a few seconds). Past <code>max_rows</code> or <code>max_secs</code> the answer says <code>partial</code>. The window is at most 7 days. At query-log privacy level 1, a change that depends on names can't be replayed; at level 2 and above, nothing can.</p>
+    <p><b>Limits.</b> One simulation runs at a time per node (another gets <code>409 simulation_busy</code>; retry in a few seconds). Past <code>max_rows</code> or <code>max_secs</code> the answer says <code>partial</code>. The window is at most 7 days. One simulation reads at most 4 added or changed lists by URL or from a file, within 4 times the node's list size limit; simulate a bigger change in parts. At query-log privacy level 1, a change that depends on names can't be replayed; at level 2 and above, nothing can.</p>
   </div>
   <p class="muted">In a cluster every node replays its own log and the counts are added up. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#trying-a-change-against-yesterdays-traffic">Trying a change against yesterday's traffic</a>.</p>
 </section>

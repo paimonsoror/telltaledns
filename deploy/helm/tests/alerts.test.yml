@@ -310,10 +310,10 @@ tests:
               summary: Filter list broken hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
 
   # REQ: FLT-004 — failing, but the last good copy is under 48 hours old ("recent": 100000 s):
-  # not yet. A list that never succeeded ("never") has no last-success series at all, so the rule
-  # can't match it: a known gap, pinned on purpose (the in-app `list_failing` rule reports it; if
-  # the chart ever covers it, change this case). "broken" is the control: it proves the series
-  # are wired, so an empty result for the others isn't a typo.
+  # not yet. A list that never succeeded ("never") has no last-success series at all, so this
+  # rule can't match it, on purpose: TelltaleDNSListNeverLoaded is the rule for it (its groups are
+  # at the end of this file). "broken" is the control: it proves the series are wired, so an empty
+  # result for the others isn't a typo.
   - interval: 1m
     input_series:
       - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="broken"}'
@@ -377,3 +377,137 @@ tests:
           - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: ads }
             exp_annotations:
               summary: Filter list ads hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
+
+  # REQ: FLT-004 (ADR-147) — TelltaleDNSListNeverLoaded: a list whose refreshes fail and that has
+  # no last-success series (it has never succeeded) fires after `for: 1h`, not before. The
+  # failure count follows the fetcher's retries (a first failure, then at 5, 15 and 35 minutes),
+  # and the rule only needs it above 0. The group names below are the names promtool prints.
+  - name: never loaded fires after an hour of failures, not before
+    interval: 1m
+    input_series:
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="typo"}'
+        values: "1x4 2x9 3x19 4x39"
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: TelltaleDNSListNeverLoaded
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: TelltaleDNSListNeverLoaded
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: typo }
+            exp_annotations:
+              summary: Filter list typo has never refreshed successfully on pi and its latest refresh failed (check its URL, path or rules).
+
+  # REQ: FLT-004 — only a list with no last-success series is "never loaded". A list that
+  # succeeded once, however long ago ("old": about 58 days; "recent": 100000 s), has the series,
+  # and TelltaleDNSListStale is its rule: the two rules never fire for the same list. A healthy
+  # list, an inline list (never fetched: no last-success series, failure count 0), and a held list
+  # (old success, failure count 0, ADR-147) don't fire either: the rule needs failures above 0.
+  # "typo" is the control that proves the series are wired.
+  - name: a list that succeeded once is not never loaded
+    interval: 1m
+    input_series:
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="typo"}'
+        values: "40x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="old"}'
+        values: "40x70"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="old"}'
+        values: "-5000000x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="recent"}'
+        values: "3x70"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="recent"}'
+        values: "-100000x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="healthy"}'
+        values: "0x70"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="healthy"}'
+        values: "-100x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="inline"}'
+        values: "0x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="held"}'
+        values: "0x70"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="held"}'
+        values: "-300000x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: TelltaleDNSListNeverLoaded
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: typo }
+            exp_annotations:
+              summary: Filter list typo has never refreshed successfully on pi and its latest refresh failed (check its URL, path or rules).
+      - eval_time: 65m
+        alertname: TelltaleDNSListStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: old }
+            exp_annotations:
+              summary: Filter list old hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
+
+  # REQ: FLT-004 — a list disabled in the configuration is left out of /metrics, so both its
+  # series stop (the exporter's side is the Rust test
+  # flt_004_disabled_lists_are_left_out_of_the_list_metrics): "off-never" and "off-old" fail for
+  # 70 minutes, then are gone, and their alerts resolve. "typo" keeps failing and keeps firing.
+  - name: a disabled list stops alerting once its series are gone
+    interval: 1m
+    input_series:
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="typo"}'
+        values: "40x90"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="off-never"}'
+        values: "40x69 stale"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="off-old"}'
+        values: "40x69 stale"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="off-old"}'
+        values: "-200000x69 stale"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: TelltaleDNSListNeverLoaded
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: off-never }
+            exp_annotations:
+              summary: Filter list off-never has never refreshed successfully on pi and its latest refresh failed (check its URL, path or rules).
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: typo }
+            exp_annotations:
+              summary: Filter list typo has never refreshed successfully on pi and its latest refresh failed (check its URL, path or rules).
+      - eval_time: 65m
+        alertname: TelltaleDNSListStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: off-old }
+            exp_annotations:
+              summary: Filter list off-old hasn't refreshed in over 48 hours and its latest refresh failed (the last good copy is still in use).
+      - eval_time: 80m
+        alertname: TelltaleDNSListNeverLoaded
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: typo }
+            exp_annotations:
+              summary: Filter list typo has never refreshed successfully on pi and its latest refresh failed (check its URL, path or rules).
+      - eval_time: 80m
+        alertname: TelltaleDNSListStale
+        exp_alerts: []
+
+  # REQ: FLT-004 — the join is on (instance, list). "typo" never loaded on pi and on lab, but
+  # succeeded on k3s: only pi and lab fire. Joining on `list` alone would let k3s's last success
+  # silence pi's and lab's lists; joining on `instance` alone would let pi's other list ("fine",
+  # with a last success) silence pi's "typo".
+  - name: never loaded is judged per instance and per list
+    interval: 1m
+    input_series:
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="typo"}'
+        values: "40x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="pi",list="fine"}'
+        values: "0x70"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="pi",list="fine"}'
+        values: "-100x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="lab",list="typo"}'
+        values: "40x70"
+      - series: 'telltale_list_fetch_consecutive_failures{job="telltale-metrics",instance="k3s",list="typo"}'
+        values: "40x70"
+      - series: 'telltale_list_last_success_timestamp_seconds{job="telltale-metrics",instance="k3s",list="typo"}'
+        values: "-200000x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: TelltaleDNSListNeverLoaded
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: lab, list: typo }
+            exp_annotations:
+              summary: Filter list typo has never refreshed successfully on lab and its latest refresh failed (check its URL, path or rules).
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, list: typo }
+            exp_annotations:
+              summary: Filter list typo has never refreshed successfully on pi and its latest refresh failed (check its URL, path or rules).

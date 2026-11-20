@@ -31,6 +31,10 @@ fn why(error: &str) -> &'static str {
         "older than cluster packages: it doesn't know the request"
     } else if e.contains("already being made") {
         "busy making another package"
+    } else if e.contains("wasn't kept") {
+        // REQ: CLU-004 (ADR-174) — the part came, and this node's cap on the bytes of cluster
+        // answers held dropped it (the bridge's own words, never a peer's).
+        "its part came but wasn't kept: this node was holding too many bytes of cluster answers"
     } else if e.contains("too large") {
         "its part was too large for the cluster channel"
     } else if e.contains("timed out") || e.contains("timeout") || e.contains("in time") {
@@ -137,5 +141,51 @@ impl Federated {
             manifest: done.manifest,
             archive: if dry_run { Vec::new() } else { done.archive },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::super::bridge::{Limiter, start};
+    use super::why;
+
+    // REQ: OPS-011, CLU-004 (ADR-172, ADR-174) — a peer's part that came in but was dropped by
+    // the cap on the bytes of answers held (the bridge's "wasn't kept") has fixed words of its own
+    // in the manifest, not "did not answer"; the other reasons keep theirs. The error is the
+    // bridge's own, from a read whose part is over its cap.
+    #[test]
+    fn ops_011_a_part_dropped_for_its_bytes_says_so_in_the_manifest() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        // A read may hold 10 bytes; the part is 100.
+        let limiter = Limiter::with_caps(1, 1, 10, 10);
+        let part = async { Ok::<_, String>(vec![0_u8; 100]) };
+        let got = start(
+            &limiter,
+            rt.handle(),
+            vec![("node-a".to_owned(), part)],
+            Duration::from_secs(5),
+        )
+        .wait();
+        let error = got[0].1.as_ref().unwrap_err();
+        assert_eq!(
+            why(error),
+            "its part came but wasn't kept: this node was holding too many bytes of cluster answers",
+            "{error}"
+        );
+        assert_eq!(
+            why("node-a didn't answer in time"),
+            "did not answer in time"
+        );
+        assert_eq!(
+            why("answer too large (2000000 bytes)"),
+            "its part was too large for the cluster channel"
+        );
+        assert_eq!(why("no stream to node-a"), "did not answer");
     }
 }

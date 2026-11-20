@@ -233,9 +233,91 @@ fn write_secret(path: &Path, token: &str) -> io::Result<()> {
     f.write_all(b"\n")
 }
 
+/// REQ: API-002, AGT-003 (ADR-181) — where this node's request key is (`Auth::request_digest`):
+/// in the data directory's `secrets/` folder, so it is neither in state.db nor in a backup.
+const REQUEST_KEY_FILE: &str = "secrets/.request-key";
+
+/// This node's request key: read from `<data_dir>/secrets/.request-key` (64 hex digits), or
+/// made there on the first start (random, readable by this user only, the folder by this user
+/// only). A file that isn't a key is an error: it is left as it is. Review round 2 (security
+/// N6): the key appears whole or not at all: it is written to a temporary file of a random
+/// name (created exclusively, synced), linked into place without replacing a key that is there
+/// already, and the folder synced; a start racing another reads the one that won.
+fn request_key(dir: &Path) -> io::Result<[u8; 32]> {
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    let file = dir.join(REQUEST_KEY_FILE);
+    let parse = |t: &str| -> Option<[u8; 32]> {
+        let t = t.trim();
+        let mut k = [0u8; 32];
+        if t.len() != 64 {
+            return None;
+        }
+        for (i, b) in k.iter_mut().enumerate() {
+            *b = u8::from_str_radix(t.get(i * 2..i * 2 + 2)?, 16).ok()?;
+        }
+        Some(k)
+    };
+    let read = |file: &Path| -> io::Result<[u8; 32]> {
+        let t = std::fs::read_to_string(file)?;
+        parse(&t).ok_or_else(|| {
+            io::Error::other(format!(
+                "{}: not a request key (64 hex digits); remove it and restart to make a new one",
+                file.display()
+            ))
+        })
+    };
+    match read(&file) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        other => return other,
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    let mut key = [0u8; 32];
+    let mut tag = [0u8; 8];
+    let random = ring::rand::SystemRandom::new();
+    ring::rand::SecureRandom::fill(&random, &mut key)
+        .and_then(|()| ring::rand::SecureRandom::fill(&random, &mut tag))
+        .map_err(|_| io::Error::other("the system's random source failed"))?;
+    let tmp = file.with_file_name(format!(".request-key.{}.tmp", crypto::hex(&tag)));
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    let wrote = f
+        .write_all(crypto::hex(&key).as_bytes())
+        .and_then(|()| f.sync_all());
+    drop(f);
+    // `link` never replaces a file that is there: a start that lost the race reads the winner's.
+    // A crash between the link and the removal below leaves the temporary name as a second name
+    // for the key in use (the folder is 0700); the sweep removes it once it is ten minutes old.
+    let placed = wrote.and_then(|()| std::fs::hard_link(&tmp, &file));
+    let _ = std::fs::remove_file(&tmp);
+    match placed {
+        Ok(()) => {
+            if let Some(parent) = file.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+            Ok(key)
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => read(&file),
+        Err(e) => Err(e),
+    }
+}
+
 /// Opens the auth service for the server. Blocking (Argon2 for a bootstrap password).
 pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
     let auth = Arc::new(Auth::new(Arc::new(open_state(cfg)?), settings(cfg)));
+    match request_key(&data_dir(cfg)) {
+        Ok(k) => auth.set_request_key(k),
+        Err(e) => warn!(
+            "the request key couldn't be read or made ({e}): a router change with a pasted key, retried with its Idempotency-Key after a restart, is refused rather than replayed"
+        ),
+    }
     // REQ: API-004 (issue #63) — before the providers, so it is said even when they fail.
     log_break_glass(cfg);
     // A broken provider setup (say, a missing secret file) changes nothing about password

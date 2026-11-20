@@ -19,17 +19,49 @@ case "$(uname -m)" in
   *) echo "unsupported test arch"; exit 1 ;;
 esac
 
-# Failures become CI annotations with the installer's output and the service's journal (the
-# job log isn't always at hand).
+# BEGIN failure-report — REQ: OPS-004. portwait-test.sh cuts this block out and runs it with fake
+# tools (including ones that hang), so keep it self-contained.
+# Failures become CI annotations with the installer's output, the service's journal and, for the
+# bind failure that has failed this step ("Address already in use" on port 53), who held the port:
+# the sockets with their processes, systemd-resolved's state and journal, and the resolved.conf it
+# ran with (the job log isn't always at hand). Every command is bounded by `timeout` and may fail:
+# fail() runs from the ERR trap, and it must never hang or die before it has printed.
+REPORT_TIMEOUT=${REPORT_TIMEOUT:-8}
+oneline() { # max-chars: stdin as one short line
+  tr '\n' ' ' | tr -s ' ' | cut -c1-"$1"
+}
+# Who holds UDP and TCP port 53, with the process (the kernel's view; empty when nobody does).
+port53_report() {
+  timeout "$REPORT_TIMEOUT" ss -Hulpn 'sport = :53' 2>&1 | sed 's/^/udp /' || true
+  timeout "$REPORT_TIMEOUT" ss -Htlpn 'sport = :53' 2>&1 | sed 's/^/tcp /' || true
+}
+# systemd-resolved as systemd reads its configuration: the files and settings, comments left out.
+resolved_config() {
+  timeout "$REPORT_TIMEOUT" systemd-analyze cat-config systemd/resolved.conf 2>&1 | grep -E '^(# /|[^#])' || true
+}
 fail() {
   echo "FAIL: $*"
-  local extra=""
+  local extra="" held cfg state rlog tlog heldline=nothing
   if [ -f "$WORK/guided.out" ]; then
-    extra=" | install.sh: $(tail -n 8 "$WORK/guided.out" | tr '\n' ' ' | cut -c1-600)"
+    extra=" | install.sh: $(tail -n 8 "$WORK/guided.out" | oneline 600)"
   fi
-  echo "::error title=systemd-e2e::FAIL: $*$extra | journal: $(journalctl -u telltale --no-pager -n 8 2>/dev/null | tr '\n' ' ' | cut -c1-800)"
+  held="$(port53_report)"
+  cfg="$(resolved_config)"
+  state="$(timeout "$REPORT_TIMEOUT" systemctl status systemd-resolved --no-pager 2>&1 | head -n 12 || true)"
+  rlog="$(timeout "$REPORT_TIMEOUT" journalctl -u systemd-resolved -n 20 --no-pager 2>&1 || true)"
+  tlog="$(timeout "$REPORT_TIMEOUT" journalctl -u telltale --no-pager -n 120 2>&1 || true)"
+  # The job log gets all of it.
+  echo "--- who holds port 53 now"; echo "${held:-(nothing)}"
+  echo "--- systemd-resolved"; echo "$state"; echo "$rlog"
+  echo "--- resolved.conf as systemd reads it"; echo "$cfg"
+  echo "--- telltale journal (last 120 lines)"; echo "$tlog"
+  # The annotation (readable without a token) gets the short version. For the service's journal:
+  # its first lines that aren't routine INFO (the first failing start, and why), then the last few.
+  [ -z "$held" ] || heldline="$(printf '%s\n' "$held" | oneline 500)"
+  echo "::error title=systemd-e2e::FAIL: $*$extra | port 53: $heldline | resolved.conf: $(printf '%s\n' "$cfg" | oneline 300) | resolved journal: $(printf '%s\n' "$rlog" | tail -n 6 | cut -c1-170 | oneline 700) | journal: $(printf '%s\n' "$tlog" | grep -vE ' (INFO|DEBUG|TRACE) ' | cut -c1-170 | head -n 10 | oneline 1200) | last: $(printf '%s\n' "$tlog" | tail -n 4 | cut -c1-170 | oneline 600)"
   exit 1
 }
+# END failure-report
 trap 'fail "line $LINENO: \`$BASH_COMMAND\` failed"' ERR
 
 command -v minisign >/dev/null || { apt-get update -qq && apt-get install -y -qq minisign dnsutils; }
@@ -52,6 +84,12 @@ sleep 1
 export TELLTALE_RELEASE_URL=http://127.0.0.1:8765
 TELLTALE_RELEASE_PUBKEY="$(sed -n 2p "$WORK/test.pub")"
 export TELLTALE_RELEASE_PUBKEY
+
+# Who holds port 53 before the install, for the job log: systemd-resolved's stub is expected (the
+# install turns it off); anything else is what a bind failure further down would be about.
+echo "== port 53 before the install"
+held="$(port53_report)"
+echo "${held:-(nothing)}"
 
 echo "== install"
 sh "$HERE/install.sh" --disable-resolved-stub

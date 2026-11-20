@@ -28,6 +28,19 @@ pub(crate) const DISK_FULL: f64 = 90.0;
 /// A replica behind the primary's configuration for this long degrades.
 const SYNC_LAG_SECONDS: u64 = 60;
 
+/// REQ: FLT-004 (ADR-180) — "list X fails to update", for the health reasons and the
+/// `list_failing` alert: with the list's error, except for a list read from a local file, whose
+/// error can quote a line of it or say whether it is there (an administrator sees it on
+/// `GET /api/v1/lists`, and the node's log has it).
+pub(crate) fn list_failing_summary(list: &ListInfo) -> String {
+    let why = if list.local {
+        "its local file couldn't be used (an administrator sees why on the Lists page, and the node's log says)"
+    } else {
+        list.error.as_deref().unwrap_or("unknown error")
+    };
+    format!("list {} fails to update: {why}", list.name)
+}
+
 fn reason(level: &str, code: &str, summary: String, link: &str) -> HealthReason {
     HealthReason {
         level: level.to_owned(),
@@ -175,13 +188,11 @@ pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
         }
     }
     for list in l.lists.unwrap_or_default() {
-        if list.enabled
-            && let Some(e) = &list.error
-        {
+        if list.enabled && list.error.is_some() {
             out.push(reason(
                 DEGRADED,
                 "list_failing",
-                format!("list {} fails to update: {e}", list.name),
+                list_failing_summary(list),
                 "#/lists",
             ));
         }
@@ -758,6 +769,66 @@ mod tests {
         );
     }
 
+    // REQ: FLT-004, OBS-015 (ADR-180) — a failing list read from a local file is named in the
+    // health reasons without what reading it went wrong with (a line of the file, whether it is
+    // there), whatever its path looks like; a URL list's error is quoted as before.
+    #[test]
+    fn flt_004_a_failing_local_list_is_named_without_its_error() {
+        let failing = |name: &str, source: &str, local: bool, error: &str| ListInfo {
+            name: name.into(),
+            kind: "allow".into(),
+            enabled: true,
+            mode: "enforce".into(),
+            source: source.into(),
+            local,
+            state: "failed".into(),
+            error: Some(error.into()),
+            bytes: 0,
+            lines: 0,
+            entries: 0,
+            unique: 0,
+            regex_skipped: 0,
+            hits: 0,
+            overlap: Vec::new(),
+            last_checked_unix_seconds: None,
+            last_changed_unix_seconds: None,
+            stale_days: None,
+        };
+        let lists = [
+            failing(
+                "family-allow",
+                "/etc/telltale/allow.txt",
+                true,
+                "not a usable list: 0 rules, 3 invalid lines (first: `bad!marker-7f3a`: invalid character in name)",
+            ),
+            failing(
+                "urlish",
+                "https://lists.example/not-a-download.txt",
+                true,
+                "https://lists.example/not-a-download.txt: marker-9c2e",
+            ),
+            failing("web", "https://lists.example/hosts.txt", false, "HTTP 404"),
+        ];
+        let ups = [up("quad9", &["default"], "open")];
+        let mut l = local(&ups, &[]);
+        l.lists = Some(&lists);
+        let reasons = local_reasons(&l);
+        let summary = |name: &str| {
+            reasons
+                .iter()
+                .find(|r| r.code == "list_failing" && r.summary.contains(name))
+                .map(|r| r.summary.clone())
+                .unwrap_or_default()
+        };
+        let local = summary("family-allow");
+        assert!(!local.contains("marker-7f3a"), "{local}");
+        assert!(local.contains("local file"), "{local}");
+        let urlish = summary("urlish");
+        assert!(!urlish.contains("marker-9c2e"), "{urlish}");
+        assert!(urlish.contains("local file"), "{urlish}");
+        assert!(summary("web").contains("HTTP 404"), "{reasons:?}");
+    }
+
     // REQ: OBS-015 — a node not serving is severe alone, degraded when others serve.
     #[test]
     fn obs_015_not_serving_depends_on_the_others() {
@@ -781,6 +852,7 @@ mod tests {
             enabled: true,
             mode: "enforce".into(),
             source: "https://lists.example/hagezi.txt".into(),
+            local: false,
             state: "failed".into(),
             error: Some("HTTP 404".into()),
             bytes: 0,

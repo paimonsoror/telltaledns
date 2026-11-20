@@ -166,14 +166,18 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
 /// e.g. `{"url": "tls://9.9.9.9", "tls_server_name": "dns.quad9.net"}`. A name the config files use is overridden: this definition replaces theirs
 /// until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
 /// configuration is checked before anything is stored. On a node whose configuration comes from
-/// Git, the response's `toml` says what to add to the repository to keep the change.
+/// Git, the response's `toml` says what to add to the repository to keep the change. Plugin
+/// upstreams (`exec://`, `unix://`, and `args`) are defined in the config file: such a body is
+/// refused for everyone, an administrator included (422, ADR-180).
 #[utoipa::path(put, path = "/api/v1/upstreams/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
-        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+        (status = 422, body = Problem, description = "A field is wrong, the configuration wouldn't be valid, or the upstream is a plugin (`exec://`, `unix://`): problem+json says which."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_upstream(
     State((backend, auth)): State<Ctx>,
@@ -213,6 +217,8 @@ pub(crate) async fn put_upstream(
         (status = 404, body = Problem, description = "No entry by that name."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_upstream(
     State((backend, auth)): State<Ctx>,
@@ -249,6 +255,8 @@ pub(crate) async fn delete_upstream(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_upstream_group(
     State((backend, auth)): State<Ctx>,
@@ -288,6 +296,8 @@ pub(crate) async fn put_upstream_group(
         (status = 404, body = Problem, description = "No entry by that name."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_upstream_group(
     State((backend, auth)): State<Ctx>,
@@ -316,14 +326,20 @@ pub(crate) async fn delete_upstream_group(
 /// e.g. `{"url": "https://example.com/hosts.txt"}`. A name the config files use is overridden: this definition replaces theirs
 /// until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
 /// configuration is checked before anything is stored. On a node whose configuration comes from
-/// Git, the response's `toml` says what to add to the repository to keep the change.
+/// Git, the response's `toml` says what to add to the repository to keep the change. A list read
+/// from a local file (`path`) is added, or pointed at another file, only by an administrator (an
+/// admin's sign-in or API token; no agent token); the operator role covers URL lists, inline
+/// rules, a file list's other settings, and deleting any list (ADR-180).
 #[utoipa::path(put, path = "/api/v1/lists/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "The list names a local file (`path`) it didn't read before, and the caller isn't an administrator."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_list(
     State((backend, auth)): State<Ctx>,
@@ -363,6 +379,8 @@ pub(crate) async fn put_list(
         (status = 404, body = Problem, description = "No entry by that name."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_list(
     State((backend, auth)): State<Ctx>,
@@ -399,6 +417,8 @@ pub(crate) async fn delete_list(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_group(
     State((backend, auth)): State<Ctx>,
@@ -438,6 +458,8 @@ pub(crate) async fn put_group(
         (status = 404, body = Problem, description = "No entry by that name."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_group(
     State((backend, auth)): State<Ctx>,
@@ -660,14 +682,23 @@ async fn group_guard(
 /// `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
 /// ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
 /// Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
+/// A destination that names either file, before or after the change, is added or changed only
+/// by an administrator (an admin's sign-in or API token; agent tokens can't); without one, or to
+/// delete one, the operator role is enough. The file is an absolute path under `/run/secrets/`,
+/// `/etc/telltale-secrets/` or the data directory's `secrets/` folder (not
+/// `/run/secrets/kubernetes.io/`), written without `.` or `..`; links are followed. It needn't
+/// exist yet.
 /// A destination the config files define is overridden until this one is deleted.
 #[utoipa::path(put, path = "/api/v1/alerts/destinations/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "The destination names a credential file (`token_file`, `password_file`), before or after the change, and the caller isn't an administrator."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_alert_destination(
     State((backend, auth)): State<Ctx>,
@@ -704,6 +735,8 @@ pub(crate) async fn put_alert_destination(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No entry by that name."),
         (status = 422, body = Problem, description = "A rule still uses it."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_alert_destination(
     State((backend, auth)): State<Ctx>,
@@ -739,6 +772,8 @@ pub(crate) async fn delete_alert_destination(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_alert_rule(
     State((backend, auth)): State<Ctx>,
@@ -775,6 +810,8 @@ pub(crate) async fn put_alert_rule(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_alert_rule(
     State((backend, auth)): State<Ctx>,
@@ -801,7 +838,8 @@ pub(crate) async fn delete_alert_rule(
 ///
 /// Sends a message marked as a test, from this node, and answers with what happened: `ok`, or
 /// the destination's error (a wrong password, an unreachable server). Nothing is stored, but
-/// the test is audited. Needs the operator role.
+/// the test is audited. Needs the operator role. When the private CA file (`tls_ca`) can't be
+/// used, only an administrator is told why; anyone else gets that it couldn't be (ADR-180).
 #[utoipa::path(post, path = "/api/v1/alerts/destinations/{name}/test", tag = "config",
     params(("name" = String, Path, description = "The destination.")),
     responses(
@@ -815,7 +853,7 @@ pub(crate) async fn test_alert_destination(
     ext: axum::http::Extensions,
 ) -> Result<Json<crate::model::AlertTest>, Problem> {
     let p = principal(&ext)?;
-    let r = backend.alert_test(&name).await?;
+    let r = backend.alert_test(&name, by_admin(&p)).await?;
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     auth.record(
         &actor,
@@ -832,12 +870,15 @@ pub(crate) async fn test_alert_destination(
 /// builds it and asks it for the root's NS records, as health checks do, and answers with what
 /// happened: `ok` with the rcode, records, and time, or the error (a bad URL, a TLS name that
 /// doesn't match, a timeout). Nothing is saved; the check is audited. Needs the operator role
-/// (agents: `config:write:upstreams`).
+/// (agents: `config:write:upstreams`). A plugin draft (`exec://`, `unix://`, `args`) is refused
+/// before anything is built, for everyone: plugin upstreams are defined in the config file
+/// (ADR-180). When a TLS file the draft names (`tls_ca`, `tls_client_cert`, `tls_client_key`)
+/// can't be used, only an administrator is told why; anyone else gets that it couldn't be.
 #[utoipa::path(post, path = "/api/v1/checks/upstream", tag = "config",
     request_body = Object,
     responses(
         (status = 200, body = crate::model::CheckResult, description = "Answered, or why not."),
-        (status = 422, body = Problem, description = "The body isn't an upstream (an unknown or mistyped field)."),
+        (status = 422, body = Problem, description = "The body isn't an upstream (an unknown or mistyped field), or it's a plugin (`exec://`, `unix://`)."),
     ))]
 pub(crate) async fn check_upstream(
     State((backend, auth)): State<Ctx>,
@@ -848,7 +889,7 @@ pub(crate) async fn check_upstream(
     let p = principal(&ext)?;
     let input = body(b)?;
     let url = input.get("url").cloned().unwrap_or_default();
-    let mut r = backend.check_upstream(input).await?;
+    let mut r = backend.check_upstream(input, by_admin(&p)).await?;
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     auth.record(
         &actor,
@@ -932,6 +973,8 @@ pub(crate) async fn check_list(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong (a window's time, an unknown list or service), or the configuration wouldn't be valid."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_schedule(
     State((backend, auth)): State<Ctx>,
@@ -959,29 +1002,35 @@ pub(crate) async fn put_schedule(
     .await
 }
 
-/// The fields of a router body that carry a secret, written to a file and never stored.
-pub(crate) const ROUTER_SECRETS: [&str; 3] = ["api_key", "api_secret", "password"];
-
 /// Add or change a router integration (T8.2, API-002).
 ///
 /// The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi
 /// console: `{"type": "unifi", "url": "https://192.168.1.1", "api_key": "…",
 /// "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
-/// UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`:
-/// TelltaleDNS writes each to a new file only it can read under `<data_dir>/secrets/` and
-/// stores that file's path; the value is never stored, logged, or returned (ADR-181).
-/// Credential files named here (`api_key_file`, …) must be under `<data_dir>/secrets/` too.
-/// Leave a credential out to keep the current one, unless the type, address, site, or TLS settings change: then it must
-/// be entered again. Admins only (agents: `config:write:routers`, which `config:write:*`
-/// doesn't include). The routers are read again within seconds; a router the config files
-/// define is overridden until this one is deleted.
+/// UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
+/// each to a new file only it can read under `<data_dir>/secrets/` on this node and stores that
+/// file's path. The value itself is never stored, logged, or returned; with an `Idempotency-Key`,
+/// the record kept for a retry holds only a keyed hash of it, for a day (ADR-181). A pasted key goes only
+/// to an `https://` address (or a loopback one), and with `tls_insecure_skip_verify` only to an
+/// address written as a number, not a host name. The body names no key file (`api_key_file`, …)
+/// but the router's own, sent back unchanged at the same address: paste the key instead (a file
+/// elsewhere, such as a Docker or Kubernetes secret, is named in the config file); with a pasted
+/// value, the file named for it is replaced. Leave a credential out to keep the current one,
+/// unless the type, address, site, or TLS settings change: then it must be entered again. Admins
+/// only: an administrator's own sign-in or an admin API token; agent tokens can't. The routers
+/// are read again within 5 seconds after the reads in progress end; a router the config files
+/// define is overridden until this one is deleted. A key left out with none of its own is
+/// refused (422) by the name to paste (`api_key`, `api_secret`, `password`).
 #[utoipa::path(put, path = "/api/v1/routers/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Not an administrator (agent tokens never are)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
-        (status = 422, body = Problem, description = "A field is wrong (the URL, missing credentials), or the configuration wouldn't be valid."),
+        (status = 422, body = Problem, description = "A field is wrong (the URL, missing credentials, a key file named, a pasted key for an http:// address or, with an unchecked certificate, for a host name, the key not entered again for a new address, a node whose data_dir isn't a plain absolute path), or the configuration wouldn't be valid."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_router(
     State((backend, auth)): State<Ctx>,
@@ -995,17 +1044,18 @@ pub(crate) async fn put_router(
         Ok(i) => i,
         Err(p) => return p.into_response(),
     };
-    // ADR-181 — the idempotency record keeps the request: a secret is kept as its hash.
+    // REQ: API-002, AGT-003, T8.2 (ADR-181) — security F5: the idempotency record (in state.db)
+    // keeps the request, so a retry with the same key and body replays and another body is
+    // refused. A pasted secret is kept there only as a hash keyed with this node's request key
+    // (`Auth::request_digest`: a random key in a file only this user reads, outside state.db and
+    // outside backups), so the record can't be used to test guesses of the secret.
     let mut shown = input.clone();
     if let Some(o) = shown.as_object_mut() {
-        for k in ROUTER_SECRETS {
+        for (k, _) in crate::ROUTER_CREDENTIALS {
             if let Some(v) = o.get_mut(k)
                 && let Some(s) = v.as_str()
             {
-                *v = serde_json::Value::String(format!(
-                    "blake3:{}",
-                    blake3::hash(s.as_bytes()).to_hex()
-                ));
+                *v = serde_json::Value::String(format!("keyed:{}", auth.request_digest(s)));
             }
         }
     }
@@ -1025,13 +1075,18 @@ pub(crate) async fn put_router(
 
 /// Remove a router integration (T8.2, API-002).
 ///
-/// Its devices lose the names it gave them at the next read. A router the config files define
+/// Its devices lose the names it gave them after the next round of reads, which starts within 5
+/// seconds after the reads in progress end. A router the config files define
 /// is hidden until the files' entry is brought back (DELETE again, or Revert to the file).
+/// Admins only, as for `PUT`.
 #[utoipa::path(delete, path = "/api/v1/routers/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not an administrator (agent tokens never are)."),
         (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_router(
     State((backend, auth)): State<Ctx>,
@@ -1074,6 +1129,8 @@ pub(crate) async fn delete_router(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong (no device or group, an unknown kind, a name that matches nothing, a MAC address), or the configuration wouldn't be valid."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_anomaly_mute(
     State((backend, auth)): State<Ctx>,
@@ -1109,6 +1166,8 @@ pub(crate) async fn put_anomaly_mute(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_anomaly_mute(
     State((backend, auth)): State<Ctx>,
@@ -1147,6 +1206,8 @@ pub(crate) async fn delete_anomaly_mute(
         (status = 400, body = Problem, description = "The key isn't namespace/kind/name, or the body has no `group`."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "No such group, or an unknown kind."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_kubernetes_map(
     State((backend, auth)): State<Ctx>,
@@ -1184,6 +1245,8 @@ pub(crate) async fn put_kubernetes_map(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No rule by that key."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_kubernetes_map(
     State((backend, auth)): State<Ctx>,
@@ -1217,6 +1280,8 @@ pub(crate) async fn delete_kubernetes_map(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No entry by that name."),
         (status = 422, body = Problem, description = "A group still uses it."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_schedule(
     State((backend, auth)): State<Ctx>,
@@ -1256,6 +1321,8 @@ pub(crate) async fn delete_schedule(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A field is wrong (a prefix, a CIDR, zero queries while enabled), or the configuration wouldn't be valid."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_ratelimit(
     State((backend, auth)): State<Ctx>,
@@ -1291,6 +1358,8 @@ pub(crate) async fn put_ratelimit(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "Nothing was changed through the API: the file's rate limit is in effect already."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_ratelimit(
     State((backend, auth)): State<Ctx>,
@@ -1326,6 +1395,8 @@ pub(crate) async fn delete_ratelimit(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A name isn't a domain name, a client isn't an address or network, or the configuration wouldn't be valid."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_exclusions(
     State((backend, auth)): State<Ctx>,
@@ -1361,6 +1432,8 @@ pub(crate) async fn put_exclusions(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "Nothing was changed through the API: the file's exclusions are in effect already."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_exclusions(
     State((backend, auth)): State<Ctx>,
@@ -1417,6 +1490,8 @@ pub(crate) fn rollout_settings_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A bound is out of range or a canary isn't a node ID, `site:<name>`, or `ephemeral`."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_rollout_settings(
     State((backend, auth)): State<Ctx>,
@@ -1452,6 +1527,8 @@ pub(crate) async fn put_rollout_settings(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_rollout_settings(
     State((backend, auth)): State<Ctx>,
@@ -1485,6 +1562,8 @@ pub(crate) async fn delete_rollout_settings(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A bound is out of range, or the configuration wouldn't be valid."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_simulate_settings(
     State((backend, auth)): State<Ctx>,
@@ -1520,6 +1599,8 @@ pub(crate) async fn put_simulate_settings(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+        (status = 409, body = Problem, description = "The Idempotency-Key was used for another request, or its first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_simulate_settings(
     State((backend, auth)): State<Ctx>,
@@ -1626,9 +1707,10 @@ fn json_of<T: serde::Serialize>(v: &T) -> String {
     request_body = ClientInput,
     responses(
         (status = 200, body = ClientChange, description = "Applied (or, with dryRun, what would change)."),
-        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused for another request."),
+        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused for another request; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "If-Match: the config changed since that version."),
         (status = 422, body = Problem, description = "The resulting configuration is invalid (e.g. an unknown group)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_client(
     State((backend, auth)): State<Ctx>,
@@ -1666,8 +1748,9 @@ pub(crate) async fn put_client(
     responses(
         (status = 200, body = ClientChange, description = "The result."),
         (status = 404, body = Problem, description = "No device by that name was created through the API."),
-        (status = 409, body = Problem, description = "Defined in the config files."),
+        (status = 409, body = Problem, description = "Defined in the config files; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_client(
     State((backend, auth)): State<Ctx>,
@@ -1702,9 +1785,10 @@ pub(crate) async fn delete_client(
     request_body = RecordsInput,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
-        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused."),
+        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A value doesn't fit its type (e.g. A with a name), or the result is invalid."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_records(
     State((backend, auth)): State<Ctx>,
@@ -1742,8 +1826,9 @@ pub(crate) async fn put_records(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No name like that was created through the API."),
-        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change."),
+        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_records(
     State((backend, auth)): State<Ctx>,
@@ -1771,15 +1856,17 @@ pub(crate) async fn delete_records(
 /// Every name under `domain` is asked of `servers` (in order, failing over) instead of the
 /// public upstreams: a work network's DNS over a VPN, a router that knows your devices, another
 /// lab. A bare address means plain DNS; `tls://` and `https://` URLs work too. Local names still
-/// answer first. Domains routed in the config files are read-only here (409).
+/// answer first. Domains routed in the config files are read-only here (409). A server can't be a
+/// plugin (`exec://`, `unix://`): those are defined in the config file (422, ADR-180).
 #[utoipa::path(put, path = "/api/v1/forwards/{domain}", tag = "config",
     params(("domain" = String, Path, description = "The domain, e.g. corp.example (its whole subtree is sent)."), DryRun),
     request_body = ForwardInput,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
-        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change."),
+        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
-        (status = 422, body = Problem, description = "A server isn't an address or a supported URL."),
+        (status = 422, body = Problem, description = "A server isn't an address or a supported URL, or it's a plugin (`exec://`, `unix://`)."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_forward(
     State((backend, auth)): State<Ctx>,
@@ -1817,8 +1904,9 @@ pub(crate) async fn put_forward(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "Not found."),
-        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change."),
+        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_forward(
     State((backend, auth)): State<Ctx>,
@@ -1854,9 +1942,10 @@ pub(crate) async fn delete_forward(
     request_body = crate::model::RuleInput,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
-        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused."),
+        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "An unknown device or group, a bad domain, or an expiry in the past."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_rule(
     State((backend, auth)): State<Ctx>,
@@ -1894,8 +1983,9 @@ pub(crate) async fn put_rule(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No rule with that ID was created through the API."),
-        (status = 409, body = Problem, description = "Defined in the config files."),
+        (status = 409, body = Problem, description = "Defined in the config files; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_rule(
     State((backend, auth)): State<Ctx>,
@@ -1916,6 +2006,119 @@ pub(crate) async fn delete_rule(
         Op::Managed(ManagedKind::Rule, None),
     )
     .await
+}
+
+/// REQ: OBS-010, API-002, FLT-004, OBS-024 (ADR-179, ADR-180) — the caller is an administrator:
+/// an admin's own sign-in (a session or HTTP Basic) or an admin-scoped API token. An agent token
+/// never is, whoever owns it and whatever else it may do.
+pub(crate) fn by_admin(p: &crate::auth::Principal) -> bool {
+    p.role == crate::auth::Role::Admin && p.agent.is_none()
+}
+
+/// REQ: API-002, AGT-003, NFR-005 (ADR-181) — how many configuration changes run at once (each
+/// in a task of its own, which a client that goes away doesn't cancel); one more gets 503.
+pub(crate) const CHANGES_AT_ONCE: usize = 32;
+
+/// REQ: API-002, AGT-003 (ADR-181) — review round 2 (security N2, N3): the configuration changes
+/// running on this node: the Idempotency-Keys whose first request hasn't finished, and the places
+/// for changes running at once. One per [`Auth`], so per API.
+#[derive(Debug)]
+pub(crate) struct WriteGate {
+    running: std::sync::Mutex<std::collections::HashSet<String>>,
+    places: Arc<tokio::sync::Semaphore>,
+}
+
+impl WriteGate {
+    pub(crate) fn new() -> Self {
+        Self {
+            running: std::sync::Mutex::new(std::collections::HashSet::new()),
+            places: Arc::new(tokio::sync::Semaphore::new(CHANGES_AT_ONCE)),
+        }
+    }
+
+    /// Tests: every place, until the permit is dropped.
+    #[cfg(test)]
+    pub(crate) fn take_every_place(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.places)
+            .try_acquire_many_owned(u32::try_from(CHANGES_AT_ONCE).ok()?)
+            .ok()
+    }
+
+    /// Tests: `key` (`<user ID>:<Idempotency-Key>`) as if its first request were running, or no
+    /// longer.
+    #[cfg(test)]
+    pub(crate) fn hold_key(&self, key: &str, held: bool) {
+        let mut running = self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held {
+            running.insert(key.to_owned());
+        } else {
+            running.remove(key);
+        }
+    }
+}
+
+/// An Idempotency-Key whose first request is running; let go when dropped: when the change's
+/// task ends, or unwinds.
+struct KeyHeld {
+    gate: Arc<WriteGate>,
+    key: String,
+}
+
+impl Drop for KeyHeld {
+    fn drop(&mut self) {
+        self.gate
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
+}
+
+/// REQ: AGT-003 (ADR-181) — security N2: a change with an Idempotency-Key, before it runs: the
+/// stored answer is replayed, another request with the key is refused, and a retry while the
+/// first request is still running gets 409 with `Retry-After` (it would otherwise be made a
+/// second time: the answer is stored only once the first has finished). The lookup and the
+/// claim are one step, under the gate's lock. `Ok` holds the key until dropped; `Err` is the
+/// answer to send instead.
+fn claim_key(auth: &Auth, key: &str, request: &str, now: u64) -> Result<KeyHeld, Box<Response>> {
+    let gate = auth.write_gate();
+    let mut running = gate
+        .running
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match auth.state().idempotent(key, now) {
+        Ok(Some(r)) if r.request == request.as_bytes() => return Err(Box::new(replay(&r))),
+        Ok(Some(_)) => {
+            return Err(Box::new(
+                Problem::new(
+                    Code::Conflict,
+                    "this Idempotency-Key was used for a different request",
+                )
+                .hint("Use a new key for each distinct change.")
+                .into_response(),
+            ));
+        }
+        Ok(None) => {}
+        Err(e) => return Err(Box::new(Problem::internal(e.to_string()).into_response())),
+    }
+    if !running.insert(key.to_owned()) {
+        return Err(Box::new(
+            Problem::new(
+                Code::ChangeInProgress,
+                "this Idempotency-Key's first request is still running",
+            )
+            .hint("Retry in a few seconds: once it has finished, the same request gets its answer.")
+            .retry_after(2)
+            .into_response(),
+        ));
+    }
+    Ok(KeyHeld {
+        gate: Arc::clone(gate),
+        key: key.to_owned(),
+    })
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one path for every write
@@ -1961,79 +2164,131 @@ async fn write(
         .map(|k| format!("{}:{}", p.user_id, k.trim()))
         .filter(|k| !dry_run && k.len() > 2);
     let now = backend.now_unix_seconds();
-    if let Some(k) = &key {
-        match auth.state().idempotent(k, now) {
-            Ok(Some(r)) if r.request == request.as_bytes() => return replay(&r),
-            Ok(Some(_)) => {
+    let held = match &key {
+        Some(k) => match claim_key(&auth, k, &request, now) {
+            Ok(h) => Some(h),
+            Err(answer) => return *answer,
+        },
+        None => None,
+    };
+    // REQ: API-002, NFR-005 (ADR-181) — security N3: a place among the changes running at once
+    // (dry runs aren't counted); given back when the change's task ends, or unwinds.
+    let place = if dry_run {
+        None
+    } else {
+        match Arc::clone(&auth.write_gate().places).try_acquire_owned() {
+            Ok(p) => Some(p),
+            Err(_) => {
                 return Problem::new(
-                    Code::Conflict,
-                    "this Idempotency-Key was used for a different request",
+                    Code::Unavailable,
+                    format!("{CHANGES_AT_ONCE} configuration changes are running already"),
                 )
-                .hint("Use a new key for each distinct change.")
+                .hint("Retry in a few seconds.")
+                .retry_after(2)
                 .into_response();
             }
-            Ok(None) => {}
-            Err(e) => return Problem::internal(e.to_string()).into_response(),
         }
-    }
+    };
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     let action = format!(
         "{}.{}",
         op.audit_kind(),
         if op.deleting() { "delete" } else { "put" }
     );
-    let result: Result<serde_json::Value, Problem> = match op {
-        Op::Client(input) => backend
-            .write_client(ClientWrite {
-                name: name.clone(),
-                input,
-                dry_run,
-                expect,
-                by: actor.name.clone(),
-                simulate: simulate.clone(),
-            })
-            .await
-            .map(|c| serde_json::to_value(c).unwrap_or_default()),
-        Op::Managed(kind, body) => backend
-            .write_managed(ManagedWrite {
-                kind,
-                name: name.clone(),
-                body,
-                dry_run,
-                expect,
-                by: actor.name.clone(),
-                simulate,
-            })
-            .await
-            .map(|c| serde_json::to_value(c).unwrap_or_default()),
-    };
-    let result = result.map_err(|e| crate::simulate_api::sanitize_problem(&p, e));
-    let (status, text) = match &result {
-        Ok(c) => (StatusCode::OK, c.to_string()),
-        Err(e) => (e.code_status(), json_of(e)),
-    };
-    if let Ok(c) = &result
-        && c["applied"].as_bool() == Some(true)
-    {
-        auth.record(
-            &actor,
-            &action,
-            &name,
-            &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
-        );
-    }
-    if let Some(k) = &key
-        && status.is_success()
-    {
-        let r = Replay {
-            request: request.into_bytes(),
-            status: status.as_u16(),
-            response: text.clone(),
-        };
-        if let Err(e) = auth.state().remember_idempotent(k, &r, now) {
-            tracing::warn!("idempotency key not stored: {e}");
+    let work = {
+        let (backend, auth) = (Arc::clone(&backend), Arc::clone(&auth));
+        async move {
+            // Kept until the answer is stored for the key (below), then given back.
+            let (_held, _place) = (held, place);
+            let admin = by_admin(&p);
+            let result: Result<serde_json::Value, Problem> = match op {
+                Op::Client(input) => backend
+                    .write_client(ClientWrite {
+                        name: name.clone(),
+                        input,
+                        dry_run,
+                        expect,
+                        by: actor.name.clone(),
+                        simulate: simulate.clone(),
+                    })
+                    .await
+                    .map(|c| serde_json::to_value(c).unwrap_or_default()),
+                Op::Managed(kind, body) => backend
+                    .write_managed(ManagedWrite {
+                        kind,
+                        name: name.clone(),
+                        body,
+                        dry_run,
+                        expect,
+                        by: actor.name.clone(),
+                        simulate,
+                        // REQ: OBS-010, API-002 (ADR-179) — an agent token is never an
+                        // administrator here, whoever owns it and whatever else it may do.
+                        by_admin: admin,
+                    })
+                    .await
+                    .map(|c| serde_json::to_value(c).unwrap_or_default()),
+            };
+            let result = result.map_err(|e| {
+                let mut e = crate::simulate_api::sanitize_problem(&p, e);
+                // REQ: API-002, T8.2 (ADR-181) — security F3: the diff of a `409 cluster_pinned`
+                // shows a router's key files and username to an administrator only.
+                if !admin
+                    && let Some(d) = e
+                        .diff
+                        .as_deref_mut()
+                        .and_then(serde_json::Value::as_array_mut)
+                {
+                    crate::mask_router_diff(d);
+                }
+                e
+            });
+            let (status, text) = match &result {
+                Ok(c) => (StatusCode::OK, c.to_string()),
+                Err(e) => (e.code_status(), json_of(e)),
+            };
+            if let Ok(c) = &result
+                && c["applied"].as_bool() == Some(true)
+            {
+                auth.record(
+                    &actor,
+                    &action,
+                    &name,
+                    &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
+                );
+            }
+            if let Some(k) = &key
+                && status.is_success()
+            {
+                let r = Replay {
+                    request: request.into_bytes(),
+                    status: status.as_u16(),
+                    response: text,
+                };
+                if let Err(e) = auth.state().remember_idempotent(k, &r, now) {
+                    tracing::warn!("idempotency key not stored: {e}");
+                }
+            }
+            result
         }
-    }
+    };
+    // REQ: API-002, API-006, AGT-003, T8.2 (ADR-181) — correctness F4: a configuration change
+    // runs to its end in a task of its own, with its audit entry and its Idempotency-Key record,
+    // whether or not the client waits for the answer (a client that went away before used to
+    // leave a change made but not audited, and its retry made it again). For every change
+    // through this write path: each is one bounded unit under `config_writes`, and only where it
+    // stops changes, not what it does. A dry run changes nothing and stays tied to its request.
+    let result = if dry_run {
+        work.await
+    } else {
+        tokio::spawn(work).await.unwrap_or_else(|e| {
+            // Correctness R6: the runtime's text (the task, a panic's message) stays in the log.
+            tracing::error!(error = %e, "a configuration change's task failed");
+            Err(Problem::internal(
+                "the change didn't finish; the server log says why",
+            ))
+        })
+    };
     match result {
         Ok(c) => {
             let mut r = Json(c).into_response();

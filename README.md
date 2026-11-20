@@ -41,7 +41,14 @@ Give everyone who runs a home or small network an honest, real-time view of what
 - **Verifiable.** Images are signed with cosign, each release binary carries its dependency list and an SBOM, and two builds of the same commit are identical ([how to check](docs/running.md#versions-and-updates)).
 
 ## Quick start
-On a Raspberry Pi or any Linux host with Docker:
+On a Raspberry Pi or any Linux machine with systemd (no Docker needed):
+```sh
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
+less install.sh                     # read it before running it as root
+sudo sh install.sh
+sudo -u telltale /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml     # then open http://<host>:8053/
+```
+Prefer Docker? On any Linux host with Docker:
 ```sh
 mkdir telltale && cd telltale
 curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
@@ -49,7 +56,7 @@ curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deplo
 docker compose up -d
 docker compose exec telltale telltale auth setup-token     # then open http://<host>:8053/
 ```
-Kubernetes (Helm), a native systemd install, clustering, and moving from Pi-hole or Technitium are covered in [`docs/running.md`](docs/running.md).
+Kubernetes (Helm), clustering, and moving from Pi-hole or Technitium are covered in [`docs/running.md`](docs/running.md).
 
 **Status:** pre-1.0. Tagged [releases](https://github.com/paimonsoror/telltaledns/releases) are stable (`latest`), and `edge` is built from every commit on `main`. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change; the [roadmap](spec/10-roadmap-and-tasks.md) shows what's next. Project site: **https://paimonsoror.github.io/telltaledns/**
 

@@ -67,6 +67,7 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         qlog: None,
         config: ArcSwap::from_pointee(cfg),
         file_config: ArcSwap::from_pointee(telltale_config::Config::default()),
+        files_unread: std::sync::atomic::AtomicBool::new(false),
         config_files: Vec::new(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(false))),
         rollups: None,
@@ -402,6 +403,162 @@ fn flt_004_inline_lists_report_no_last_success() {
             "{text}"
         );
     }
+}
+
+// REQ: FLT-004 (ADR-147) — a list the configuration disables is left out of the `telltale_list_*`
+// metrics. Its fetch state is kept (re-enabling needs no download), so without this a list that
+// was failing when an operator disabled it kept its frozen failure count and last success in
+// `/metrics` until the node restarted, and `TelltaleDNSListStale` kept firing for it. The test
+// drives `render` as `/metrics` does: the fetcher holds the list's state, then the configuration
+// turns the list off, then on again.
+#[test]
+fn flt_004_disabled_lists_are_left_out_of_the_list_metrics() {
+    use telltale_filter::fetch::{
+        Client, FetchSettings, ListSource, ListSpec, Store, SystemResolver,
+    };
+    let config = |broken_enabled: bool| {
+        let toml = format!(
+            "[[list]]\nname = \"broken\"\nurl = \"https://example.com/broken.txt\"\n\
+             enabled = {broken_enabled}\n\
+             [[list]]\nname = \"other\"\nurl = \"https://example.com/other.txt\"\n\
+             [[list]]\nname = \"mine\"\nrules = [\"||inline.example^\"]\n"
+        );
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config
+    };
+    let on = config(true);
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path()).unwrap();
+    // Two URL lists that have been failing for a long time after a success, as saved on disk.
+    for name in ["broken", "other"] {
+        store.save_source(name, b"a.example\n").unwrap();
+        let meta = ListMeta {
+            source: format!("https://example.com/{name}.txt"),
+            content_hash: Some("h".into()),
+            bytes: 10,
+            lines: 1,
+            last_attempt: Some(5_000),
+            last_success: Some(1_000),
+            last_changed: Some(900),
+            last_error: Some("connection refused".into()),
+            consecutive_failures: 40,
+            ..ListMeta::default()
+        };
+        store.save_meta(name, &meta).unwrap();
+    }
+    let fetcher = Arc::new(Fetcher::new(
+        store,
+        Client::new(Arc::new(SystemResolver), &[]).unwrap(),
+        FetchSettings::from_config(&on),
+    ));
+    // `due` loads each enabled list's saved state, as the fetch loop does; the extra spec is a
+    // list the configuration doesn't hold, like a blocked service's (`services::expand`).
+    let mut specs = ListSpec::from_config(&on);
+    specs.push(ListSpec {
+        name: "service_x".into(),
+        source: ListSource::Inline(vec!["||x.example^".into()]),
+        refresh: Duration::from_hours(24),
+        max_bytes: 1 << 20,
+        enabled: true,
+    });
+    let _ = fetcher.due(&specs, 1_000_000);
+    let src = sources();
+    src.lists.store(Some(Arc::new(ListsShared {
+        fetcher,
+        compiled: std::sync::Mutex::new(None),
+    })));
+    let list_lines = |src: &Sources, name: &str| -> Vec<String> {
+        render(src)
+            .lines()
+            .filter(|l| l.starts_with("telltale_list_") && l.contains(&format!("list=\"{name}\"")))
+            .map(str::to_owned)
+            .collect()
+    };
+
+    // Enabled: all four families, with the saved values.
+    src.config.store(Arc::new(on.clone()));
+    let before = list_lines(&src, "broken");
+    assert_eq!(before.len(), 4, "{before:?}");
+    assert!(
+        before.contains(&"telltale_list_fetch_consecutive_failures{list=\"broken\"} 40".into()),
+        "{before:?}"
+    );
+    assert!(
+        before
+            .contains(&"telltale_list_last_success_timestamp_seconds{list=\"broken\"} 1000".into()),
+        "{before:?}"
+    );
+
+    // Disabled: nothing for it; every other list, and the one the config doesn't hold, stays.
+    src.config.store(Arc::new(config(false)));
+    let off = list_lines(&src, "broken");
+    assert!(off.is_empty(), "a disabled list still reports: {off:?}");
+    for name in ["other", "mine", "service_x"] {
+        assert!(
+            !list_lines(&src, name).is_empty(),
+            "{name} lost its metrics"
+        );
+    }
+    assert_eq!(list_lines(&src, "other").len(), 4);
+
+    // Enabled again: the state the fetcher kept is back, unchanged.
+    src.config.store(Arc::new(on));
+    assert_eq!(list_lines(&src, "broken"), before);
+}
+
+// REQ: FLT-004 — what a list that has never loaded exports: a failure count and no last-success
+// time (the chart's `TelltaleDNSListNeverLoaded` reads exactly that pair). A list that succeeded
+// once, however long ago, has both.
+#[test]
+fn flt_004_a_list_that_never_loaded_reports_failures_but_no_last_success() {
+    let url = "https://example.com/l.txt".to_owned();
+    let status = vec![
+        (
+            "typo".to_owned(),
+            ListMeta {
+                source: url.clone(),
+                last_attempt: Some(5_000),
+                last_error: Some("HTTP 404".into()),
+                consecutive_failures: 7,
+                ..ListMeta::default()
+            },
+        ),
+        (
+            "old".to_owned(),
+            ListMeta {
+                source: url,
+                content_hash: Some("h".into()),
+                last_attempt: Some(5_000),
+                last_success: Some(10),
+                last_error: Some("HTTP 404".into()),
+                consecutive_failures: 7,
+                ..ListMeta::default()
+            },
+        ),
+    ];
+    let mut w = PromWriter::new();
+    render_list_status(&mut w, &status);
+    let text = w.finish();
+    assert!(
+        text.contains("telltale_list_fetch_consecutive_failures{list=\"typo\"} 7"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("telltale_list_last_success_timestamp_seconds{list=\"typo\"}"),
+        "{text}"
+    );
+    assert!(
+        text.contains("telltale_list_fetch_consecutive_failures{list=\"old\"} 7"),
+        "{text}"
+    );
+    assert!(
+        text.contains("telltale_list_last_success_timestamp_seconds{list=\"old\"} 10"),
+        "{text}"
+    );
 }
 
 // REQ: CLU-002 (ADR-125) — a node without the router (a resolver pod) names a device by

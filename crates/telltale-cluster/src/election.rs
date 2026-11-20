@@ -17,6 +17,11 @@
 //! - **Pre-vote:** a node that lost contact first asks whether it *would* win, without
 //!   changing any ballot. A node cut off from the cluster therefore never inflates epochs and
 //!   doesn't depose a healthy primary when the partition heals.
+//! - **Giving way (ADR-178):** a node that grants a pre-vote to a node whose ID sorts before
+//!   its own lets that node have the round ([`Elector::on_ask`]), so two nodes freed by the same
+//!   lease end don't both ask for votes: with three voters they don't split them, short of a
+//!   lost or badly delayed message, a restart, or a disagreement over the epoch, and with more
+//!   voters a split gets rarer. It changes only when a node stands.
 //! - **Maintenance (OPS-010, ADR-118):** a node in maintenance doesn't stand ([`Elector::standing`]
 //!   is false) but still votes, so a planned event never weakens the quorum. A primary that
 //!   hands over ([`Elector::stepping_down`]) stops renewing: its lease runs out and another node
@@ -181,7 +186,8 @@ pub struct Elector {
     /// another node is elected once the lease runs out.
     pub stepping_down: bool,
     next_round: u64,
-    /// No new election before this (backoff with jitter).
+    /// No new election before this (backoff with jitter, or a round given to another node:
+    /// ADR-178).
     next_try_ms: u64,
 }
 
@@ -342,7 +348,8 @@ impl Elector {
         out
     }
 
-    /// Answers a peer's ask.
+    /// Answers a peer's ask. The reply is the ballot's ([`Ballot::decide`]); granting a pre-vote
+    /// may also make this node give that candidate the round ([`Self::give_way`]).
     pub fn on_ask(&mut self, ask: &Ask, now_ms: u64) -> (Reply, Vec<Out>) {
         let mut out = Vec::new();
         let before = self.ballot.clone();
@@ -353,7 +360,43 @@ impl Elector {
         if !ask.pre && reply.granted {
             self.observe_epoch(ask.epoch, &mut out);
         }
+        if ask.pre && reply.granted {
+            self.give_way(ask, now_ms);
+        }
         (reply, out)
+    }
+
+    /// REQ: CLU-005 (ADR-178) — this node has just granted `ask`, a pre-vote. When the candidate
+    /// sorts before this node and asks for the epoch this node would stand for (or a newer one),
+    /// this node gives it the round, and that round is all it costs this node. A pre-candidate
+    /// stands down and may stand again [`ROUND_MS`] from now (not at the retry time it set when
+    /// its attempt started, 5 to 12.5 s after that start). A follower doesn't stand for
+    /// [`ROUND_MS`], or until a later retry time it already had.
+    /// Two nodes freed by the same lease end otherwise both send pre-votes on their next tick,
+    /// grant each other's (a pre-vote binds nothing), vote for themselves, and split the vote;
+    /// each one's own vote is then a lease the other has to wait out. With three voters, where
+    /// neither can win without the other, they don't split the vote, short of a lost or badly
+    /// delayed message, a restart, or a disagreement over the epoch (there is no giving way to an
+    /// older epoch than this node's own); with more voters a split only gets rarer (ADR-178). A
+    /// candidate (it has voted for itself) and a primary don't give way. Only when this node
+    /// stands changes: no ballot, epoch, lease or reply does.
+    fn give_way(&mut self, ask: &Ask, now_ms: u64) {
+        if ask.candidate >= self.id {
+            return;
+        }
+        let contest = match self.phase {
+            Phase::Follower => self.max_epoch.max(self.ballot.epoch) + 1,
+            Phase::PreCandidate { epoch, .. } => epoch,
+            Phase::Candidate { .. } | Phase::Leader { .. } => return,
+        };
+        if ask.epoch >= contest {
+            self.next_try_ms = if matches!(self.phase, Phase::PreCandidate { .. }) {
+                now_ms + ROUND_MS
+            } else {
+                self.next_try_ms.max(now_ms + ROUND_MS)
+            };
+            self.phase = Phase::Follower;
+        }
     }
 
     /// Notes an epoch seen anywhere (a vote, a heartbeat, a manifest): a primary of an older
@@ -797,5 +840,151 @@ mod tests {
         assert_eq!(c.phase, Phase::Follower, "c never stood");
         assert_eq!(c.ballot.candidate, "b", "c voted for the Git-managed node");
         assert!(b.writable(90_000));
+    }
+
+    /// The ask `outs` sends to `to`.
+    fn ask_to(outs: &[Out], to: &str) -> Ask {
+        outs.iter()
+            .find_map(|o| match o {
+                Out::Send { to: t, ask } if t == to => Some(ask.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no ask to {to} in {outs:?}"))
+    }
+
+    // REQ: CLU-005 (ADR-178) — two pre-candidates whose pre-votes cross (the primary, a, is gone):
+    // each grants the other's, as before, but the one that sorts after gives the other its round,
+    // so only one of them asks for real votes and the vote doesn't split. The replies are exactly
+    // what the ballots decide, and a pre-vote still changes no ballot.
+    #[test]
+    fn clu_005_crossed_pre_votes_elect_the_lower_node_in_one_round() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|v| (*v).to_owned()).collect();
+        let mut b = Elector::new("b", voters.clone(), true, Ballot::default());
+        let mut c = Elector::new("c", voters, true, Ballot::default());
+        let (from_b, from_c) = (b.tick(1_000, 0), c.tick(1_000, 0));
+        assert!(matches!(b.phase, Phase::PreCandidate { epoch: 1, .. }));
+        assert!(matches!(c.phase, Phase::PreCandidate { epoch: 1, .. }));
+        let (pre_b, pre_c) = (ask_to(&from_b, "c"), ask_to(&from_c, "b"));
+        let (ballot_b, ballot_c) = (b.ballot.clone(), c.ballot.clone());
+        // The pre-votes cross: each node grants the other's, from its ballot, which doesn't move.
+        let (to_c, outs) = b.on_ask(&pre_c, 1_005);
+        assert_eq!(to_c, ballot_b.clone().decide(&pre_c, 1_005, (0, 0)));
+        assert!(to_c.granted && outs.is_empty());
+        let (to_b, outs) = c.on_ask(&pre_b, 1_005);
+        assert_eq!(to_b, ballot_c.clone().decide(&pre_b, 1_005, (0, 0)));
+        assert!(to_b.granted && outs.is_empty());
+        assert_eq!((&b.ballot, &c.ballot), (&ballot_b, &ballot_c));
+        // c granted b, which sorts before it: c gives b the round; b, which granted c, goes on.
+        assert_eq!(c.phase, Phase::Follower, "c gave way");
+        assert!(matches!(b.phase, Phase::PreCandidate { .. }));
+        // b's pre-vote wins with c's grant; c's own grant from b arrives too late to matter.
+        let real = b.on_reply("c", &to_b, 1_010);
+        assert!(matches!(b.phase, Phase::Candidate { epoch: 1, .. }));
+        assert!(
+            c.on_reply("b", &to_c, 1_010).is_empty(),
+            "c no longer stands"
+        );
+        assert_eq!(c.phase, Phase::Follower);
+        // c votes for b, which is elected in epoch 1: one round.
+        let (vote, outs) = c.on_ask(&ask_to(&real, "c"), 1_015);
+        assert!(vote.granted && outs.contains(&Out::Persist));
+        assert!(
+            b.on_reply("c", &vote, 1_020)
+                .contains(&Out::Elected { epoch: 1 })
+        );
+        assert_eq!((c.ballot.epoch, c.ballot.candidate.as_str()), (1, "b"));
+        // At 7 s c's retry time (a round after it gave way at 1.005 s) has long passed, and b's
+        // lease on c's ballot runs until 1.015 s + LEASE_MS: only the lease keeps c from
+        // standing here.
+        assert!(c.tick(7_000, 0).is_empty(), "c holds b's lease");
+    }
+
+    // REQ: CLU-005 (ADR-178) — giving a node the round costs the giver that round and no more: a
+    // pre-candidate that gives way may stand again exactly ROUND_MS later, not at the retry time
+    // it set when its attempt started; a follower waits at least ROUND_MS and keeps a later
+    // retry time it already had.
+    #[test]
+    fn clu_005_giving_way_costs_the_giver_one_round() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|v| (*v).to_owned()).collect();
+        let pre = |who: &str| Ask {
+            epoch: 1,
+            candidate: who.into(),
+            round: 1,
+            pre: true,
+            applied: (0, 0),
+        };
+        let stands = |outs: &[Out]| outs.iter().any(|o| matches!(o, Out::Send { .. }));
+        // c starts an attempt at 1 s with the largest jitter: its own retry time is 13.5 s.
+        let mut c = Elector::new("c", voters.clone(), true, Ballot::default());
+        assert!(stands(&c.tick(1_000, LEASE_MS / 2 - 1)));
+        assert!(matches!(c.phase, Phase::PreCandidate { epoch: 1, .. }));
+        assert_eq!(c.next_try_ms, 1_000 + LEASE_MS / 3 + LEASE_MS / 2 - 1);
+        // It grants a's pre-vote at t and gives way: it may stand again at t + ROUND_MS.
+        let t = 1_010;
+        assert!(c.on_ask(&pre("a"), t).0.granted);
+        assert_eq!(c.phase, Phase::Follower);
+        assert_eq!(
+            c.next_try_ms,
+            t + ROUND_MS,
+            "a pre-candidate waits one round"
+        );
+        assert!(!stands(&c.tick(t + ROUND_MS - 1, 0)));
+        assert!(stands(&c.tick(t + ROUND_MS, 0)), "c stands a round later");
+        // A follower: a later retry time it had stays, and none becomes a round from now.
+        let mut f = Elector::new("c", voters.clone(), true, Ballot::default());
+        f.next_try_ms = 50_000;
+        assert!(f.on_ask(&pre("a"), 10_000).0.granted);
+        assert_eq!(f.next_try_ms, 50_000);
+        let mut g = Elector::new("c", voters, true, Ballot::default());
+        assert!(g.on_ask(&pre("a"), 10_000).0.granted);
+        assert_eq!(g.next_try_ms, 10_000 + ROUND_MS);
+    }
+
+    // REQ: CLU-005 (ADR-178) — a follower that grants a pre-vote to a node that sorts before it
+    // doesn't stand for a round (that node may be about to ask for real votes); one that grants a
+    // node that sorts after it, or refuses, stands as before.
+    #[test]
+    fn clu_005_a_follower_gives_a_lower_node_whose_pre_vote_it_grants_a_round() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|v| (*v).to_owned()).collect();
+        let pre = |who: &str| Ask {
+            epoch: 1,
+            candidate: who.into(),
+            round: 1,
+            pre: true,
+            applied: (0, 0),
+        };
+        let stands = |outs: &[Out]| outs.iter().any(|o| matches!(o, Out::Send { .. }));
+        // c grants a's pre-vote at 5 s: it doesn't stand until a round later.
+        let mut c = Elector::new("c", voters.clone(), true, Ballot::default());
+        assert!(c.on_ask(&pre("a"), 5_000).0.granted);
+        assert!(
+            !stands(&c.tick(5_000 + ROUND_MS - 1, 0)),
+            "c stood within a's round"
+        );
+        assert!(
+            stands(&c.tick(5_000 + ROUND_MS, 0)),
+            "c stands after a's round"
+        );
+        // a grants c's pre-vote: a sorts before c, so a may stand at once.
+        let mut a = Elector::new("a", voters.clone(), true, Ballot::default());
+        assert!(a.on_ask(&pre("c"), 5_000).0.granted);
+        assert!(
+            stands(&a.tick(5_000, 0)),
+            "a waited for a node that sorts after it"
+        );
+        // A pre-vote it refuses gives nothing: c, holding b's lease until 15 s, refuses a's
+        // pre-vote just before and stands when the lease ends.
+        let mut c = Elector::new("c", voters, true, Ballot::default());
+        assert!(c.on_ask(&ask(1, "b", false), 0).0.granted);
+        let mut again = pre("a");
+        again.epoch = 2;
+        assert!(
+            !c.on_ask(&again, LEASE_MS - 100).0.granted,
+            "b's lease runs"
+        );
+        assert!(
+            stands(&c.tick(LEASE_MS, 0)),
+            "a refused pre-vote held c back"
+        );
     }
 }

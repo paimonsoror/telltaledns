@@ -60,7 +60,8 @@
   // REQ: API-002 (T7.5) — add and change upstreams and upstream groups here.
   const upstreamFields: Field[] = [
     { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
-      help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://.' },
+      // REQ: UPS-011 (ADR-180) — plugin upstreams are the config file's.
+      help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://. Plugin upstreams (exec://, unix://) are defined in the config file.' },
     { key: 'tls_server_name', label: 'TLS server name', type: 'text', placeholder: 'dns.quad9.net', advanced: true,
       help: 'The name on the server certificate, for tls:// and quic:// addresses given by IP.' },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', placeholder: '2000', advanced: true },

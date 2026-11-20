@@ -761,6 +761,10 @@ pub struct ListInfo {
     pub mode: String,
     /// URL, file path, or `inline`.
     pub source: String,
+    /// REQ: FLT-004 (ADR-180) — the list reads a local file (`path`), whatever its `source`
+    /// looks like. Not sent: it decides who sees the list's `error`.
+    #[serde(skip)]
+    pub local: bool,
     /// `ok`, `failed`, or `pending` (not downloaded yet).
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1523,9 +1527,19 @@ pub struct ConfigEntry {
     /// the files' entry of that name), or `hidden` (the files' entry is left out).
     pub source: String,
     /// The definition in effect, with the same fields as in `telltale.toml` (absent when
-    /// hidden).
+    /// hidden). REQ: API-002, T8.2 (ADR-181) — a router's key-file fields and `username` are
+    /// shown to an administrator only.
     #[schema(value_type = Option<Object>)]
     pub definition: Option<serde_json::Value>,
+    /// REQ: API-002, T8.2 (ADR-181) — a router's credentials, by name (`api_key`, `api_secret`,
+    /// `password`), as the node that answered sees them (on a replica, the primary): `saved` (its
+    /// file is there, and that node uses it), `missing` (no file there, and it is one the node
+    /// saves when a key is pasted: enter the key again, as after a restore on another machine or
+    /// a failover), `file_missing` (no file there, and it is one a platform mounts or a config
+    /// file names: put the file there), or `not_used` (the file is there, but it isn't one that
+    /// node sends for this router). Read without the secret. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// `GET /api/v1/config/entries` parameters.

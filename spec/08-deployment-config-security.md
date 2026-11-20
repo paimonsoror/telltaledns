@@ -3,6 +3,8 @@
 ## 1. Recommendation: container-first everywhere
 **Decision (ADR-004):** the primary artifact is a multi-arch OCI image, used **both** in Kubernetes and on a Raspberry Pi (Docker/Podman). The static binary is a by-product of the same build and is published too, but its support tier is "secondary".
 
+*Amended by ADR-176 (2026-11-18): on a Raspberry Pi or Linux machine the docs recommend the native install; what is built, tested and released, and the tiers, are unchanged.*
+
 Why this is the right path:
 - **One artifact, one test matrix.** The image is `FROM scratch` + one static musl binary + a compact zoneinfo (ADR-169; no CA bundle: every TLS client uses the compiled-in Mozilla roots, ADR-168), about 10–15 MiB. A container adds roughly no runtime overhead for a network daemon (host networking on the Pi avoids NAT entirely).
 - **Pi upgrades become `docker compose pull && up -d`**, with trivial rollback by tag. That avoids distro/glibc drift (the reason Pi-hole needs per-OS install scripts, and Technitium needs a matching .NET runtime).

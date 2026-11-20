@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # REQ: T8.2, API-002 (ADR-181) — a router added through the API, as the UI does: its API key is
 # saved to a new private file under <data_dir>/secrets/ (never stored, listed, or audited), the
-# router is read without a restart, credential files outside secrets/ are refused, a change to
-# another field keeps the key but a new address needs it again, a refused change writes
-# nothing, a new key switches files, and a delete removes the router and only the files the
-# API wrote.
+# router is read without a restart, a body that names a key file is refused (outside secrets/,
+# or another router's), the key's status reads "saved", a change to another field keeps the key
+# but a new address needs it again, a refused change writes nothing, a new key switches files,
+# and a delete removes the router and only the files the API wrote. Loopback only.
 # Needs python3, curl.
 # Usage: deploy/routers-ui-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
@@ -82,12 +82,17 @@ import json, sys
 items = [x for x in json.load(sys.stdin)["items"] if x["name"] == "udm"]
 print(items[0]["definition"].get("api_key_file", "") if items else "")'; }
 
-# Credential files outside secrets/ are refused, pasted or not (the poll would send them).
-for body in "{\"type\":\"unifi\",\"url\":\"http://127.0.0.1:26984\",\"api_key\":\"$KEY\",\"api_key_file\":\"$E/elsewhere\"}" \
-            "{\"type\":\"unifi\",\"url\":\"http://127.0.0.1:26984\",\"api_key_file\":\"$E/telltale.toml\"}"; do
-  code=$(put udm "$body")
-  [ "$code" = 422 ] || fail "a credential file outside secrets/ wasn't refused ($code): $(cat "$E/out")"
-done
+# A credential file named in a body is refused (the poll would send it). With a pasted key, the
+# file the body names is replaced by a new one under secrets/ and never read or written (a dry
+# run here, so nothing is stored yet).
+code=$(put udm "{\"type\":\"unifi\",\"url\":\"http://127.0.0.1:26984\",\"api_key_file\":\"$E/telltale.toml\"}")
+[ "$code" = 422 ] || fail "a credential file outside secrets/ wasn't refused ($code): $(cat "$E/out")"
+code=$(curl -s -o "$E/out" -w '%{http_code}' -X PUT -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -d "{\"type\":\"unifi\",\"url\":\"http://127.0.0.1:26984\",\"api_key\":\"$KEY\",\"api_key_file\":\"$E/elsewhere\"}" \
+  "$API/api/v1/routers/udm?dryRun=true")
+[ "$code" = 200 ] || fail "a pasted key with a file named: $code $(cat "$E/out")"
+field 'd["after"]["api_key_file"]' < "$E/out" | grep -q "^$E/data/secrets/router-udm.api_key\." \
+  || fail "the named file wasn't replaced by a new one under secrets/: $(cat "$E/out")"
 [ ! -e "$E/elsewhere" ] || fail "the key was written outside secrets/"
 
 # Added with a pasted key: a new file under secrets/, 0600, read without a restart.
@@ -105,6 +110,17 @@ items = {x["ip"]: x for x in json.load(sys.stdin)["items"]}
 assert items["192.168.7.20"]["hostname"] == "Hall tablet", items
 ' || fail "the router added through the API wasn't read"
 echo "added: key saved to a new file under secrets/ (0600), router read without a restart"
+
+# Another router can't name this key's file (paste only), and the key's status takes no secret.
+code=$(put evil "{\"type\":\"unifi\",\"url\":\"http://127.0.0.2:26984\",\"api_key_file\":\"$F\",\"offline_days\":0}")
+[ "$code" = 422 ] && grep -q "Paste the key" "$E/out" || fail "a router named another router's key file ($code): $(cat "$E/out")"
+curl -sf -b "$E/jar" "$API/api/v1/config/entries?kind=router" | python3 -c '
+import json, sys
+items = {x["name"]: x for x in json.load(sys.stdin)["items"]}
+assert "evil" not in items, items
+assert items["udm"]["credentials"] == {"api_key": "saved"}, items
+' || fail "the key's status isn't saved, or the refused router was stored"
+echo "paste only: another router can't name the key's file; its status reads saved"
 
 # The key is nowhere the API can show it.
 curl -sf -b "$E/jar" "$API/api/v1/config/entries?kind=router" > "$E/entries"

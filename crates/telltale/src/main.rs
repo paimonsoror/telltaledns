@@ -51,6 +51,7 @@ mod rollout;
 mod rollups;
 mod router_secrets;
 mod routers;
+mod secret_path;
 mod selfupdate;
 mod server;
 mod shadow;
@@ -853,6 +854,13 @@ fn main() -> ExitCode {
 }
 
 fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
+    // REQ: CLU-005 (ADR-056) — a witness runs for as long as the cluster does, so it logs the way
+    // `run` does (`TELLTALE_LOG`, the support log's ring). It never did: its tracing went
+    // nowhere, which left its log empty in every failure report. The other `cluster`
+    // subcommands end at once and print their result, so they stay as quiet as before.
+    if matches!(command, ClusterCommand::Witness) {
+        init_logging();
+    }
     let Some(cfg) = server::load(&config_files(config)) else {
         return ExitCode::FAILURE;
     };

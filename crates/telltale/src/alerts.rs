@@ -267,6 +267,146 @@ pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), St
     deliver(&client, d, "Test", &n, node).await
 }
 
+/// REQ: OBS-010 (ADR-179) — why this node doesn't send to some alert destinations, by name: a
+/// credential file that isn't in a folder meant for secrets ([`crate::secret_path`]), on a
+/// destination this node's own sources (`own`, [`own_destinations`]) don't define the same way.
+/// That covers one made through the API here (stored by an older version, restored from a
+/// backup), one this node took from another (a replica, a primary promoted after a failover or
+/// pinned to a version), and an API override of a file's destination. Such a file isn't read.
+/// Blocking (the check may look at the filesystem).
+pub(crate) fn refused(cfg: &Config, own: &[AlertDestination]) -> HashMap<String, String> {
+    let data_dir = cfg.node.data_dir.as_str();
+    cfg.alerts
+        .destination
+        .iter()
+        .filter(|d| !own.contains(d))
+        .filter_map(|d| {
+            let field = [
+                ("token_file", &d.token_file),
+                ("password_file", &d.password_file),
+            ]
+            .into_iter()
+            .find_map(|(f, p)| {
+                p.as_ref()
+                    .filter(|p| !crate::secret_path::allowed(p.as_str(), data_dir))
+                    .map(|_| f)
+            })?;
+            Some((
+                d.name.to_string(),
+                format!(
+                    "not sent: `{field}` isn't in a folder meant for secrets; an administrator can save this destination again with {}",
+                    crate::secret_path::places()
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// REQ: OBS-010 (ADR-179) — the alert destinations this node's administrators control: its
+/// config files' and, on a node that takes the cluster's configuration from Git, the commit in
+/// use (`<data_dir>/cluster/git-shared.toml`). None while the files couldn't be read at start-up
+/// (`file_config` then holds the running configuration, API entries and all): every destination
+/// with a credential file is checked. Blocking (the commit is read from disk).
+pub(crate) fn own_destinations(src: &crate::http::Sources) -> Vec<AlertDestination> {
+    if src.files_unread.load(std::sync::atomic::Ordering::Acquire) {
+        return Vec::new();
+    }
+    let file = src.file_config.load_full();
+    let mut own = file.alerts.destination.clone();
+    if file.cluster.git.is_some()
+        && let Some(list) = crate::gitsource::shared(&file)
+            .as_ref()
+            .and_then(|s| s.get("alerts"))
+            .and_then(|a| a.get("destination"))
+        && let Ok(git) = serde_json::from_value::<Vec<AlertDestination>>(list.clone())
+    {
+        own.extend(git);
+    }
+    own
+}
+
+/// Why a destination with a credential file isn't sent while the check can't run.
+const UNCHECKED: &str = "not sent: its credential file couldn't be checked; it is checked again at the next alert check";
+
+/// REQ: OBS-010 (ADR-179) — the destinations [`refused`] for the configuration in effect, worked
+/// out again only when it changes, so each refusal is logged once per change rather than at
+/// every check.
+#[derive(Debug, Default)]
+struct Refusals {
+    for_config: Option<Arc<Config>>,
+    by_name: HashMap<String, String>,
+    /// The last check couldn't run (logged once, until one runs again).
+    failing: bool,
+}
+
+impl Refusals {
+    fn stale(&self, cfg: &Arc<Config>) -> bool {
+        self.for_config
+            .as_ref()
+            .is_none_or(|c| !Arc::ptr_eq(c, cfg))
+    }
+
+    /// Takes what the check for `cfg` found (`None`: it couldn't run). Returns the refusals that
+    /// are new or say something new. Fails closed: without an answer, no destination with a
+    /// credential file is sent, and `cfg` is checked again next time.
+    fn take(
+        &mut self,
+        cfg: &Arc<Config>,
+        checked: Option<HashMap<String, String>>,
+    ) -> Vec<(String, String)> {
+        let Some(now) = checked else {
+            self.failing = true;
+            self.for_config = None;
+            self.by_name = cfg
+                .alerts
+                .destination
+                .iter()
+                .filter(|d| d.token_file.is_some() || d.password_file.is_some())
+                .map(|d| (d.name.to_string(), UNCHECKED.to_owned()))
+                .collect();
+            return Vec::new();
+        };
+        self.failing = false;
+        self.update(cfg, now)
+    }
+
+    /// Takes the refusals for `cfg`; returns the ones that are new or say something new.
+    fn update(&mut self, cfg: &Arc<Config>, now: HashMap<String, String>) -> Vec<(String, String)> {
+        let mut fresh: Vec<(String, String)> = now
+            .iter()
+            .filter(|(k, v)| self.by_name.get(*k) != Some(*v))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        fresh.sort();
+        self.by_name = now;
+        self.for_config = Some(Arc::clone(cfg));
+        fresh
+    }
+
+    fn reason(&self, name: &str) -> Option<&str> {
+        self.by_name.get(name).map(String::as_str)
+    }
+
+    /// For a configuration not looked at yet: the destinations not to send to, each new one
+    /// logged and shown as its last delivery on the Alerts page. Off the runtime's worker.
+    async fn refresh(&mut self, sources: &Arc<crate::http::Sources>, cfg: &Arc<Config>) {
+        if !self.stale(cfg) {
+            return;
+        }
+        let (src, c) = (Arc::clone(sources), Arc::clone(cfg));
+        let checked = tokio::task::spawn_blocking(move || refused(&c, &own_destinations(&src)))
+            .await
+            .ok();
+        if checked.is_none() && !self.failing {
+            warn!("{UNCHECKED} (the check's worker failed)");
+        }
+        for (name, why) in self.take(cfg, checked) {
+            warn!(destination = %name, "{why}");
+            record_delivery(sources, &name, &Err(why));
+        }
+    }
+}
+
 /// Records a delivery's outcome for the status API (the latest per destination).
 fn record_delivery(sources: &crate::http::Sources, destination: &str, r: &Result<(), String>) {
     let mut s = sources
@@ -427,11 +567,8 @@ fn observe(
             .into_iter()
             .filter(|l| l.enabled && l.error.is_some())
             .map(|l| {
-                let s = format!(
-                    "list {} fails to update: {}",
-                    l.name,
-                    l.error.as_deref().unwrap_or("unknown error")
-                );
+                // REQ: FLT-004 (ADR-180) — a local file's error stays on the node.
+                let s = crate::health::list_failing_summary(&l);
                 (l.name, s)
             })
             .collect(),
@@ -806,14 +943,15 @@ async fn deliver(
     if d.kind == AlertKind::Email {
         return deliver_email(d, rule, n, node).await;
     }
-    let token = match &d.token_file {
-        Some(f) => Some(
+    // REQ: OBS-010 — only ntfy and Gotify send a token: other kinds never read `token_file`.
+    let token = match (&d.token_file, d.kind) {
+        (Some(f), AlertKind::Ntfy | AlertKind::Gotify) => Some(
             std::fs::read_to_string(f.as_str())
                 .map_err(|e| format!("{}: {e}", f.as_str()))?
                 .trim()
                 .to_owned(),
         ),
-        None => None,
+        _ => None,
     };
     let (body, ct, headers) = render(d, token.as_deref(), rule, n, node);
     let mut url = d.url.to_string();
@@ -947,9 +1085,11 @@ pub(crate) async fn run(
     };
     let mut engine = Engine::default();
     let mut rules_for: Option<Vec<AlertRule>> = None;
+    let mut refusals = Refusals::default();
     loop {
         let cfg: Arc<Config> = sources.config.load_full();
         let interval = Duration::from_secs(u64::from(cfg.alerts.interval_secs.max(5)));
+        refusals.refresh(&sources, &cfg).await;
         let rules: Vec<AlertRule> = cfg
             .alerts
             .rule
@@ -991,6 +1131,11 @@ pub(crate) async fn run(
                     else {
                         continue;
                     };
+                    // REQ: OBS-010 (ADR-179) — not read, not sent; the Alerts page says why.
+                    if let Some(why) = refusals.reason(d.name.as_str()) {
+                        record_delivery(&sources, d.name.as_str(), &Err(why.to_owned()));
+                        continue;
+                    }
                     let (client, rname, n, node, src) = (
                         Arc::clone(&client),
                         rule.name.to_string(),
@@ -1438,6 +1583,98 @@ mod tests {
             "pi",
         );
         assert!(body.contains("Resolved: upstreams: quad9"), "{body}");
+    }
+
+    /// REQ: OBS-010 (ADR-179) — the destinations not to send to are those in effect whose
+    /// credential file isn't in a folder for secrets and that this node's own sources don't define
+    /// the same way: the files' with the same file are sent, and one that differs from the files'
+    /// entry of its name (an API override, another node's) is held.
+    #[test]
+    fn obs_010_refused_are_destinations_not_the_nodes_own_outside_the_secrets_folders() {
+        let dest = |name: &str, token: Option<&str>, password: Option<&str>| AlertDestination {
+            name: telltale_config::SafeString::new(name).unwrap(),
+            kind: if password.is_some() {
+                AlertKind::Email
+            } else {
+                AlertKind::Ntfy
+            },
+            url: telltale_config::SafeString::new("https://example.test/x").unwrap(),
+            token_file: token.map(|t| telltale_config::SafeString::new(t).unwrap()),
+            from: None,
+            to: Vec::new(),
+            username: password.map(|_| telltale_config::SafeString::new("me").unwrap()),
+            password_file: password.map(|p| telltale_config::SafeString::new(p).unwrap()),
+            tls_ca: None,
+        };
+        let mut cfg = Config::default();
+        cfg.node.data_dir = telltale_config::SafeString::new("/var/lib/telltale-test").unwrap();
+        let own = vec![
+            dest("file", Some("/etc/telltale/ntfy-token"), None),
+            dest("overridden", Some("/etc/telltale/a"), None),
+        ];
+        cfg.alerts.destination = vec![
+            dest("api-out", Some("/etc/telltale/ntfy-token"), None),
+            dest("api-mail", None, Some("/var/lib/telltale-test/state.db")),
+            dest("api-ok", Some("/run/secrets/ntfy-token"), None),
+            dest("api-data", Some("/var/lib/telltale-test/secrets/t"), None),
+            dest("api-none", None, None),
+            dest("file", Some("/etc/telltale/ntfy-token"), None),
+            dest("overridden", Some("/etc/telltale/b"), None),
+        ];
+        let r = refused(&cfg, &own);
+        let mut names: Vec<&str> = r.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["api-mail", "api-out", "overridden"]);
+        assert!(r["api-out"].contains("`token_file`"), "{r:?}");
+        assert!(r["api-mail"].contains("`password_file`"), "{r:?}");
+        assert!(r["api-out"].contains("/run/secrets/"), "{r:?}");
+
+        // Worked out once per configuration; each refusal reported once.
+        let mut s = Refusals::default();
+        let a = Arc::new(cfg.clone());
+        assert!(s.stale(&a));
+        let fresh = s.take(&a, Some(r.clone()));
+        assert_eq!(fresh.len(), 3);
+        assert!(!s.stale(&a));
+        assert!(s.reason("api-out").is_some() && s.reason("file").is_none());
+        let b = Arc::new(cfg.clone());
+        assert!(s.stale(&b), "a new configuration is looked at again");
+        assert!(
+            s.update(&b, r.clone()).is_empty(),
+            "the same refusals aren't logged again"
+        );
+        assert!(
+            s.update(&b, HashMap::new()).is_empty(),
+            "nothing to log when a refusal goes away"
+        );
+        assert!(s.reason("api-out").is_none(), "saved again: sent again");
+
+        // Fails closed: when the check can't run, no destination with a credential file goes
+        // out (whatever the last configuration's answer was), the rest do, and the configuration
+        // is checked again next time; an answer then replaces the stopgap.
+        let third = Arc::new(cfg);
+        assert!(
+            s.take(&third, None).is_empty(),
+            "nothing per destination to log"
+        );
+        assert!(s.failing);
+        for name in [
+            "api-out",
+            "api-mail",
+            "api-ok",
+            "api-data",
+            "file",
+            "overridden",
+        ] {
+            assert_eq!(s.reason(name), Some(UNCHECKED), "{name}");
+        }
+        assert_eq!(s.reason("api-none"), None);
+        assert!(s.stale(&third), "looked at again at the next check");
+        let fresh = s.take(&third, Some(r));
+        assert!(!s.failing);
+        assert_eq!(fresh.len(), 3, "the real answer is logged");
+        assert_eq!(s.reason("api-ok"), None);
+        assert!(!s.stale(&third));
     }
 
     /// REQ: CLU-013 — `rollout_failed` goes out once per failed version; `cluster_pinned` fires

@@ -237,13 +237,23 @@ fn default_gid() -> u16 {
     })
 }
 
-/// The sim tests share the node's one-at-a-time slot.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The node's part of a simulation once the changed lists' texts are in hand, as `local_part`
+/// runs it: the one-at-a-time slot (`Err(busy)` when it's taken), then the replay.
+fn run(inputs: Inputs) -> Result<Tally, Problem> {
+    let slot = take_slot()?;
+    run_holding(&slot, inputs)
+}
 
+/// [`run`] for a change to devices only.
+fn run_devices_only(inputs: &Inputs) -> Result<Tally, Problem> {
+    let slot = take_slot()?;
+    devices_only_holding(&slot, inputs)
+}
+
+/// The sim tests share the node's one-at-a-time slot: one at a time with every test that may take
+/// it (the API-level ones in `api_backend`'s tests too), so `run` here finds it free.
 fn serial() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    super::slot_tests()
 }
 
 // REQ: OBS-024 — AC (1): a block rule for a name a device asked 40 times reports 40 newly

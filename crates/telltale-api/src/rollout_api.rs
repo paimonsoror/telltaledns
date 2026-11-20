@@ -61,9 +61,17 @@ pub fn parse_version(v: &str) -> Result<(u64, u64), Problem> {
         (status = 200, body = RolloutStatus, description = "The stage, the version baking, the canaries, the guard's readings, and the pin."),
         (status = 503, body = Problem, description = "Not in a cluster (`unavailable`)."),
     ))]
-async fn rollout_status(State(backend): State<Shared>) -> Response {
+async fn rollout_status(State(backend): State<Shared>, ext: axum::http::Extensions) -> Response {
+    // REQ: API-002, T8.2 (ADR-181) — security F3: a router's key files and username in the pin's
+    // diff are an administrator's to see.
+    let admin = principal(&ext).is_ok_and(|p| crate::config_api::by_admin(&p));
     match backend.rollout_status().await {
-        Ok(s) => Json(s).into_response(),
+        Ok(mut s) => {
+            if !admin && let Some(p) = s.pinned.as_mut() {
+                crate::mask_router_diff(&mut p.diff);
+            }
+            Json(s).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
@@ -100,10 +108,18 @@ async fn run(
         Err(e) => return e.into_response(),
     };
     let dry = w.dry_run();
+    let admin = crate::config_api::by_admin(&p);
     let actor = auth.actor(&p, remote(auth, ext, headers), reason(headers));
     let w = w.with_by(actor.name.clone());
     match backend.rollout_command(w).await {
-        Ok(r) => {
+        Ok(mut r) => {
+            // REQ: API-002, T8.2 (ADR-181) — review round 2, security N1: what a pin or an
+            // unpin changes names a router's key files and username to an administrator only.
+            // An agent never is one, so an MCP plan's preview (a dry run of this, which every
+            // operator reads through `GET /api/v1/plans`) is masked too.
+            if !admin {
+                crate::mask_router_diff(&mut r.diff);
+            }
             if !dry {
                 auth.record(
                     &actor,
