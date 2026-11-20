@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!-- TelltaleDNS on Unraid (REQ: OPS-004). Install: see deploy/unraid/README.md or docs/running.md#unraid. -->
+<Container version="2">
+  <Name>TelltaleDNS</Name>
+  <Repository>ghcr.io/paimonsoror/telltale:latest</Repository>
+  <Registry>https://github.com/paimonsoror/telltaledns/pkgs/container/telltale</Registry>
+  <!-- br0 gives the container its own LAN address: devices show up as themselves, and port 53
+       doesn't clash with anything on the Unraid host. Set "Fixed IP address" when installing. -->
+  <Network>br0</Network>
+  <MyIP/>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/paimonsoror/telltaledns/issues</Support>
+  <Project>https://github.com/paimonsoror/telltaledns</Project>
+  <ReadMe>https://github.com/paimonsoror/telltaledns/blob/main/deploy/unraid/README.md</ReadMe>
+  <Overview>TelltaleDNS is a filtering, encrypted, observable DNS resolver. It blocks ads and trackers per device, forwards to encrypted upstreams (DoT, DoH, DoQ), and shows who asked what and why it answered the way it did. One static binary in a small image, with the web UI built in.&#xD;
+&#xD;
+Put a telltale.toml in the config folder (a starter is linked in the README) or leave it empty for the built-in defaults. After the first start, open the web UI and sign in with the setup token from data/setup-token (or the container log), or set the bootstrap admin variables below. Then point your router's DHCP DNS server at the container's IP.</Overview>
+  <Category>Network:DNS Network:Other Security:</Category>
+  <WebUI>http://[IP]:[PORT:8053]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/unraid/telltale.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/unraid/telltale.png</Icon>
+  <!-- The image has no shell. Root inside the container, but with every capability dropped
+       except binding port 53, a read-only root filesystem, and no privilege escalation, as in
+       deploy/compose; root lets it write to the appdata folders Unraid creates as root. -->
+  <ExtraParams>--user 0:0 --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE --security-opt no-new-privileges --restart unless-stopped</ExtraParams>
+  <PostArgs/>
+  <Requires>A free IP address on your LAN for the container (Network type br0), or nothing else on the Unraid host using port 53 if you switch to bridge or host networking.</Requires>
+  <Config Name="DNS (UDP)" Target="53" Default="53" Mode="udp" Description="DNS over UDP. Only used with bridge networking; on br0 the container listens on its own IP." Type="Port" Display="always" Required="true" Mask="false">53</Config>
+  <Config Name="DNS (TCP)" Target="53" Default="53" Mode="tcp" Description="DNS over TCP. Only used with bridge networking." Type="Port" Display="always" Required="true" Mask="false">53</Config>
+  <Config Name="Web UI and API" Target="8053" Default="8053" Mode="tcp" Description="The web UI, REST API, and health endpoints." Type="Port" Display="always" Required="true" Mask="false">8053</Config>
+  <Config Name="Metrics" Target="9153" Default="9153" Mode="tcp" Description="Prometheus metrics (/metrics)." Type="Port" Display="advanced" Required="false" Mask="false">9153</Config>
+  <Config Name="Config" Target="/etc/telltale" Default="/mnt/user/appdata/telltale/config" Mode="ro" Description="Holds telltale.toml (read when it exists; otherwise the built-in defaults apply). Mounted read-only." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/telltale/config</Config>
+  <Config Name="Data" Target="/var/lib/telltale" Default="/mnt/user/appdata/telltale/data" Mode="rw" Description="Lists, the query log, users, and the setup token. The only path TelltaleDNS writes to." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/telltale/data</Config>
+  <Config Name="Secrets" Target="/run/secrets" Default="/mnt/user/appdata/telltale/secrets" Mode="ro" Description="Files for *_file settings in telltale.toml (for example password_file = &quot;/run/secrets/smtp-password&quot;), kept out of the config. Mounted read-only." Type="Path" Display="advanced" Required="false" Mask="false">/mnt/user/appdata/telltale/secrets</Config>
+  <Config Name="Log level" Target="TELLTALE_LOG" Default="info" Description="error, warn, info, debug, or trace." Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+  <Config Name="Bootstrap admin user" Target="TELLTALE_BOOTSTRAP_ADMIN_USER" Default="" Description="Optional: creates this admin on first start, instead of signing in with the setup token. Ignored once any user exists." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Bootstrap admin password" Target="TELLTALE_BOOTSTRAP_ADMIN_PASSWORD" Default="" Description="Password for the bootstrap admin. Unraid keeps it in the saved template, so prefer the hash below, or clear it after the first start." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Bootstrap admin password hash" Target="TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH" Default="" Description="Argon2id hash instead of the password, from: echo 'a long passphrase' | docker run --rm -i ghcr.io/paimonsoror/telltale auth hash-password" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+</Container>
