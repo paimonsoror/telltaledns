@@ -282,7 +282,7 @@
             {#if f.type === 'select'}
               <select bind:value={editing.values[f.key]} aria-label={f.label}>
                 <option value={undefined}>(default)</option>
-                {#each f.options ?? [] as o (o)}<option value={o}>{o}</option>{/each}
+                {#each f.options ?? [] as o (o)}<option value={o}>{f.optionLabels?.[o] ?? o}</option>{/each}
               </select>
             {:else if f.type === 'multi'}
               <!-- Values chosen earlier that aren't offered now (a node gone) stay visible. -->

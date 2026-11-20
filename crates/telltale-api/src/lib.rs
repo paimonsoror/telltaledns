@@ -833,9 +833,10 @@ pub enum ManagedKind {
     /// REQ: FLT-017 (T15.1) — a `[[kubernetes.map]]` rule (`/kubernetes/map/{namespace}/{kind}/{name}`,
     /// `*` for any): the group of the workloads it matches. API rules come before the files'.
     KubernetesMap,
-    /// REQ: T8.2, API-002 — a router integration (`/routers/{name}`): a UniFi console or an
-    /// OPNsense box whose clients name devices. Its key, secret, or password may come in the
-    /// body; they're written to files in the data directory, never stored or returned (ADR-181).
+    /// REQ: T8.2, API-002 — a router integration (`/routers/{name}`): a UniFi console, an
+    /// OPNsense box, or a MikroTik router whose clients name devices. Its key, secret, or
+    /// password may come in the body; they're written to files in the data directory, never
+    /// stored or returned (ADR-181).
     Router,
 }
 
@@ -2023,10 +2024,10 @@ async fn anomalies(
 
 /// Devices found on the network (API-010; T8.2, T8.3).
 ///
-/// The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
-/// names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
-/// TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
-/// because these are the router's DHCP leases.
+/// The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense,
+/// MikroTik), then the names devices announce over mDNS (`[clients] mdns`), each with the name
+/// the device has in TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the
+/// path keeps its name because these are the router's DHCP leases.
 #[utoipa::path(get, path = "/api/v1/dhcp/leases", tag = "config",
     responses((status = 200, body = Items<DhcpLease>, description = "The result.")))]
 async fn dhcp_leases(State(b): State<Shared>) -> Json<Items<DhcpLease>> {
