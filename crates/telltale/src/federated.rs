@@ -1698,6 +1698,9 @@ impl Backend for Federated {
         to_us: u64,
         limit: usize,
     ) -> Result<QueryPage, Problem> {
+        // REQ: OBS-003 — a node answers at most the API's page, so that is what each is asked for,
+        // and what `asked` and the merge count: a full page is then never taken as a node's last.
+        let limit = limit.min(telltale_api::MAX_QUERY_PAGE);
         let prev: Bounds = match q.cursor.as_deref() {
             None => Bounds::new(),
             Some(c) => federation::decode_cursor(Some(c)).ok_or_else(|| {
@@ -3218,7 +3221,7 @@ mod queries_read_tests {
     /// The API's own page size (`GET /api/v1/queries` takes `limit` 1 to 1000).
     const API_PAGE: usize = telltale_api::MAX_QUERY_PAGE;
     /// Rows in the test log: more than one page.
-    const ROWS: usize = 1_100;
+    pub(super) const ROWS: usize = 1_100;
 
     fn wire(name: &str) -> Vec<u8> {
         let mut w = Vec::new();
@@ -3233,7 +3236,7 @@ mod queries_read_tests {
     /// A node whose query log holds `ROWS` queries (`n<i>.example.com`), one every 2 s from
     /// midnight UTC two days ago (the writer keeps 30 days by the real clock), from four
     /// devices, every fourth blocked. Returns the backend and the first row's time (µs).
-    fn node(dir: &std::path::Path) -> (crate::api_backend::ApiBackend, u64) {
+    pub(super) fn node(dir: &std::path::Path) -> (crate::api_backend::ApiBackend, u64) {
         let mut src = crate::http::tests::sources_in(dir);
         src.qlog = Some(Arc::new(telltale_store::qlog::Stats::default()));
         let now_s = std::time::SystemTime::now()
@@ -4100,6 +4103,153 @@ mod bridge_tests {
         let none = n.fed.gather(vec![(n.primary.clone(), Read::CacheStats)]);
         assert!(none.is_empty(), "an error is no answer");
         assert_eq!(n.fed.missing_nodes(), [n.fed.label_of(&n.primary)]);
+    }
+
+    /// The asking node's own backend for the query-log test: an empty page of its own, and every
+    /// `limit` it was asked for.
+    #[derive(Default)]
+    struct RecordingLocal {
+        limits: Mutex<Vec<usize>>,
+    }
+
+    impl Backend for RecordingLocal {
+        fn system_info(&self) -> SystemInfo {
+            unreachable!("not read here")
+        }
+        fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<TimeBucket> {
+            Vec::new()
+        }
+        fn top(&self, _: TopKind, _: Hour, _: usize, _: Option<IpAddr>) -> Vec<TopItem> {
+            Vec::new()
+        }
+        fn latency(&self, _: LatencyBy, _: Hour) -> Vec<LatencyRow> {
+            Vec::new()
+        }
+        fn queries(
+            &self,
+            _: &QueryParams,
+            _: u64,
+            _: u64,
+            limit: usize,
+        ) -> Result<QueryPage, Problem> {
+            self.limits
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(limit);
+            Ok(QueryPage {
+                items: Vec::new(),
+                next_cursor: None,
+                scanned: telltale_api::model::ScanStats::default(),
+                missing_nodes: Vec::new(),
+                client_truncated: false,
+            })
+        }
+        fn explain(&self, _: &ExplainParams) -> Result<Explanation, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            Vec::new()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            Vec::new()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            Vec::new()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            Vec::new()
+        }
+        fn config_version(&self) -> u64 {
+            7
+        }
+    }
+
+    // REQ: OBS-003 — the node that asks its peers for a page of the query log asks each for at
+    // most the API's own page, whatever its caller asked, and asks its own backend for the same:
+    // a peer that answers a full page isn't taken as finished, and the next page goes on to its
+    // other rows (every row once).
+    #[test]
+    fn obs_003_the_asking_node_asks_for_at_most_the_api_page() {
+        let api_page = telltale_api::MAX_QUERY_PAGE;
+        let rows = super::queries_read_tests::ROWS;
+        let dir = tempfile::tempdir().unwrap();
+        let peer_backend = Arc::new(super::queries_read_tests::node(dir.path()).0);
+        // The primary answers query-log reads as any node does (`answer`) and keeps each `limit`.
+        let asked: Arc<Mutex<Vec<usize>>> = Arc::default();
+        let (log, b) = (Arc::clone(&asked), Arc::clone(&peer_backend));
+        let handler: RpcHandler = Arc::new(move |_peer, _kind, body| {
+            let (log, b) = (Arc::clone(&log), Arc::clone(&b));
+            Box::pin(async move {
+                let r = serde_json::from_slice::<Read>(&body).map_err(|e| e.to_string())?;
+                match &r {
+                    Read::Queries { limit, .. } | Read::QueriesNegated { limit, .. } => log
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(*limit),
+                    _ => return Err("a read this test doesn't ask".to_owned()),
+                }
+                tokio::task::spawn_blocking(move || answer(b.as_ref(), r))
+                    .await
+                    .map_err(|e| e.to_string())?
+            })
+        });
+        let n = two_nodes_answering(handler);
+        let local = Arc::new(RecordingLocal::default());
+        let shared = Arc::clone(&local);
+        let fed = Federated::new(shared, Arc::clone(&n.fed.cluster));
+        let _in = n.rt.enter();
+        let negated = QueryParams {
+            name: Some("nothing.example".into()),
+            name_not: Some(true),
+            ..QueryParams::default()
+        };
+        for limit in [5_000, usize::MAX] {
+            for params in [QueryParams::default(), negated.clone()] {
+                let what = format!("limit {limit}, negated {}", params.negates());
+                asked.lock().unwrap_or_else(PoisonError::into_inner).clear();
+                local
+                    .limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                let first = fed.queries(&params, 0, 0, limit).unwrap();
+                let next = QueryParams {
+                    cursor: first.next_cursor.clone(),
+                    ..params.clone()
+                };
+                let rest = fed.queries(&next, 0, 0, limit).unwrap();
+                let to_peer = asked.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                let to_me = local
+                    .limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                assert!(
+                    !to_peer.is_empty() && to_peer.iter().all(|l| *l <= api_page),
+                    "{what}: the peer was asked for {to_peer:?}"
+                );
+                assert_eq!(
+                    to_me.first(),
+                    to_peer.first(),
+                    "{what}: the same for this node"
+                );
+                assert_eq!(first.items.len(), api_page, "{what}");
+                assert!(
+                    first.next_cursor.is_some(),
+                    "{what}: a full page from the peer isn't its last"
+                );
+                assert_eq!(rest.items.len(), rows - api_page, "{what}");
+                let mut seen: Vec<u64> = first
+                    .items
+                    .iter()
+                    .chain(&rest.items)
+                    .map(|r| r.ts_unix_micros)
+                    .collect();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), rows, "{what}: every row once");
+            }
+        }
     }
 
     /// A primary that answers the time-bucket reads (with no buckets) and the configuration
