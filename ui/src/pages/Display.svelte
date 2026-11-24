@@ -6,6 +6,7 @@
   import { api, setCsrf } from '../lib/api';
   import { navigate, route } from '../lib/router.svelte';
   import { refreshSession } from '../lib/session.svelte';
+  import { t } from '../lib/i18n';
 
   let error = $state<string | null>(null);
   onMount(() => {
@@ -15,7 +16,7 @@
     for (const [k, v] of route.params) if (k !== 'code') rest[k] = v;
     navigate('/display', {}, true);
     if (!code) {
-      error = "This address has no display code. Ask an admin for the wall display's link.";
+      error = t('display.noCode');
       return;
     }
     api
@@ -33,6 +34,6 @@
   {#if error}
     <div class="notice bad" data-testid="display-error">{error}</div>
   {:else}
-    <p class="muted">Opening the wall…</p>
+    <p class="muted">{t('display.opening')}</p>
   {/if}
 </main>

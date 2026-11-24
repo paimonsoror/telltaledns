@@ -3,6 +3,7 @@
   // finding; you pick how long and why. The preview is a dry run, so a mistake (a name that
   // matches nothing, a MAC address) shows here before anything is saved.
   import { api, type S } from '../api';
+  import { t as tr, tn, type MessageKey } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
 
   let {
@@ -19,20 +20,21 @@
     oncancel?: () => void;
   } = $props();
 
-  const kindTitles: Record<string, string> = {
-    rate_spike: 'Many more queries than usual',
-    domain_volume: 'Unusual traffic to one domain',
-    drift: 'Many new domains',
-    beacon: 'Regular phone-home',
-    nxdomain_storm: 'Burst of failed lookups',
-    dga: 'Machine-generated-looking domains',
-    chatty_loop: 'Chatty loop',
+  // The kinds are what the API is sent; these are what a person reads.
+  const kindTitles: Record<string, MessageKey> = {
+    rate_spike: 'anomalies.kind.rateSpike',
+    domain_volume: 'anomalies.kind.domainVolume',
+    drift: 'anomalies.kind.drift',
+    beacon: 'anomalies.kind.beacon',
+    nxdomain_storm: 'anomalies.kind.nxdomainStorm',
+    dga: 'anomalies.kind.dga',
+    chatty_loop: 'anomalies.kind.chattyLoop',
   };
-  const durations: { v: string; l: string; ms: number | null }[] = [
-    { v: '1d', l: '1 day', ms: 86_400_000 },
-    { v: '1w', l: '1 week', ms: 7 * 86_400_000 },
-    { v: '30d', l: '30 days', ms: 30 * 86_400_000 },
-    { v: 'never', l: 'Until I remove it', ms: null },
+  const durations: { v: string; l: MessageKey; ms: number | null }[] = [
+    { v: '1d', l: 'queries.duration.1d', ms: 86_400_000 },
+    { v: '1w', l: 'deviceWidgets.mute.duration.1w', ms: 7 * 86_400_000 },
+    { v: '30d', l: 'settings.tokens.expires30', ms: 30 * 86_400_000 },
+    { v: 'never', l: 'queries.duration.always', ms: null },
   ];
 
   // The address is what findings are made from, so it is the default; a device name works too when
@@ -113,43 +115,42 @@
 
 <form class="mute" onsubmit={save} data-testid="mute-form">
   <p class="small">
-    Stop counting the kinds below for this device. The findings are still recorded and listed (turn on <b>Show muted</b>),
-    and every other device is still checked.
+    {tr('deviceWidgets.mute.introLead')}<b>{tr('deviceWidgets.mute.showMuted')}</b>{tr('deviceWidgets.mute.introTail')}
   </p>
-  <label class="small field">Device (name, IP or network)
-    <input class="mono" bind:value={device} required aria-label="Device" />
+  <label class="small field">{tr('deviceWidgets.mute.device')}
+    <input class="mono" bind:value={device} required aria-label={tr('flow.device')} />
   </label>
   <fieldset class="kinds">
-    <legend class="small">Kinds of finding</legend>
+    <legend class="small">{tr('deviceWidgets.mute.kinds')}</legend>
     {#each Object.keys(kindTitles) as k (k)}
       <label class="small">
         <input type="checkbox" checked={kinds.includes(k)} onchange={(e) => toggle(k, e.currentTarget.checked)} />
-        {kindTitles[k]}
+        {tr(kindTitles[k])}
       </label>
     {/each}
   </fieldset>
   <div class="row">
-    <label class="small">For
-      <select bind:value={duration} aria-label="How long">
-        {#each durations as d (d.v)}<option value={d.v}>{d.l}</option>{/each}
+    <label class="small">{tr('deviceWidgets.mute.for')}
+      <select bind:value={duration} aria-label={tr('deviceWidgets.mute.howLong')}>
+        {#each durations as d (d.v)}<option value={d.v}>{tr(d.l)}</option>{/each}
       </select>
     </label>
-    <input class="grow" aria-label="Note" placeholder="Why (optional), e.g. hourly reverse-DNS sweep" maxlength="200" bind:value={note} />
+    <input class="grow" aria-label={tr('rules.col.note')} placeholder={tr('deviceWidgets.mute.notePlaceholder')} maxlength="200" bind:value={note} />
   </div>
   {#if similar > 0}
     <p class="muted small" data-testid="mute-similar">
-      {similar === 1 ? 'This finding' : `These ${similar} findings`} in the period shown would have been muted.
+      {tn('deviceWidgets.mute.similar', similar)}
     </p>
   {/if}
   {#if preview}
-    <div class="notice small" data-testid="mute-preview"><b>What this will do:</b> {preview.impact || 'Mutes these findings for this device.'}</div>
+    <div class="notice small" data-testid="mute-preview"><b>{tr('deviceWidgets.mute.previewLead')}</b> {preview.impact || tr('deviceWidgets.mute.previewFallback')}</div>
     {#each preview.warnings as w (w)}<div class="notice warn small">{w}</div>{/each}
   {/if}
   <ErrorNote error={previewError} />
   <ErrorNote {error} />
   <div class="row">
-    <button class="primary" disabled={saving || !!previewError || !preview} data-testid="mute-save">{saving ? 'Saving…' : 'Mute'}</button>
-    <button type="button" class="link" onclick={() => oncancel?.()}>Cancel</button>
+    <button class="primary" disabled={saving || !!previewError || !preview} data-testid="mute-save">{saving ? tr('qw.chip.saving') : tr('deviceWidgets.mute.mute')}</button>
+    <button type="button" class="link" onclick={() => oncancel?.()}>{tr('common.cancel')}</button>
   </div>
 </form>
 

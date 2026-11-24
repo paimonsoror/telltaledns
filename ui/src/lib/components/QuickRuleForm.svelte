@@ -121,7 +121,7 @@
 
   const durations = $derived([
     { v: '30', l: tr('queries.duration.30m') },
-    { v: '60', l: tr('queries.duration.1h') },
+    { v: '60', l: tr('nav.pause.hour') },
     { v: '120', l: tr('queries.duration.2h') },
     { v: 'today', l: tr('queries.duration.today') },
     { v: '1440', l: tr('queries.duration.1d') },
@@ -205,7 +205,7 @@
     try {
       const c = await api.putRule(id, body);
       saved = c.impact ?? '';
-      onsaved?.(saved || tr('queries.quickRule.saved'));
+      onsaved?.(saved || tr('common.saved'));
     } catch (err) {
       error = err;
     } finally {
@@ -220,19 +220,19 @@
       <button type="button" aria-pressed={action === 'allow'} onclick={() => (action = 'allow')}>{tr('queries.quickRule.allow')}</button>
       <button type="button" aria-pressed={action === 'block'} onclick={() => (action = 'block')}>{tr('queries.quickRule.block')}</button>
     </span>
-    <input class="grow mono" aria-label={tr('queries.quickRule.domain')} placeholder="game.example.com" bind:value={name} oninput={touch} required />
+    <input class="grow mono" aria-label={tr('localdns.forward.domain')} placeholder="game.example.com" bind:value={name} oninput={touch} required />
   </div>
   <div class="row">
-    <label class="small">{tr('queries.quickRule.for')}
+    <label class="small">{tr('rules.col.for')}
       <select bind:value={scope} onchange={touch} aria-label={tr('queries.quickRule.appliesTo')}>
         <option value="device">{tr('queries.quickRule.scopeDevice')}</option>
         <option value="group">{tr('queries.quickRule.scopeGroup')}</option>
-        <option value="everyone">{tr('queries.quickRule.scopeEveryone')}</option>
+        <option value="everyone">{tr('rules.everyone')}</option>
       </select>
     </label>
     {#if scope === 'device'}
       <input
-        aria-label={tr('queries.quickRule.device')}
+        aria-label={tr('flow.device')}
         list={listId}
         placeholder={tr('queries.quickRule.devicePlaceholder')}
         bind:value={who}
@@ -243,7 +243,7 @@
       />
       <datalist id={listId}>{#each known ?? devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
     {:else if scope === 'group'}
-      <select aria-label={tr('queries.quickRule.group')} bind:value={whichGroup} onchange={touch} required>
+      <select aria-label={tr('legacy.group')} bind:value={whichGroup} onchange={touch} required>
         {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
       </select>
     {/if}
@@ -254,8 +254,8 @@
     </label>
   </div>
   <div class="row">
-    <input class="grow" aria-label={tr('queries.quickRule.note')} placeholder={tr('queries.quickRule.notePlaceholder')} bind:value={note} />
-    <button class="primary" disabled={saving || !name.trim()}>{saving ? tr('queries.quickRule.saving') : rule ? tr('queries.quickRule.saveChanges') : tr('queries.quickRule.save')}</button>
+    <input class="grow" aria-label={tr('rules.col.note')} placeholder={tr('queries.quickRule.notePlaceholder')} bind:value={note} />
+    <button class="primary" disabled={saving || !name.trim()}>{saving ? tr('localdns.form.saving') : rule ? tr('queries.quickRule.saveChanges') : tr('queries.quickRule.save')}</button>
     {#if rule}<button type="button" class="link" onclick={oncancel}>{tr('common.cancel')}</button>{/if}
   </div>
   {#if !rule && address}
@@ -280,7 +280,7 @@
       <p class="muted small seen" data-testid="quick-rule-seen-as">{tr('queries.seen.namedDevice', { address })}<bdi>{device}</bdi>{tr('queries.seen.namedDeviceEnd')}</p>
     {:else if scope === 'device' && who.trim() === address}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
-        {#if seenAs && seenAs !== address}{tr('queries.seen.seenAsStart', { address })}<bdi>{seenAs}</bdi>{tr('queries.seen.seenAsEnd')}{/if}
+        {#if seenAs && seenAs !== address}{tr('queries.seen.seenAsStart', { address })}<bdi>{seenAs}</bdi>{tr('slo.offEnd')}{/if}
         {#if podLike}
           {tr('queries.seen.podUnknown')}
         {:else}
@@ -296,7 +296,7 @@
        is announced once, and the Device field points at it while it is there. -->
   <div id={checkDomId} role="status" data-testid="quick-rule-check">{#if !error}<ErrorNote error={checkError} quiet />{/if}</div>
   <ErrorNote {error} />
-  {#if saved !== null && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved || tr('queries.quickRule.saved')}</div>{/if}
+  {#if saved !== null && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved || tr('common.saved')}</div>{/if}
   {#if name.trim() && (scope !== 'device' || who.trim())}<SimulationCard run={simulateRule} />{/if}
 </form>
 

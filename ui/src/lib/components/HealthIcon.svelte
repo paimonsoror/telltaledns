@@ -36,7 +36,7 @@
   const level = $derived(h?.level ?? 'healthy');
   // The words for a level; a level this build doesn't know yet stays as the server said it.
   const LEVEL: Record<string, MessageKey> = {
-    healthy: 'nav.health.level.healthy',
+    healthy: 'cluster.healthy',
     degraded: 'nav.health.level.degraded',
     severe: 'nav.health.level.severe',
   };
@@ -73,7 +73,7 @@
     <div class="panel" role="dialog" aria-label={t('nav.health.title')} data-testid="health-panel" bind:this={panel} use:portal style:left={`${pos.left}px`} style:bottom={`${pos.bottom}px`}>
       <p class="head"><span class="badge {level === 'healthy' ? 'ok' : level === 'severe' ? 'bad' : 'warn'}">{levelWord(level)}</span></p>
       {#if h === null}
-        <p class="small muted">{t('nav.health.checking')}</p>
+        <p class="small muted">{t('qw.chip.checking')}</p>
       {:else if h.reasons.length === 0}
         <p class="small">{t('nav.health.allGood')}</p>
       {:else}

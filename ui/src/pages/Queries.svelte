@@ -21,26 +21,26 @@
   // A status the UI has words for reads in the language on screen; the value sent stays the
   // identifier (in the URL and in the request).
   const STATUS_KEY: Record<string, MessageKey> = {
-    blocked: 'queries.status.blocked',
-    cached: 'queries.status.cached',
-    forwarded: 'queries.status.forwarded',
-    local: 'queries.status.local',
+    blocked: 'wall.kpi.blocked',
+    cached: 'legacy.status.cached',
+    forwarded: 'legacy.status.forwarded',
+    local: 'legacy.status.local',
     stale: 'queries.status.stale',
     refreshing: 'queries.status.refreshing',
-    refreshed: 'queries.status.refreshed',
+    refreshed: 'legacy.status.refreshed',
     special: 'queries.status.special',
-    refused: 'queries.status.refused',
+    refused: 'help.flow.refused',
     servfail: 'queries.status.servfail',
     rate_limited: 'queries.status.rate_limited',
-    paused: 'queries.status.paused',
+    paused: 'wall.paused',
     allowed: 'queries.status.allowed',
     malformed: 'queries.status.malformed',
   };
   const statusLabel = (s: string) => (STATUS_KEY[s] ? t(STATUS_KEY[s]) : s);
   const RANGES = $derived([
-    { v: '-15m', l: t('queries.range.15m') },
-    { v: '-1h', l: t('queries.range.1h') },
-    { v: '-24h', l: t('queries.range.24h') },
+    { v: '-15m', l: t('flow.window.15m') },
+    { v: '-1h', l: t('flow.window.1h') },
+    { v: '-24h', l: t('flow.window.24h') },
     { v: '-168h', l: t('queries.range.7d') },
     { v: '', l: t('common.all') },
   ]);
@@ -311,9 +311,9 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>{t('queries.title')}<HelpButton id="query-log" /></h1>
+    <h1>{t('nav.queries')}<HelpButton id="query-log" /></h1>
     <span class="switch-track live-toggle">
-      <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />{t('queries.live')}</label>
+      <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />{t('flow.live')}</label>
       <HelpButton id="live-view" />
       {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveLabel}</span>{/if}
     </span>
@@ -331,7 +331,7 @@
 
   <form class="card filters" onsubmit={search}>
     <div class="fields">
-      <label class="field grow">{t('queries.filter.name')}
+      <label class="field grow">{t('clients.col.name')}
         <input name="name" placeholder="ads.example.com" bind:value={name} />
       </label>
       <label class="field">{t('queries.filter.match')}
@@ -350,13 +350,13 @@
         </select>
       </label>
       <div class="pair">
-        <label class="field">{t('queries.filter.client')}
+        <label class="field">{t('qw.explain.client')}
           <input name="client" placeholder="192.168.1.20" bind:value={client} />
         </label>
         <label class="not" title={t('queries.filter.clientNot')}><input type="checkbox" name="clientNot" bind:checked={clientNot} />{t('queries.not')}</label>
       </div>
       <div class="pair narrow">
-        <label class="field">{t('queries.filter.type')}
+        <label class="field">{t('qw.cache.type')}
           <input name="qtype" placeholder="A,AAAA" bind:value={qtype} />
         </label>
         <label class="not" title={t('queries.filter.qtypeNot')}><input type="checkbox" name="qtypeNot" bind:checked={qtypeNot} />{t('queries.not')}</label>
@@ -371,7 +371,7 @@
         <input name="minLatency" type="number" min="0" bind:value={minLatency} />
       </label>
       {#if groups.length > 1}
-        <label class="field">{t('queries.filter.group')}
+        <label class="field">{t('legacy.group')}
           <select name="group" bind:value={group} onchange={() => search()}>
             <option value="">{t('queries.filter.any')}</option>
             {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
@@ -405,7 +405,7 @@
         <table class="log">
           <thead>
             <tr>
-              <th>{t('queries.col.time')}</th><th>{t('queries.col.client')}</th><th>{t('queries.col.name')}</th><th>{t('queries.col.type')}</th><th>{t('queries.col.status')}</th><th>{t('queries.col.rule')}</th>
+              <th>{t('dashw.time')}</th><th>{t('qw.explain.client')}</th><th>{t('clients.col.name')}</th><th>{t('qw.cache.type')}</th><th>{t('cluster.col.status')}</th><th>{t('rules.col.rule')}</th>
               <th class="num">{t('queries.col.took')}</th><th></th>
             </tr>
           </thead>

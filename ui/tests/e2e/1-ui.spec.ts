@@ -4855,6 +4855,13 @@ test('api_011 the UI switches to Chinese and back', async () => {
   await expect(panel.getByRole('heading', { name: '什么时候会用到' })).toBeVisible();
   await page.keyboard.press('Escape');
 
+  // Pages beyond the dashboard follow the switch too (T28.1: every screen).
+  await page.goto('/#/cache');
+  await expect(page.getByRole('heading', { name: '缓存' })).toBeVisible();
+  await page.goto('/#/clients');
+  await expect(page.getByRole('heading', { name: '客户端' })).toBeVisible();
+  await page.goto('/#/');
+
   // The switch names the language it goes to, and going back is the same click.
   await page.getByTestId('language-toggle').click();
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');

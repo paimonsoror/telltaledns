@@ -173,7 +173,7 @@
           <!-- REQ: OPS-011 (ADR-172) — a cluster package: each node's part, and whether it answered. -->
           <div class="table-wrap">
             <table>
-              <thead><tr><th>{t('settings.support.colNode')}</th><th>{t('settings.support.colAnswered')}</th><th class="num">{t('settings.support.colFiles')}</th><th class="num">{t('settings.support.colSize')}</th><th>{t('settings.support.colNote')}</th></tr></thead>
+              <thead><tr><th>{t('qw.cache.node')}</th><th>{t('settings.support.colAnswered')}</th><th class="num">{t('settings.support.colFiles')}</th><th class="num">{t('lists.col.size')}</th><th>{t('rules.col.note')}</th></tr></thead>
               <tbody>
                 {#each m.nodes as n (n.node)}
                   <tr data-testid="support-node">
@@ -190,7 +190,7 @@
         {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>{t('settings.support.colFile')}</th><th>{t('settings.support.colPart')}</th><th class="num">{t('settings.support.colSize')}</th><th>{t('settings.support.colReplaced')}</th></tr></thead>
+            <thead><tr><th>{t('settings.support.colFile')}</th><th>{t('settings.support.colPart')}</th><th class="num">{t('lists.col.size')}</th><th>{t('settings.support.colReplaced')}</th></tr></thead>
             <tbody>
               {#each m.files ?? [] as f (f.path)}
                 <tr data-testid="support-file">

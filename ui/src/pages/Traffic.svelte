@@ -9,6 +9,7 @@
   import { squarify } from '../lib/treemap';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import { t, tn } from '../lib/i18n';
 
   type Mode = 'service' | 'site' | 'name';
   type Show = 'all' | 'allowed' | 'blocked';
@@ -181,36 +182,36 @@
     const top = mode === 'service' && t.service ? site(t.members[0]?.name ?? t.label) : t.label;
     return href('/queries', { name: top, match: 'suffix', status });
   }
-  const modes: { id: Mode; label: string }[] = [
-    { id: 'service', label: 'Services' },
-    { id: 'site', label: 'Sites' },
-    { id: 'name', label: 'Names' },
-  ];
-  const shows: { id: Show; label: string }[] = [
-    { id: 'all', label: 'All' },
-    { id: 'allowed', label: 'Allowed' },
-    { id: 'blocked', label: 'Blocked' },
-  ];
+  const modes: { id: Mode; label: string }[] = $derived([
+    { id: 'service', label: t('traffic.mode.service') },
+    { id: 'site', label: t('traffic.mode.site') },
+    { id: 'name', label: t('traffic.mode.name') },
+  ]);
+  const shows: { id: Show; label: string }[] = $derived([
+    { id: 'all', label: t('common.all') },
+    { id: 'allowed', label: t('traffic.show.allowed') },
+    { id: 'blocked', label: t('legacy.blocked') },
+  ]);
 </script>
 
 <div class="page">
   <div class="page-head">
-    <h1>Traffic map<HelpButton id="traffic-map" /></h1>
+    <h1>{t('nav.traffic')}<HelpButton id="traffic-map" /></h1>
     <div class="row">
-      <div class="seg" role="group" aria-label="Group by">
+      <div class="seg" role="group" aria-label={t('traffic.groupBy')}>
         {#each modes as m (m.id)}
           <button type="button" aria-pressed={mode === m.id} onclick={() => (mode = m.id)}>{m.label}</button>
         {/each}
       </div>
-      <div class="seg" role="group" aria-label="Show">
+      <div class="seg" role="group" aria-label={t('heatmap.show')}>
         {#each shows as s (s.id)}
           <button type="button" aria-pressed={show === s.id} onclick={() => (show = s.id)}>{s.label}</button>
         {/each}
       </div>
       <span class="pill-field bare">
-        <select bind:value={hour} aria-label="Hour">
-          <option value="current">this hour</option>
-          <option value="previous">previous hour</option>
+        <select bind:value={hour} aria-label={t('traffic.hour')}>
+          <option value="current">{t('legacy.thisHour')}</option>
+          <option value="previous">{t('traffic.hour.previous')}</option>
         </select>
       </span>
     </div>
@@ -234,7 +235,7 @@
             style:width={`${r.w}px`}
             style:height={`${r.h}px`}
             style:--mix={`${s}%`}
-            aria-label={`${t.label}, ${t.status}, ${num(t.count)} queries`}
+            aria-label={tn('traffic.tile.aria', t.count, { label: t.label, status: t.status, n: num(t.count) })}
             onmouseenter={() => (hover = t)}
             onfocus={() => (hover = t)}
           >
@@ -248,41 +249,39 @@
         {/if}
       {/each}
       {#if tiles.length === 0 && refreshed}
-        <p class="empty">No queries yet this hour.</p>
+        <p class="empty">{t('traffic.empty')}</p>
       {/if}
     </div>
   </section>
 
   <section class="card details" aria-live="polite">
     {#if hover}
-      {@const t = tiles.find((x) => x.id === hover?.id) ?? hover}
+      {@const tile = tiles.find((x) => x.id === hover?.id) ?? hover}
       <div class="row between">
-        <strong>{t.label}</strong>
-        <span class="badge {t.status}">{t.status}</span>
+        <strong>{tile.label}</strong>
+        <span class="badge {tile.status}">{tile.status}</span>
       </div>
       <p class="small muted">
-        {num(t.count)} queries · {pct((100 * t.count) / Math.max(1, total))} of what's shown{#if t.delta > 0}
-          · +{num(t.delta)} in the last {REFRESH_MS / 1000} s{/if}
+        {tn('traffic.details.queries', tile.count, { n: num(tile.count) })}{t('traffic.details.share', { pct: pct((100 * tile.count) / Math.max(1, total)) })}{#if tile.delta > 0}{t('traffic.details.growth', { n: num(tile.delta), seconds: REFRESH_MS / 1000 })}{/if}
       </p>
       {#if mode !== 'name'}
         <ul class="members">
-          {#each t.members.slice(0, 8) as m (m.name)}
-            <li><a href={href('/queries', { name: m.name, match: 'exact' })}>{m.name}</a><span><a class="when" href={href('/heatmap', { kind: 'name', key: m.name })} aria-label={`When ${m.name} is asked for`}>when</a> {num(m.count)}</span></li>
+          {#each tile.members.slice(0, 8) as m (m.name)}
+            <li><a href={href('/queries', { name: m.name, match: 'exact' })}>{m.name}</a><span><a class="when" href={href('/heatmap', { kind: 'name', key: m.name })} aria-label={t('traffic.details.whenTitle', { name: m.name })}>{t('traffic.details.when')}</a> {num(m.count)}</span></li>
           {/each}
-          {#if t.members.length > 8}<li class="muted">and {t.members.length - 8} more</li>{/if}
+          {#if tile.members.length > 8}<li class="muted">{tn('traffic.details.andMore', tile.members.length - 8, { n: tile.members.length - 8 })}</li>{/if}
         </ul>
       {/if}
     {:else}
-      <p class="small muted">Point at a tile to see the names behind it. Select one to open them in the query log.</p>
+      <p class="small muted">{t('traffic.details.hint')}</p>
     {/if}
     <div class="legend small muted">
-      <span><i class="sw allowed"></i>Allowed</span>
-      <span><i class="sw blocked"></i>Blocked</span>
-      <span>Bigger and stronger colour = more queries</span>
-      <span><i class="sw ring"></i>Growing fastest right now</span>
+      <span><i class="sw allowed"></i>{t('traffic.show.allowed')}</span>
+      <span><i class="sw blocked"></i>{t('legacy.blocked')}</span>
+      <span>{t('traffic.legend.size')}</span>
+      <span><i class="sw ring"></i>{t('traffic.legend.ring')}</span>
       <span>
-        The busiest {LIMIT} names and {LIMIT} blocked names {hour === 'current' ? 'this hour' : 'in the previous clock hour'}, every node;
-        counts are approximate{#if refreshed}. Updated {refreshed.toLocaleTimeString()}{/if}.
+        {t('traffic.legend.foot', { names: LIMIT, blocked: LIMIT, when: hour === 'current' ? t('legacy.thisHour') : t('traffic.legend.previousHour') })}{#if refreshed}{t('traffic.legend.updated', { time: refreshed.toLocaleTimeString() })}{/if}{t('queries.whyEnd')}
       </span>
     </div>
   </section>

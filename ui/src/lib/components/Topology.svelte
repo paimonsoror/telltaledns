@@ -7,6 +7,8 @@
   // the queries.
   import type { S } from '../api';
   import { rate } from '../format';
+  // REQ: API-011 — the words the drawing says itself: groups, badges, the tooltip, the legend.
+  import { t, tn } from '../i18n';
 
   export type Node = S['ClusterNode'];
   export type Health = 'ok' | 'warn' | 'bad';
@@ -73,7 +75,8 @@
       }
       const rows = Math.ceil(chipsIn.length / 3);
       const h = 20 + rows * (POD_H + POD_GAP) + 4;
-      groups.push({ x: gx, y, w: CHIP_W - INDENT, h, label: kube ? `node ${kube}` : 'pods', pods: chipsIn, nodes: pods });
+      const label = kube ? t('clusterWidgets.topology.groupNode', { name: kube }) : t('clusterWidgets.topology.groupPods');
+      groups.push({ x: gx, y, w: CHIP_W - INDENT, h, label, pods: chipsIn, nodes: pods });
       y += h + 8;
     }
     return { x: 0, y: 0, w: SITE_W, h: y + PAD - 8, name, chips, groups };
@@ -90,7 +93,7 @@
     }
   }
 
-  const share = (ns: Node[]) => ns.reduce((t, n) => t + (n.querySharePercent ?? 0), 0);
+  const share = (ns: Node[]) => ns.reduce((sum, n) => sum + (n.querySharePercent ?? 0), 0);
   const width = (pct: number) => 1.5 + Math.min(100, pct) * 0.1;
 
   /** Places sites (the primary's on top, the others in rows of four below) and links. */
@@ -134,27 +137,27 @@
         ...s.chips.filter((c) => c.node.nodeId !== hub?.nodeId).map((c) => ({ box: c as Box, nodes: [c.node], key: c.node.nodeId })),
         ...s.groups.map((g) => ({ box: g as Box, nodes: g.nodes, key: `${s.name}/${g.label}` })),
       ];
-      for (const [i, t] of targets.entries()) {
-        const hs = worst(t.nodes.map(health));
+      for (const [i, tg] of targets.entries()) {
+        const hs = worst(tg.nodes.map(health));
         let d: string, mx: number, my: number;
         if (s === first && hubChip) {
           // Inside the primary's site: down the indent, one lane per target, then in.
           // No time label here: the table has each pod's round trip.
           const x0 = hubChip.x + 5 + Math.min(i, 3) * 3;
-          const y1 = t.box.y + Math.min(t.box.h / 2, 12);
-          d = `M${x0} ${hubChip.y + hubChip.h} V${y1} H${t.box.x}`;
-          links.push({ d, mx: x0, my: y1, health: hs, width: 1 + Math.min(100, share(t.nodes)) * 0.03, key: t.key });
+          const y1 = tg.box.y + Math.min(tg.box.h / 2, 12);
+          d = `M${x0} ${hubChip.y + hubChip.h} V${y1} H${tg.box.x}`;
+          links.push({ d, mx: x0, my: y1, health: hs, width: 1 + Math.min(100, share(tg.nodes)) * 0.03, key: tg.key });
           continue;
         } else {
           const x0 = first.x + first.w / 2;
           const y0 = first.y + first.h;
-          const x1 = t.box.x + t.box.w / 2;
-          const y1 = t.box.y;
+          const x1 = tg.box.x + tg.box.w / 2;
+          const y1 = tg.box.y;
           d = `M${x0} ${y0} C${x0} ${y0 + GAP_Y / 2} ${x1} ${y1 - GAP_Y / 2} ${x1} ${y1}`;
           mx = (x0 + x1) / 2;
           my = (y0 + y1) / 2;
         }
-        links.push({ d, mx, my, health: hs, width: width(share(t.nodes)), label: rtt(t.nodes), key: t.key });
+        links.push({ d, mx, my, health: hs, width: width(share(tg.nodes)), label: rtt(tg.nodes), key: tg.key });
       }
     }
     return { w, h, sites, links };
@@ -180,7 +183,7 @@
   // don't fit, rather than cutting words. The role is the badge.
   const sub = (n: Node, px: number) => {
     const parts = [
-      n.thisNode ? 'you' : '',
+      n.thisNode ? t('clusterWidgets.topology.you') : '',
       `${rate(n.qps)} q/s`,
       n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
       n.rttMs != null && !n.thisNode ? `${Math.round(n.rttMs)} ms` : '',
@@ -189,26 +192,32 @@
     return parts.join(' · ');
   };
   const podLabel = (n: Node) => (n.pod ? n.pod.slice(-5) : n.nodeId.slice(0, 5));
-  const role = (n: Node) => (n.witness ? 'witness' : n.role);
+  const role = (n: Node) => (n.witness ? t('cluster.node.witness') : n.role);
   // T6.14 — the primary stands out: a filled badge and an accent stripe; replicas and
   // witnesses get a quiet outlined badge, an emergency primary an amber one.
   const badge = (n: Node) =>
     n.role.includes('emergency')
-      ? { kind: 'emergency', text: 'EMERGENCY' }
+      ? { kind: 'emergency', text: t('clusterWidgets.topology.badge.emergency') }
       : n.role === 'primary'
-        ? { kind: 'primary', text: 'PRIMARY' }
-        : { kind: 'replica', text: n.witness ? 'witness' : 'replica' };
+        ? { kind: 'primary', text: t('clusterWidgets.topology.badge.primary') }
+        : { kind: 'replica', text: n.witness ? t('cluster.node.witness') : t('nav.replica') };
   const badgeW = (n: Node) => badge(n).text.length * 6.2 + 12;
   const describe = (n: Node) =>
     [
-      `${n.pod ?? n.nodeId} (${n.site}, ${role(n)})`,
-      n.kubeNode ? `on Kubernetes node ${n.kubeNode}` : '',
-      n.maintenance ? `in maintenance (${n.maintenance.reason})` : '',
-      n.up ? (n.ready ? 'up, serving' : 'up, not ready') : 'down',
-      n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
-      `${rate(n.qps)} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
-      n.cacheHitPercent != null ? `cache ${n.cacheHitPercent}% hits` : '',
-      n.restarts ? `${n.restarts} restart${n.restarts === 1 ? '' : 's'}` : '',
+      t('clusterWidgets.topology.describe.who', { name: n.pod ?? n.nodeId, site: n.site, role: role(n) }),
+      n.kubeNode ? t('clusterWidgets.topology.describe.kubeNode', { node: n.kubeNode }) : '',
+      n.maintenance ? t('clusterWidgets.topology.describe.maintenance', { reason: n.maintenance.reason }) : '',
+      n.up
+        ? n.ready
+          ? t('clusterWidgets.topology.describe.upServing')
+          : t('clusterWidgets.topology.describe.upNotReady')
+        : t('cluster.node.down'),
+      n.configLag ? t('clusterWidgets.topology.describe.behind', { n: n.configLag }) : t('cluster.node.inSync'),
+      `${t('clusterWidgets.topology.describe.qps', { qps: rate(n.qps) })}${
+        n.querySharePercent != null ? t('clusterWidgets.topology.describe.share', { pct: n.querySharePercent }) : ''
+      }`,
+      n.cacheHitPercent != null ? t('clusterWidgets.topology.describe.cache', { pct: n.cacheHitPercent }) : '',
+      n.restarts ? tn('clusterWidgets.topology.describe.restarts', n.restarts) : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -221,7 +230,7 @@
 </script>
 
 <div class="topo" data-testid="cluster-topology">
-  <svg width={L.w} height={L.h} viewBox={`0 0 ${L.w} ${L.h}`} role="group" aria-label="Cluster topology">
+  <svg width={L.w} height={L.h} viewBox={`0 0 ${L.w} ${L.h}`} role="group" aria-label={t('clusterWidgets.topology.aria')}>
     <defs>
       <!-- REQ: OPS-010 — nodes in maintenance are hatched. -->
       <pattern id="maint-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -270,7 +279,7 @@
         {/each}
         {#each s.groups as g (g.label)}
           <rect class="group" x={g.x} y={g.y} width={g.w} height={g.h} rx="6" />
-          {@const count = ` · ${g.nodes.length} replica pod${g.nodes.length === 1 ? '' : 's'}`}
+          {@const count = tn('clusterWidgets.topology.groupCount', g.nodes.length)}
           <text class="group-name" x={g.x + 8} y={g.y + 14}>{fit(g.label, g.w - 16 - count.length * 6, 6)}{count}<title>{g.label}</title></text>
           {#each g.pods as p, i (p.node?.nodeId ?? `more-${i}`)}
             {@const n = p.node ?? p.more?.[0]}
@@ -281,12 +290,12 @@
                 class:canary={!p.more && canaries.includes(n.nodeId)}
                 role="button"
                 tabindex="0"
-                aria-label={p.more ? `${p.more.length} more pods on ${g.label}` : describe(n)}
+                aria-label={p.more ? t('clusterWidgets.topology.moreOn', { n: p.more.length, group: g.label }) : describe(n)}
                 data-testid="topology-pod"
                 onclick={() => onselect?.(n)}
                 onkeydown={(e) => key(e, n)}
               >
-                <title>{p.more ? `${p.more.length} more pods` : describe(n)}</title>
+                <title>{p.more ? t('clusterWidgets.topology.more', { n: p.more.length }) : describe(n)}</title>
                 <rect x={p.x} y={p.y} width={p.w} height={p.h} rx="5" />
                 <text x={p.x + p.w / 2} y={p.y + 15} text-anchor="middle">{p.more ? `+${p.more.length}` : podLabel(n)}</text>
               </g>
@@ -297,11 +306,11 @@
     {/each}
   </svg>
   <p class="legend muted small">
-    <span class="legend-badge">PRIMARY</span> publishes the configuration; replicas follow it ·
-    <span class="key ok"></span> serving, in sync <span class="key warn"></span> not ready or behind <span class="key bad"></span> down
-    {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> in maintenance{/if} ·
-    {#if canaries.length}<span class="key canary"></span> runs the version baking ·{/if}
-    line thickness = share of queries{#if L.links.some((l) => l.label)}{' · times are round trips from this node'}{/if}
+    <span class="legend-badge">{t('clusterWidgets.topology.badge.primary')}</span> {t('clusterWidgets.topology.legend.primary')} ·
+    <span class="key ok"></span> {t('clusterWidgets.topology.legend.ok')} <span class="key warn"></span> {t('clusterWidgets.topology.legend.warn')} <span class="key bad"></span> {t('cluster.node.down')}
+    {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> {t('clusterWidgets.topology.legend.maint')}{/if} ·
+    {#if canaries.length}<span class="key canary"></span> {t('clusterWidgets.topology.legend.canary')} ·{/if}
+    {t('clusterWidgets.topology.legend.thickness')}{#if L.links.some((l) => l.label)}{t('clusterWidgets.topology.legend.roundTrips')}{/if}
   </p>
 </div>
 

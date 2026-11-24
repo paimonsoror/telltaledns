@@ -9,21 +9,22 @@
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
   import BudgetAttribution from '../lib/components/BudgetAttribution.svelte';
+  import { t, tn, type MessageKey } from '../lib/i18n';
 
   // REQ: OBS-027 — the Analyze page answers "why": the query language, and who spent the
   // error budget.
-  const tabs: TabItem[] = [
-    { id: 'query', label: 'Query' },
-    { id: 'budget', label: 'Error budget' },
-  ];
+  const tabs: TabItem[] = $derived([
+    { id: 'query', label: t('qw.explain.query') },
+    { id: 'budget', label: t('analyze.tab.budget') },
+  ]);
   const tab = $derived(activeTab(tabs));
 
-  const examples: { label: string; q: string }[] = [
-    { label: 'Top blocked names today', q: 'from -24h | where status = blocked | top 10 name' },
-    { label: 'Busiest devices', q: 'from -24h | by client | stats count, distinct(domain) | limit 20' },
-    { label: 'Queries per hour, with latency', q: 'from -24h | bucket 1h | stats count, p50(latency), p95(latency)' },
-    { label: 'Slow answers by upstream', q: 'from -24h | where latency > 100 | by upstream | stats count, p95(latency)' },
-    { label: 'Failed lookups', q: 'from -24h | where rcode in (NXDOMAIN, SERVFAIL) | top 20 domain' },
+  const examples: { label: MessageKey; q: string }[] = [
+    { label: 'analyze.example.topBlocked', q: 'from -24h | where status = blocked | top 10 name' },
+    { label: 'analyze.example.busiest', q: 'from -24h | by client | stats count, distinct(domain) | limit 20' },
+    { label: 'analyze.example.perHour', q: 'from -24h | bucket 1h | stats count, p50(latency), p95(latency)' },
+    { label: 'analyze.example.slow', q: 'from -24h | where latency > 100 | by upstream | stats count, p95(latency)' },
+    { label: 'analyze.example.failed', q: 'from -24h | where rcode in (NXDOMAIN, SERVFAIL) | top 20 domain' },
   ];
 
   let text = $state(route.params.get('q') ?? examples[0].q);
@@ -85,8 +86,8 @@
 </script>
 
 <div class="page">
-  <h1>Analyze<HelpButton id="vqlog" /></h1>
-  <Tabs {tabs} active={tab} label="Analyze" />
+  <h1>{t('nav.analyze')}<HelpButton id="vqlog" /></h1>
+  <Tabs {tabs} active={tab} label={t('nav.analyze')} />
   <TabPanel active={tab}>
   {#if tab === 'budget'}
     <BudgetAttribution />
@@ -99,18 +100,18 @@
     }}
   >
     <label class="field">
-      <span class="small muted">Query (vqlog) · Ctrl+Enter runs it</span>
-      <textarea name="q" rows="2" spellcheck="false" bind:value={text} onkeydown={keydown} aria-label="vqlog query"></textarea>
+      <span class="small muted">{t('analyze.queryLabel')}</span>
+      <textarea name="q" rows="2" spellcheck="false" bind:value={text} onkeydown={keydown} aria-label={t('analyze.queryAria')}></textarea>
     </label>
     <div class="row actions">
-      <button class="primary" type="submit" disabled={busy}>Run</button>
-      <button type="button" disabled={busy} onclick={() => go(true)} title="Only estimate how much it would read">Estimate cost</button>
+      <button class="primary" type="submit" disabled={busy}>{t('analyze.run')}</button>
+      <button type="button" disabled={busy} onclick={() => go(true)} title={t('analyze.estimateTitle')}>{t('analyze.estimate')}</button>
       <span class="spacer"></span>
-      <span class="small muted">Stages: from · where · bucket · by · stats · top · sort · limit</span>
+      <span class="small muted">{t('analyze.stages')}</span>
     </div>
     <div class="examples small">
       {#each examples as ex (ex.q)}
-        <button type="button" class="chip" onclick={() => { text = ex.q; go(); }}>{ex.label}</button>
+        <button type="button" class="chip" onclick={() => { text = ex.q; go(); }}>{t(ex.label)}</button>
       {/each}
     </div>
   </form>
@@ -119,24 +120,23 @@
 
   {#if result}
     <section class="card" data-testid="vqlog-result">
-      <p class="small muted understood">As understood: <code>{result.query}</code></p>
+      <p class="small muted understood">{t('analyze.asUnderstood')}<code>{result.query}</code></p>
       <p class="small muted" data-testid="vqlog-cost">
         {#if result.cost.rowsScanned === 0 && result.rows.length === 0}
-          Estimate: up to {num(result.cost.estimatedRows)} logged queries in {num(result.cost.blocks)} blocks would be read.
+          {tn('analyze.estimate', result.cost.estimatedRows, { n: num(result.cost.estimatedRows), blocks: num(result.cost.blocks) })}
         {:else}
-          Matched {num(result.cost.rowsMatched)} of {num(result.cost.rowsScanned)} queries read (estimated at most
-          {num(result.cost.estimatedRows)}) in {num(result.cost.elapsedMs)} ms · {num(result.groups)} groups
+          {tn('analyze.matched', result.groups, { n: num(result.groups), matched: num(result.cost.rowsMatched), scanned: num(result.cost.rowsScanned), estimated: num(result.cost.estimatedRows), elapsed: num(result.cost.elapsedMs) })}
         {/if}
       </p>
       {#if result.truncated}
-        <div class="notice warn" role="status">Partial: {result.truncatedReason}</div>
+        <div class="notice warn" role="status">{t('analyze.partial', { reason: result.truncatedReason ?? '' })}</div>
       {/if}
       {#if result.missingNodes.length}
-        <div class="notice warn" role="status">Not included: {result.missingNodes.join(', ')}</div>
+        <div class="notice warn" role="status">{t('analyze.notIncluded', { nodes: result.missingNodes.join(', ') })}</div>
       {/if}
       <!-- REQ: AGT-012 (T9.12) — answered from the rollups, or past what the log keeps. -->
       {#if result.source === 'rollups'}
-        <p class="small muted" data-testid="vqlog-source">From the rollups (counts kept for long windows), not the query log.</p>
+        <p class="small muted" data-testid="vqlog-source">{t('analyze.rollups')}</p>
       {/if}
       {#if result.note}
         <div class="notice" role="status" data-testid="vqlog-note">{result.note}</div>
@@ -163,7 +163,7 @@
           </table>
         </div>
       {:else if result.cost.rowsScanned > 0}
-        <p class="empty">Nothing matched.</p>
+        <p class="empty">{t('analyze.nothing')}</p>
       {/if}
     </section>
   {/if}

@@ -6,8 +6,6 @@
 // end just before it, `…End`/`…After` carry on just after it, so the markup keeps the element.
 export const queries = {
   // The heading, the live view, and the notices above the filters.
-  'queries.title': 'Query log',
-  'queries.live': 'Live',
   'queries.live.streaming': 'streaming',
   'queries.live.connecting': 'connecting',
   'queries.live.retrying': 'retrying',
@@ -17,7 +15,6 @@ export const queries = {
   'queries.showAllQueries': 'Show all queries',
 
   // The filters: their labels, the Match menu, and the "not" boxes.
-  'queries.filter.name': 'Name',
   'queries.filter.match': 'Match',
   'queries.match.substring': 'contains',
   'queries.match.exact': 'exactly',
@@ -29,14 +26,11 @@ export const queries = {
   'queries.match.notSuffix': 'is not, or under',
   'queries.match.notGlob': 'does not match wildcard',
   'queries.match.notRegex': 'does not match regex',
-  'queries.filter.client': 'Client',
   'queries.filter.clientNot': 'Every client except this one',
-  'queries.filter.type': 'Type',
   'queries.filter.qtypeNot': 'Every type except these',
   'queries.filter.rcode': 'Rcode',
   'queries.filter.rcodeNot': 'Every response code except these',
   'queries.filter.minLatency': 'Slower than (ms)',
-  'queries.filter.group': 'Group',
   'queries.filter.any': 'any',
   'queries.filter.since': 'Since',
   'queries.not': 'not',
@@ -44,35 +38,19 @@ export const queries = {
   'queries.clear': 'Clear',
 
   // The status of a query, as a badge and as a filter chip (the value sent stays the identifier).
-  'queries.status.blocked': 'blocked',
   'queries.status.other': 'other',
-  'queries.status.cached': 'cached',
-  'queries.status.forwarded': 'forwarded',
-  'queries.status.local': 'local',
   'queries.status.stale': 'stale',
   'queries.status.refreshing': 'refreshing',
-  'queries.status.refreshed': 'refreshed',
   'queries.status.special': 'special',
-  'queries.status.refused': 'refused',
   'queries.status.servfail': 'servfail',
   'queries.status.rate_limited': 'rate_limited',
-  'queries.status.paused': 'paused',
   'queries.status.allowed': 'allowed',
   'queries.status.malformed': 'malformed',
 
   // The time ranges of the Since menu (the values are the API's; only the words are here).
-  'queries.range.15m': '15 min',
-  'queries.range.1h': '1 h',
-  'queries.range.24h': '24 h',
   'queries.range.7d': '7 days',
 
   // The table: its columns, a row's tooltips, and what an empty answer says.
-  'queries.col.time': 'Time',
-  'queries.col.client': 'Client',
-  'queries.col.name': 'Name',
-  'queries.col.type': 'Type',
-  'queries.col.status': 'Status',
-  'queries.col.rule': 'Rule',
   'queries.col.took': 'Time taken',
   'queries.nodeTitle': 'The cluster node that answered',
   'queries.timing': 'upstream {upstream} of {total}',
@@ -101,27 +79,18 @@ export const queries = {
   'queries.quickRule.action': 'Action',
   'queries.quickRule.allow': 'Allow',
   'queries.quickRule.block': 'Block',
-  'queries.quickRule.domain': 'Domain',
-  'queries.quickRule.for': 'For',
   'queries.quickRule.appliesTo': 'Applies to',
   'queries.quickRule.scopeDevice': 'a device',
   'queries.quickRule.scopeGroup': 'a group',
-  'queries.quickRule.scopeEveryone': 'everyone',
-  'queries.quickRule.device': 'Device',
   'queries.quickRule.devicePlaceholder': 'named device, IP, or network',
-  'queries.quickRule.group': 'Group',
   'queries.quickRule.forLower': 'for',
   'queries.quickRule.duration': 'Duration',
-  'queries.quickRule.note': 'Note',
   'queries.quickRule.notePlaceholder': "Note (optional), e.g. Mom's game",
-  'queries.quickRule.saving': 'Saving…',
   'queries.quickRule.saveChanges': 'Save changes',
   'queries.quickRule.save': 'Save rule',
-  'queries.quickRule.saved': 'Saved.',
 
   // How long a rule lasts.
   'queries.duration.30m': '30 minutes',
-  'queries.duration.1h': '1 hour',
   'queries.duration.2h': '2 hours',
   'queries.duration.today': 'Until midnight',
   'queries.duration.1d': '1 day',
@@ -153,7 +122,6 @@ export const queries = {
   'queries.seen.namedDevice': '{address} is your device “',
   'queries.seen.namedDeviceEnd': '”.',
   'queries.seen.seenAsStart': '{address} (shown in the log as ',
-  'queries.seen.seenAsEnd': ').',
   'queries.seen.podUnknown':
     "This looks like a Kubernetes pod this node doesn't know about: a pod's address changes whenever it restarts, so use the group an operator placed it in, not the address.",
   'queries.seen.address':

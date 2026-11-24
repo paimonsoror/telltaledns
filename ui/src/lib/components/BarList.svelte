@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from '../i18n';
   // REQ: OBS-027 — one breakdown as bars sized by share, with a table view (spec/07 §3). An
   // approximate row shows its error bound as a faint extension.
   import type { S } from '../api';
@@ -9,7 +10,7 @@
     rows,
     link,
     testid,
-    empty = 'Nothing here.',
+    empty,
   }: {
     title: string;
     rows: S['AttributionRow'][];
@@ -26,14 +27,14 @@
 <section class="card bars-card" data-testid={testid}>
   <div class="card-head">
     <h3>{title}</h3>
-    <button class="link small" onclick={() => (table = !table)} aria-pressed={table}>{table ? 'Bars' : 'Table'}</button>
+    <button class="link small" onclick={() => (table = !table)} aria-pressed={table}>{table ? t('widgets.barList.bars') : t('flow.table')}</button>
   </div>
   {#if rows.length === 0}
-    <p class="empty small">{empty}</p>
+    <p class="empty small">{empty ?? t('widgets.barList.empty')}</p>
   {:else if table}
     <div class="table-wrap">
       <table class="compact">
-        <thead><tr><th>{title}</th><th class="num">Bad</th><th class="num">Share</th>{#if rows.some((r) => !r.exact)}<th class="num">± up to</th>{/if}</tr></thead>
+        <thead><tr><th>{title}</th><th class="num">{t('widgets.barList.bad')}</th><th class="num">{t('flow.col.share')}</th>{#if rows.some((r) => !r.exact)}<th class="num">{t('widgets.barList.uncertain')}</th>{/if}</tr></thead>
         <tbody>
           {#each rows as r (r.key)}
             {@const to = link?.(r)}

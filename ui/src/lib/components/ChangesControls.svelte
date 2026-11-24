@@ -5,6 +5,7 @@
   import { api } from '../api';
   import { can } from '../session.svelte';
   import { changes, KINDS } from '../annotations.svelte';
+  import { t } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -45,47 +46,47 @@
       onchange={(e) => changes.toggle(e.currentTarget.checked)}
       data-testid="changes-toggle"
     />
-    Changes
+    {t('settings.changes.title')}
   </label>
   <HelpButton id="change-markers" />
   {#if can('operator')}
-    <button type="button" class="note-btn" aria-expanded={changes.noting} onclick={() => (changes.noting = !changes.noting)} data-testid="note-open">Note…</button>
+    <button type="button" class="note-btn" aria-expanded={changes.noting} onclick={() => (changes.noting = !changes.noting)} data-testid="note-open">{t('widgets.changes.noteOpen')}</button>
   {/if}
 </div>
 {:else}
 {#if changes.noting}
   <form class="card note-form" onsubmit={add} data-testid="note-form">
     <label class="field grow">
-      What happened
+      {t('widgets.changes.what')}
       <input
         maxlength="200"
         required
         bind:value={text}
-        placeholder="moved the access point to the hallway"
+        placeholder={t('widgets.changes.whatHint')}
         data-testid="note-text"
       />
     </label>
     <label class="field">
-      When <span class="muted small">(optional, up to 7 days back)</span>
+      {t('changes.plan.when')} <span class="muted small">{t('widgets.changes.whenHint')}</span>
       <input type="datetime-local" bind:value={when} data-testid="note-time" />
     </label>
     <div class="actions">
-      <button class="primary" type="submit" disabled={saving || !text.trim()}>Add note</button>
-      <button type="button" onclick={() => (changes.noting = false)}>Cancel</button>
+      <button class="primary" type="submit" disabled={saving || !text.trim()}>{t('widgets.changes.add')}</button>
+      <button type="button" onclick={() => (changes.noting = false)}>{t('common.cancel')}</button>
     </div>
     <ErrorNote {error} />
-    <p class="muted small">Shows on every time chart of every node. Notes can't be edited or deleted; add a correcting one.</p>
+    <p class="muted small">{t('widgets.changes.noteHelp')}</p>
   </form>
 {/if}
 
 {#if advanced && changes.show}
-  <div class="kinds" role="group" aria-label="Kinds of changes shown">
+  <div class="kinds" role="group" aria-label={t('widgets.changes.kinds')}>
     {#each KINDS as k (k.id)}
       <button
         type="button"
         class="chip"
         aria-pressed={!changes.hidden.includes(k.id)}
-        onclick={() => changes.setKind(k.id, changes.hidden.includes(k.id))}>{k.label}</button
+        onclick={() => changes.setKind(k.id, changes.hidden.includes(k.id))}>{t(k.label)}</button
       >
     {/each}
   </div>

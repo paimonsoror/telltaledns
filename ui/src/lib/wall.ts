@@ -2,15 +2,17 @@
 // the tests can check them directly: the panel list from the URL, tile tweens, the particle
 // budget, the live ticker's buffer, and an animation loop that stops when the tab is hidden.
 
+import type { MessageKey } from './i18n';
+
 export const PANELS = ['map', 'flow', 'slo', 'latency', 'heat', 'kpi'] as const;
 export type Panel = (typeof PANELS)[number];
-export const PANEL_TITLE: Record<Panel, string> = {
-  map: 'What the network is reaching',
-  flow: 'Where queries go',
-  slo: 'Service level',
-  latency: 'Answer time',
-  heat: 'The week',
-  kpi: 'Right now',
+export const PANEL_TITLE: Record<Panel, MessageKey> = {
+  map: 'wall.panel.map',
+  flow: 'wall.panel.flow',
+  slo: 'slo.title',
+  latency: 'wall.panel.latency',
+  heat: 'wall.panel.heat',
+  kpi: 'wall.panel.kpi',
 };
 
 /** `?panels=slo,flow` in that order; unknown names dropped; none (or nothing valid): all. */

@@ -2,6 +2,7 @@
   // T6.8 — a donut: the total in the middle, one rounded segment per part, and a breakdown
   // grid below (the grid is the accessible view: every number is there as text).
   import { num } from '../format';
+  import { t } from '../i18n';
 
   export interface Part {
     label: string;
@@ -10,7 +11,7 @@
     color: string;
   }
 
-  let { parts, center = 'total', format = num }: { parts: Part[]; center?: string; format?: (n: number) => string } = $props();
+  let { parts, center = t('widgets.chart.total'), format = num }: { parts: Part[]; center?: string; format?: (n: number) => string } = $props();
 
   const R = 42;
   /** Stroke width (matches the CSS). */

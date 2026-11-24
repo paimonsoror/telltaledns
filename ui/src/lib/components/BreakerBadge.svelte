@@ -10,7 +10,7 @@
   // The states people read, from the catalog so they follow the language; a state this build
   // doesn't know yet, and "nothing at all", stay exactly as `breakerLabel` says them.
   const LABEL_KEY: Record<string, MessageKey> = {
-    closed: 'dashw.breaker.closed',
+    closed: 'cluster.healthy',
     open: 'dashw.breaker.open',
     half_open: 'dashw.breaker.halfOpen',
   };

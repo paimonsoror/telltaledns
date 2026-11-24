@@ -3,6 +3,8 @@
   // group, or some devices), why; a preview first (the dry run: every precondition, the devices
   // it would stop answering, what that does to them), then Start when every check passes.
   import { api, type S } from '../api';
+  // REQ: API-011 — the form's own words; the preview's sentences come from the API.
+  import { t, type MessageKey } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -19,12 +21,12 @@
     ondone: (r: S['DrillStart']) => void;
   } = $props();
 
-  const presets: [string, number][] = [
-    ['15 s', 15],
-    ['30 s', 30],
-    ['1 min', 60],
-    ['2 min', 120],
-    ['5 min', 300],
+  const presets: [MessageKey, number][] = [
+    ['clusterWidgets.drill.preset.15s', 15],
+    ['clusterWidgets.drill.preset.30s', 30],
+    ['clusterWidgets.drill.preset.1m', 60],
+    ['clusterWidgets.drill.preset.2m', 120],
+    ['clusterWidgets.drill.preset.5m', 300],
   ];
   let secs = $state(30);
   let who = $state<'all' | 'group' | 'clients'>('clients');
@@ -75,40 +77,44 @@
   }
 </script>
 
-<div class="notice drill-form" role="dialog" aria-label={`Failover drill on ${label}`} data-testid="drill-form">
+<div class="notice drill-form" role="dialog" aria-label={t('clusterWidgets.drill.aria', { label })} data-testid="drill-form">
   <p>
-    <strong>Run a failover drill on {label}?</strong> For a short time it stops answering the devices you choose, while the
-    other nodes keep serving. Devices with a working second DNS server switch to it; a report then shows who followed and who
-    was stuck.<HelpButton id="failover-drill" />
+    <strong>{t('clusterWidgets.drill.title', { label })}</strong> {t('clusterWidgets.drill.body')}<HelpButton id="failover-drill" />
   </p>
-  <div class="row presets" role="radiogroup" aria-label="How long">
+  <div class="row presets" role="radiogroup" aria-label={t('clusterWidgets.drill.howLong')}>
     {#each presets as [text, s] (s)}
-      <label class="seg-item"><input type="radio" name="drill-for" value={s} bind:group={secs} /> {text}</label>
+      <label class="seg-item"><input type="radio" name="drill-for" value={s} bind:group={secs} /> {t(text)}</label>
     {/each}
   </div>
-  <div class="row presets" role="radiogroup" aria-label="Whom">
-    <label class="seg-item"><input type="radio" name="drill-who" value="clients" bind:group={who} /> some devices</label>
-    <label class="seg-item"><input type="radio" name="drill-who" value="group" bind:group={who} /> a group</label>
-    <label class="seg-item"><input type="radio" name="drill-who" value="all" bind:group={who} /> everyone</label>
+  <div class="row presets" role="radiogroup" aria-label={t('clusterWidgets.drill.whom')}>
+    <label class="seg-item"><input type="radio" name="drill-who" value="clients" bind:group={who} /> {t('clusterWidgets.drill.who.clients')}</label>
+    <label class="seg-item"><input type="radio" name="drill-who" value="group" bind:group={who} /> {t('queries.quickRule.scopeGroup')}</label>
+    <label class="seg-item"><input type="radio" name="drill-who" value="all" bind:group={who} /> {t('clusterWidgets.drill.who.all')}</label>
   </div>
   {#if who === 'clients'}
     <label class="field"
-      >Devices <input bind:value={clients} placeholder="192.168.1.20, laptop" data-testid="drill-clients" />
-      <span class="muted small">Addresses, device names, or Kubernetes workloads. Start with your own device.</span></label
+      >{t('clients.tab.devices')} <input bind:value={clients} placeholder="192.168.1.20, laptop" data-testid="drill-clients" />
+      <span class="muted small">{t('clusterWidgets.drill.devicesHelp')}</span></label
     >
   {:else if who === 'group'}
     <label class="field"
-      >Group
+      >{t('legacy.group')}
       <select bind:value={group} data-testid="drill-group">
-        <option value="">Choose…</option>
+        <option value="">{t('clusterWidgets.drill.choose')}</option>
         {#each groups as g (g)}<option value={g}>{g}</option>{/each}
       </select></label
     >
   {/if}
-  <label class="field">Why <input bind:value={reason} maxlength="200" placeholder="does the second server work?" data-testid="drill-reason" /></label>
+  <label class="field"
+    >{t('changes.plan.why')} <input
+      bind:value={reason}
+      maxlength="200"
+      placeholder={t('clusterWidgets.drill.reasonPlaceholder')}
+      data-testid="drill-reason"
+    /></label
+  >
   <label class="check"
-    ><input type="checkbox" bind:checked={refused} data-testid="drill-refused" /> Answer REFUSED at once instead of nothing (faster, less
-    realistic: some devices don't try their next server on REFUSED)</label
+    ><input type="checkbox" bind:checked={refused} data-testid="drill-refused" /> {t('clusterWidgets.drill.refused')}</label
   >
   {#if preview}
     <div class="preview" data-testid="drill-preview">
@@ -120,7 +126,7 @@
       </ul>
       {#if (preview.devices ?? []).length}
         <p class="small muted">
-          {preview.targetsResolved} of the {preview.baseline} devices that used this node in the last hour:
+          {t('clusterWidgets.drill.resolved', { resolved: preview.targetsResolved, baseline: preview.baseline })}
           {(preview.devices ?? [])
             .slice(0, 8)
             .map((d) => d.name ?? d.client)
@@ -132,11 +138,15 @@
   <ErrorNote {error} />
   <div class="row">
     {#if !preview}
-      <button class="primary" onclick={() => send(true)} disabled={busy || !valid} data-testid="drill-preview-button">{busy ? 'Checking…' : 'Preview'}</button>
+      <button class="primary" onclick={() => send(true)} disabled={busy || !valid} data-testid="drill-preview-button"
+        >{busy ? t('clusterWidgets.drill.checking') : t('qw.chip.preview')}</button
+      >
     {:else}
-      <button class="primary" onclick={() => send(false)} disabled={busy || !ready} data-testid="drill-start">{busy ? 'Starting…' : 'Start drill'}</button>
+      <button class="primary" onclick={() => send(false)} disabled={busy || !ready} data-testid="drill-start"
+        >{busy ? t('clusterWidgets.drill.starting') : t('clusterWidgets.drill.start')}</button
+      >
     {/if}
-    <button onclick={onclose}>Cancel</button>
+    <button onclick={onclose}>{t('common.cancel')}</button>
   </div>
 </div>
 

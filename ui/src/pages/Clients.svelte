@@ -14,26 +14,30 @@
   import Drawer from '../lib/components/Drawer.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
   import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
-  import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
+  import { groupFromLabel, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
   import { mode } from '../lib/mode.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import { plainHttpPage } from '../lib/plainHttp';
   import { listsMac } from '../lib/macKeys';
+  import { t } from '../lib/i18n';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
   const groupColor = (n: string) => groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
-  const fromText: Record<string, string> = {
-    network: 'from its network',
-    default: 'default: no network group matches',
-  };
+  const fromText = $derived<Record<string, string>>({
+    network: t('clients.from.network'),
+    default: t('clients.from.default'),
+  });
   let seen = $state<S['TopItem'][]>([]);
   // REQ: CLU-002 (ADR-158) — nodes that didn't answer (an older node doesn't know the
   // last-hour read): their clients aren't in the list, so say so.
   let seenMissing = $state<string[]>([]);
   // REQ: T8.2, T8.3 (T8.6) — devices found by the routers' DHCP or mDNS.
   let found = $state<S['DhcpLease'][]>([]);
-  const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
+  const sourceText = $derived<Record<string, string>>({
+    router: t('clients.router.noun'),
+    mdns: t('clients.source.mdns'),
+  });
   // REQ: T8.2, API-002 (ADR-181) — the routers, added and changed here (admins). A key or
   // password is pasted, never a file named: the server saves it to a new file under secrets/
   // in the data folder of the node that took the change, and never shows it again. Changing the
@@ -45,48 +49,48 @@
   type KeyStatus = { credentials?: Record<string, string> | null };
   const kept = (field: string, what: string) => (_: Record<string, unknown>, __: string, e?: KeyStatus) => {
     const s = e?.credentials?.[field];
-    if (s === 'saved') return `Saved. Type a new ${what} to replace it.`;
-    if (s === 'missing') return `Key missing: enter the ${what} again`;
-    if (s === 'file_missing') return `Key file missing: put the file there (or paste the ${what})`;
-    if (s === 'not_used') return `Not used: enter the ${what} again`;
-    return `Paste the ${what}`;
+    if (s === 'saved') return t('clients.keep.saved', { what });
+    if (s === 'missing') return t('clients.keep.missing', { what });
+    if (s === 'file_missing') return t('clients.keep.fileMissing', { what });
+    if (s === 'not_used') return t('clients.keep.notUsed', { what });
+    return t('clients.keep.paste', { what });
   };
   const routerStatus = (e: KeyStatus) => {
     const s = Object.values(e.credentials ?? {});
     if (s.length === 0) return null;
-    if (s.includes('missing')) return { text: 'key missing: enter it again', cls: 'bad' };
-    if (s.includes('file_missing')) return { text: 'key file missing: put the file there, or paste the key', cls: 'bad' };
-    if (s.includes('not_used')) return { text: 'key not used: enter it again', cls: 'bad' };
-    return { text: 'key saved', cls: 'ok' };
+    if (s.includes('missing')) return { text: t('clients.routerStatus.missing'), cls: 'bad' };
+    if (s.includes('file_missing')) return { text: t('clients.routerStatus.fileMissing'), cls: 'bad' };
+    if (s.includes('not_used')) return { text: t('clients.routerStatus.notUsed'), cls: 'bad' };
+    return { text: t('clients.routerStatus.saved'), cls: 'ok' };
   };
-  const routerFields: Field[] = [
-    { key: 'type', label: 'Type', type: 'select', options: ['unifi', 'opnsense'], initial: 'unifi' },
-    { key: 'url', label: 'Address', type: 'text', placeholder: 'https://192.168.1.1',
-      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. A pasted key is sent only over https://. Changing the address (or the type, site or TLS settings) needs the key pasted again.' },
-    { key: 'api_key', label: 'API key', type: 'secret', placeholderFor: kept('api_key', 'API key'),
-      help: 'UniFi Network 9+: Settings → Control Plane → Integrations. OPNsense: System → Access → Users → API keys. It is saved on the node that takes configuration changes, and not in backups.' },
-    { key: 'api_secret', label: 'API secret (OPNsense)', type: 'secret', placeholderFor: kept('api_secret', 'API secret') },
-    { key: 'username', label: 'Username (UniFi, instead of an API key)', type: 'text', placeholder: 'telltale', advanced: true,
-      help: 'A local UniFi user; read-only is enough.' },
-    { key: 'password', label: 'Password (UniFi)', type: 'secret', placeholderFor: kept('password', 'password'), advanced: true },
-    { key: 'site', label: 'Site (UniFi)', type: 'text', placeholder: 'default', advanced: true },
-    { key: 'tls_ca', label: 'Console certificate', type: 'text', placeholder: '/etc/telltale/udm.pem',
-      help: 'A self-signed console: a file with its certificate, so it is verified.' },
-    { key: 'tls_server_name', label: 'Name in the certificate', type: 'text', placeholder: 'unifi.local',
-      help: 'UniFi consoles name themselves unifi.local.' },
-    { key: 'tls_insecure_skip_verify', label: "Don't check the certificate", type: 'bool',
-      help: 'Works with any console, but anything on your network could pose as it and receive the key. With a pasted key, give the address as a number (https://192.168.1.1).' },
-    { key: 'interval_secs', label: 'Read every (seconds)', type: 'number', placeholder: '300', advanced: true },
-    { key: 'offline_days', label: 'Offline devices seen within (days, UniFi)', type: 'number', placeholder: '30', advanced: true,
-      help: '0: only the connected clients.' },
-  ];
+  const routerFields = $derived<Field[]>([
+    { key: 'type', label: t('qw.cache.type'), type: 'select', options: ['unifi', 'opnsense'], initial: 'unifi' },
+    { key: 'url', label: t('qw.explain.address'), type: 'text', placeholder: 'https://192.168.1.1',
+      help: t('clients.router.urlHelp') },
+    { key: 'api_key', label: t('clients.keep.apiKey'), type: 'secret', placeholderFor: kept('api_key', t('clients.keep.apiKey')),
+      help: t('clients.router.apiKeyHelp') },
+    { key: 'api_secret', label: t('clients.router.apiSecret'), type: 'secret', placeholderFor: kept('api_secret', t('clients.keep.apiSecret')) },
+    { key: 'username', label: t('clients.router.username'), type: 'text', placeholder: 'telltale', advanced: true,
+      help: t('clients.router.usernameHelp') },
+    { key: 'password', label: t('clients.router.password'), type: 'secret', placeholderFor: kept('password', t('clients.keep.password')), advanced: true },
+    { key: 'site', label: t('clients.router.site'), type: 'text', placeholder: 'default', advanced: true },
+    { key: 'tls_ca', label: t('clients.router.tlsCa'), type: 'text', placeholder: '/etc/telltale/udm.pem',
+      help: t('clients.router.tlsCaHelp') },
+    { key: 'tls_server_name', label: t('clients.router.tlsName'), type: 'text', placeholder: 'unifi.local',
+      help: t('clients.router.tlsNameHelp') },
+    { key: 'tls_insecure_skip_verify', label: t('clients.router.tlsInsecure'), type: 'bool',
+      help: t('clients.router.tlsInsecureHelp') },
+    { key: 'interval_secs', label: t('clients.router.interval'), type: 'number', placeholder: '300', advanced: true },
+    { key: 'offline_days', label: t('clients.router.offlineDays'), type: 'number', placeholder: '30', advanced: true,
+      help: t('clients.router.offlineDaysHelp') },
+  ]);
   // REQ: API-002, T8.2 (ADR-181) — the key files stay the server's: never sent back.
   const routerFiles = ['api_key_file', 'api_secret_file', 'password_file'];
   // REQ: API-002, T8.2 (ADR-181) — security F2: a page opened over plain HTTP from another
   // machine sends what is pasted into it unencrypted; say so (the server can't tell).
-  const plainHttpNotice = plainHttpPage(location)
-    ? 'You are on a plain-HTTP page: a key you paste crosses the network unencrypted. Open this page over https first.'
-    : null;
+  const plainHttpNotice = $derived(
+    plainHttpPage(location) ? t('clients.plainHttp') : null,
+  );
   // REQ: API-010, FLT-006 (ADR-183) — a discovered device is named when a configured device lists its
   // address or its MAC address (a device named by its MAC follows it to whatever address it gets).
   const named = (l: S['DhcpLease']) => configured.some((c) => c.match.includes(l.ip) || (!!l.mac && listsMac(c.match, l.mac)));
@@ -136,22 +140,22 @@
   let namespace = $state('');
   const namespaces = $derived([...new Set(workloads.items.map((w) => w.namespace))].sort());
   const shownWorkloads = $derived(workloads.items.filter((w) => !namespace || w.namespace === namespace));
-  const kindText: Record<string, string> = {
-    deploy: 'Deployment',
-    sts: 'StatefulSet',
-    ds: 'DaemonSet',
-    job: 'Job',
-    cronjob: 'CronJob',
-    rs: 'ReplicaSet',
-    pod: 'Pod',
-  };
+  const kindText = $derived<Record<string, string>>({
+    deploy: t('clients.kind.deploy'),
+    sts: t('clients.kind.sts'),
+    ds: t('clients.kind.ds'),
+    job: t('clients.kind.job'),
+    cronjob: t('clients.kind.cronjob'),
+    rs: t('clients.kind.rs'),
+    pod: t('clients.kind.pod'),
+  });
 
   // REQ: API-005 (ADR-121) — one table per tab, each with its size.
   const tabs = $derived<TabItem[]>([
-    { id: 'seen', label: 'Last hour', count: seen.length },
-    { id: 'devices', label: 'Devices', count: configured.length },
-    ...(workloads.items.length ? [{ id: 'workloads', label: 'Workloads', count: workloads.items.length }] : []),
-    { id: 'discovered', label: 'Discovered', count: found.length },
+    { id: 'seen', label: t('clients.tab.seen'), count: seen.length },
+    { id: 'devices', label: t('clients.tab.devices'), count: configured.length },
+    ...(workloads.items.length ? [{ id: 'workloads', label: t('clients.tab.workloads'), count: workloads.items.length }] : []),
+    { id: 'discovered', label: t('clients.tab.discovered'), count: found.length },
   ]);
   const tab = $derived(activeTab(tabs));
 
@@ -193,22 +197,22 @@
 </script>
 
 <div class="page">
-  <h1>Clients<HelpButton id="devices" /></h1>
+  <h1>{t('nav.clients')}<HelpButton id="devices" /></h1>
   <ErrorNote {error} />
-  <Tabs {tabs} active={tab} label="Clients" />
+  <Tabs {tabs} active={tab} label={t('nav.clients')} />
   <TabPanel active={tab}>
   {#if tab === 'seen'}
     <section class="card">
-      <h2>Seen in the last hour</h2>
+      <h2>{t('clients.seen.title')}</h2>
       {#if seenMissing.length}
-        <p class="small muted" data-testid="seen-missing">Without {seenMissing.join(', ')}: they didn’t answer, so their clients aren’t listed.</p>
+        <p class="small muted" data-testid="seen-missing">{t('clients.seen.missing', { names: seenMissing.join(', ') })}</p>
       {/if}
       {#if seen.length === 0}
-        <p class="empty">No queries in the last hour.</p>
+        <p class="empty">{t('clients.seen.empty')}</p>
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Client</th><th>Device</th><th>Groups</th>{#if showAffinity}<th data-testid="affinity-head">Servers<HelpButton id="affinity" /></th>{/if}<th class="num">Queries</th><th></th></tr></thead>
+            <thead><tr><th>{t('qw.explain.client')}</th><th>{t('flow.device')}</th><th>{t('nav.groups')}</th>{#if showAffinity}<th data-testid="affinity-head">{t('clients.col.servers')}<HelpButton id="affinity" /></th>{/if}<th class="num">{t('clients.col.queries')}</th><th></th></tr></thead>
             <tbody>
               {#each seen as c (c.key)}
                 <tr>
@@ -222,7 +226,7 @@
                     <td class="small" data-testid="affinity" title={a ? a.nodes.map((n) => `${n.node}: ${num(n.queries)}`).join('\n') : ''}>{a?.label ?? ''}</td>
                   {/if}
                   <td class="num">{num(c.count)}</td>
-                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">Rhythm</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">Day</button></td>
+                  <td class="num"><a href={href('/queries', { client: c.key })}>{t('legacy.queries')}</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>{t('clients.link.when')}</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">{t('clients.link.rhythm')}</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">{t('clients.link.day')}</button></td>
                 </tr>
               {/each}
             </tbody>
@@ -232,13 +236,13 @@
     </section>
   {:else if tab === 'devices'}
     <section class="card">
-      <h2>Devices</h2>
+      <h2>{t('clients.tab.devices')}</h2>
       {#if configured.length === 0}
-        <p class="empty">No devices yet. Click an address anywhere (here, the dashboard, or the query log) and choose “Name this device…”, or add <code>[[client]]</code> entries to the config file.</p>
+        <p class="empty">{t('clients.devices.emptyLead')}<code>[[client]]</code>{t('clients.devices.emptyTail')}</p>
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Recognized by</th><th>Groups</th><th>Defined in</th><th></th></tr></thead>
+            <thead><tr><th>{t('clients.col.name')}</th><th>{t('clients.col.recognizedBy')}</th><th>{t('nav.groups')}</th><th>{t('clients.col.definedIn')}</th><th></th></tr></thead>
             <tbody>
               {#each configured as c (c.name)}
                 <tr>
@@ -248,15 +252,15 @@
                     <!-- REQ: FLT-005 — the groups that apply, and where they come from (ADR-050). -->
                     {#each c.effectiveGroups ?? [] as g (g)}<span class="group-chip" style:--gc={groupColor(g)}>{g}</span>{/each}
                     {#if (c.effectiveGroups ?? []).length === 0}
-                      <span class="muted">its network's group, wherever it's seen</span>
+                      <span class="muted">{t('clients.devices.noGroup')}</span>
                     {:else if fromText[c.groupsFrom ?? '']}
                       <div class="muted">{fromText[c.groupsFrom ?? '']}</div>
                     {/if}
                   </td>
-                  <td class="small">{c.source === 'api' ? 'the UI / API' : 'config file'}</td>
+                  <td class="small">{c.source === 'api' ? t('localdns.source.ui') : t('rules.source.file')}</td>
                   <td class="num">
                     {#if c.source === 'api' && canEdit}
-                      <button class="link small" onclick={() => remove(c.name)} aria-label={`Forget ${c.name}`}>Forget</button>
+                      <button class="link small" onclick={() => remove(c.name)} aria-label={t('clients.forgetAria', { name: c.name })}>{t('clients.forget')}</button>
                     {/if}
                   </td>
                 </tr>
@@ -269,25 +273,23 @@
   {:else if tab === 'workloads'}
     <section class="card" data-testid="workloads">
       <div class="card-head">
-        <h2>Kubernetes workloads<HelpButton id="kubernetes-workloads" /></h2>
+        <h2>{t('clients.workloads.title')}<HelpButton id="kubernetes-workloads" /></h2>
         <label class="small">
-          Namespace
-          <select bind:value={namespace} aria-label="Namespace" data-testid="workload-namespace">
-            <option value="">All</option>
+          {t('clients.workloads.namespace')}
+          <select bind:value={namespace} aria-label={t('clients.workloads.namespace')} data-testid="workload-namespace">
+            <option value="">{t('common.all')}</option>
             {#each namespaces as n (n)}<option value={n}>{n}</option>{/each}
           </select>
         </label>
       </div>
       <p class="muted small">
-        Each workload is one device, whichever pods it runs: its queries, anomalies, and timeline survive rollouts. Its
-        group comes from a <code>telltaledns.io/group</code> label on its pods or namespace, a rule, or the default group.
-        Counts cover the last 24 hours.
+        {t('clients.workloads.introLead')}<code>telltaledns.io/group</code>{t('clients.workloads.introTail')}
       </p>
       <div class="table-wrap">
         <table>
           <thead
             ><tr
-              ><th>Workload</th><th>Group</th><th class="num">Pods</th><th class="num" title="In the last 24 hours">Queries</th><th class="num" title="In the last 24 hours">Blocked</th><th>Last seen</th><th></th></tr
+              ><th>{t('clients.col.workload')}</th><th>{t('legacy.group')}</th><th class="num">{t('clients.col.pods')}</th><th class="num" title={t('clients.col.last24h')}>{t('clients.col.queries')}</th><th class="num" title={t('clients.col.last24h')}>{t('clients.col.blocked')}</th><th>{t('clients.col.lastSeen')}</th><th></th></tr
             ></thead
           >
           <tbody>
@@ -296,13 +298,13 @@
                 <td class="mono nowrap" title={kindText[w.kind] ?? w.kind}><ClientChip ip={w.key} name={w.name} onchanged={load} /></td>
                 <td class="small nowrap">
                   {#if w.group}<span class="group-chip" style:--gc={groupColor(w.group)}>{w.group}</span>{/if}
-                  <div class="muted" data-testid="group-from">{groupFromText[w.groupFrom] ?? w.groupFrom}</div>
+                  <div class="muted" data-testid="group-from">{groupFromLabel(w.groupFrom)}</div>
                 </td>
-                <td class="num" title={w.pods.map((p) => `${p.name} ${p.addresses.join(' ')}${p.terminating ? ' (terminating)' : ''}`).join('\n')}>{w.pods.filter((p) => !p.terminating).length}</td>
+                <td class="num" title={w.pods.map((p) => `${p.name} ${p.addresses.join(' ')}${p.terminating ? t('clients.workloads.terminating') : ''}`).join('\n')}>{w.pods.filter((p) => !p.terminating).length}</td>
                 <td class="num">{num(w.queries24h)}</td>
                 <td class="num">{num(w.blocked24h)}</td>
-                <td class="small">{w.lastSeen ? ago(Date.parse(w.lastSeen) / 1000) : 'not in the last day'}</td>
-                <td class="num nowrap"><a href={href('/queries', { client: w.name })}>Queries</a> · <button type="button" class="link" onclick={() => openDevice(w.key, 'timeline')}>Day</button></td>
+                <td class="small">{w.lastSeen ? ago(Date.parse(w.lastSeen) / 1000) : t('clients.workloads.notInLastDay')}</td>
+                <td class="num nowrap"><a href={href('/queries', { client: w.name })}>{t('legacy.queries')}</a> · <button type="button" class="link" onclick={() => openDevice(w.key, 'timeline')}>{t('clients.link.day')}</button></td>
               </tr>
             {/each}
           </tbody>
@@ -311,18 +313,16 @@
     </section>
   {:else}
     <section class="card" data-testid="discovered">
-      <h2>Discovered on your network</h2>
+      <h2>{t('clients.discovered.title')}</h2>
       <p class="muted small">
-        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
-        themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
-        one, change it, or put the device in a group.
+        {t('clients.discovered.introLead')}<code>[[router]]</code>{t('clients.discovered.introMid')}<code>[clients] mdns</code>{t('clients.discovered.introTail')}
       </p>
       {#if found.length === 0}
-        <p class="empty">Nothing discovered yet. Connect your router under <strong>Routers</strong>, below, or set <code>[clients] mdns = true</code>.</p>
+        <p class="empty">{t('clients.discovered.emptyLead')}<strong>{t('clients.router.title')}</strong>{t('clients.discovered.emptyMid')}<code>[clients] mdns = true</code>{t('queries.whyEnd')}</p>
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Address</th><th>Name it gave</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+            <thead><tr><th>{t('qw.explain.address')}</th><th>{t('clients.col.nameItGave')}</th><th>{t('clients.col.from')}</th><th>{t('qw.explain.mac')}</th><th>{t('clients.col.inTelltale')}</th></tr></thead>
             <tbody>
               {#each found as l (l.ip)}
                 <tr>
@@ -330,7 +330,7 @@
                   <td>{l.hostname ?? ''}</td>
                   <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
                   <td class="mono small">{l.mac}</td>
-                  <td class="small">{#if named(l)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
+                  <td class="small">{#if named(l)}<strong>{l.clientName}</strong>{:else}<span class="muted">{t('clients.discovered.notNamed')}</span>{/if}</td>
                 </tr>
               {/each}
             </tbody>
@@ -338,7 +338,7 @@
         </div>
       {/if}
     </section>
-    <ConfigEditor kind="router" path="routers" title="Routers" noun="router" fields={routerFields} role="admin"
+    <ConfigEditor kind="router" path="routers" title={t('clients.router.title')} noun={t('clients.router.noun')} fields={routerFields} role="admin"
       summary={(d) => `${String(d.type ?? '')} · ${String(d.url ?? '')}`}
       status={routerStatus} omit={routerFiles} notice={plainHttpNotice}
       onchanged={load} />
@@ -346,22 +346,22 @@
   </TabPanel>
   {#if rhythmFor}
     <Drawer title={workloadOf(rhythmFor)?.name ?? rhythmFor} onclose={closeDevice}>
-      <div class="seg" role="group" aria-label="Device view">
-        <button type="button" aria-pressed={view === 'rhythm'} onclick={() => openDevice(rhythmFor, 'rhythm')} data-testid="device-rhythm">Rhythm</button>
-        <button type="button" aria-pressed={view === 'timeline'} onclick={() => openDevice(rhythmFor, 'timeline')} data-testid="device-timeline">Timeline</button>
+      <div class="seg" role="group" aria-label={t('clients.device.view')}>
+        <button type="button" aria-pressed={view === 'rhythm'} onclick={() => openDevice(rhythmFor, 'rhythm')} data-testid="device-rhythm">{t('clients.link.rhythm')}</button>
+        <button type="button" aria-pressed={view === 'timeline'} onclick={() => openDevice(rhythmFor, 'timeline')} data-testid="device-timeline">{t('clients.device.timeline')}</button>
       </div>
       {#if view === 'timeline'}
-        <p class="muted small">This device's day from the query log: a lane per domain it talks to, the answer time below, and what happened above.<HelpButton id="device-timeline" /></p>
+        <p class="muted small">{t('clients.device.timelineIntro')}<HelpButton id="device-timeline" /></p>
         <DeviceTimeline client={rhythmFor} />
       {:else}
-      <p class="muted small">How regularly this device asks for each domain it talks to most: each column is a gap between two queries (log scale), darker where more of them fall. One dark cell is a timer; a smear is a person.<HelpButton id="rhythm" /></p>
+      <p class="muted small">{t('clients.device.rhythmIntro')}<HelpButton id="rhythm" /></p>
       <ErrorNote error={rhythmError} />
       {#if rhythm}
         {#if !rhythm.available}
-          <p class="empty">The anomaly engine is off (<code>[telemetry.anomaly] enabled</code>), so nothing measures the rhythm.</p>
+          <p class="empty">{t('clients.device.anomalyOffLead')}<code>[telemetry.anomaly] enabled</code>{t('clients.device.anomalyOffTail')}</p>
         {:else}
           <RhythmStrip rows={rhythm.domains} client={rhythm.client} binsS={rhythm.binsS} />
-          {#if rhythm.missingNodes?.length}<p class="muted small">Not answering: {rhythm.missingNodes.join(', ')}.</p>{/if}
+          {#if rhythm.missingNodes?.length}<p class="muted small">{t('clients.device.notAnswering', { names: rhythm.missingNodes.join(', ') })}</p>{/if}
         {/if}
       {/if}
       {/if}

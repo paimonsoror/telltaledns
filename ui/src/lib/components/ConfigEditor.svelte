@@ -135,7 +135,7 @@
 
   // A getter: the badge follows the language on screen.
   const badge = $derived<Record<string, [string, string]>>({
-    file: [t('settings.editor.badgeFile'), ''],
+    file: [t('rules.source.file'), ''],
     added: [t('settings.editor.badgeAdded'), 'ok'],
     override: [t('settings.editor.badgeOverride'), 'warn'],
     hidden: [t('settings.editor.badgeHidden'), 'bad'],
@@ -245,11 +245,11 @@
                   {#if rowAction && e.source !== 'hidden'}
                     <button class="link small" onclick={() => runAction(e.name)}>{rowAction.label}</button>
                   {/if}
-                  {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>{t('settings.editor.edit')}</button>{/if}
+                  {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>{t('rules.edit')}</button>{/if}
                   {#if e.source === 'override' || e.source === 'hidden'}
                     <button class="link small" disabled={busy} onclick={() => remove(e)}>{t('settings.editor.revert')}</button>
                   {:else if !singleton}
-                    <button class="link small danger" disabled={busy} onclick={() => remove(e)}>{t('settings.editor.remove')}</button>
+                    <button class="link small danger" disabled={busy} onclick={() => remove(e)}>{t('rules.remove')}</button>
                   {/if}
                 </td>
               {/if}
@@ -276,15 +276,15 @@
       <form class="form" onsubmit={check}>
         {#if notice}<p class="notice warn small" role="note" data-testid="editor-notice">{notice}</p>{/if}
         <label>
-          {t('settings.editor.name')}
-          <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label={t('settings.editor.name')} />
+          {t('clients.col.name')}
+          <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label={t('clients.col.name')} />
         </label>
         {#each shown as f (f.key)}
           <label>
             {f.label}
             {#if f.type === 'select'}
               <select bind:value={editing.values[f.key]} aria-label={f.label}>
-                <option value={undefined}>{t('settings.editor.default')}</option>
+                <option value={undefined}>{t('qw.explain.defaultRoute')}</option>
                 {#each f.options ?? [] as o (o)}<option value={o}>{o}</option>{/each}
               </select>
             {:else if f.type === 'multi'}

@@ -4,6 +4,8 @@
   // when the box is ticked (force).
   import { onMount } from 'svelte';
   import { api, ApiError, type S } from '../api';
+  // REQ: API-011 — the confirmation's own words; the site and the notes are the page's.
+  import { t, tn } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
 
   let {
@@ -66,19 +68,19 @@
 
   const voters = $derived.by(() => {
     if (!preview) return '';
-    const n = preview.votersAfter;
-    const left = `${n} voter${n === 1 ? '' : 's'} left`;
-    if (preview.automaticFailoverAfter) return `${left}; automatic failover stays on.`;
-    return failoverActive ? `${left}; automatic failover turns into manual.` : `${left}; automatic failover stays off (it needs 3).`;
+    const left = tn('clusterWidgets.remove.voters', preview.votersAfter);
+    if (preview.automaticFailoverAfter) return t('clusterWidgets.remove.staysOn', { left });
+    return failoverActive
+      ? t('clusterWidgets.remove.turnsManual', { left })
+      : t('clusterWidgets.remove.staysOff', { left });
   });
 </script>
 
-<div class="notice node-remove" role="dialog" aria-label={`Remove ${site} from the cluster`} data-testid="node-remove-form">
+<div class="notice node-remove" role="dialog" aria-label={t('clusterWidgets.remove.aria', { site })} data-testid="node-remove-form">
   <p>
-    <strong>Remove {site} from the cluster?</strong> It stops counting as a voter, disappears from this page, and the cluster
-    refuses it afterwards, even while its certificate is valid. Its own data isn't touched.
+    <strong>{t('clusterWidgets.remove.title', { site })}</strong> {t('clusterWidgets.remove.body')}
   </p>
-  <p class="small">Node ID <span class="mono id" data-testid="node-remove-id">{nodeId}</span></p>
+  <p class="small">{t('clusterWidgets.remove.nodeId')} <span class="mono id" data-testid="node-remove-id">{nodeId}</span></p>
   {#if preview}
     <div data-testid="node-remove-preview">
       <p class="small">{voters}</p>
@@ -91,16 +93,15 @@
   {/if}
   {#if isUp}
     <label class="check"
-      ><input type="checkbox" bind:checked={sure} data-testid="node-remove-force" /> It is up. Remove it anyway: its connection is closed
-      and the cluster refuses it afterwards.</label
+      ><input type="checkbox" bind:checked={sure} data-testid="node-remove-force" /> {t('clusterWidgets.remove.force')}</label
     >
   {/if}
   <ErrorNote {error} />
   <div class="row">
     <button class="danger" onclick={remove} disabled={busy || !preview || (isUp && !sure)} data-testid="node-remove-confirm"
-      >{busy ? 'Removing…' : 'Remove'}</button
+      >{busy ? t('clusterWidgets.remove.removing') : t('clusterWidgets.remove.confirm')}</button
     >
-    <button onclick={onclose}>Cancel</button>
+    <button onclick={onclose}>{t('common.cancel')}</button>
   </div>
 </div>
 

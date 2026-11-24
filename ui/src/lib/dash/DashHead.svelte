@@ -10,7 +10,7 @@
 
   let { d, title }: { d: DashData; title?: string } = $props();
   // The page's own name when the caller gives none.
-  const heading = $derived(title ?? t('dashboard.title'));
+  const heading = $derived(title ?? t('legacy.title'));
 </script>
 
 <div class="page-head">
@@ -20,5 +20,5 @@
 <ChangesControls part="body" advanced={d.advanced} />
 <ErrorNote error={d.error} />
 {#if d.summary?.missingNodes?.length}
-  <div class="notice warn small">{t('dashboard.partialResults', { nodes: d.summary.missingNodes.join(', ') })}</div>
+  <div class="notice warn small">{t('legacy.partialResults', { nodes: d.summary.missingNodes.join(', ') })}</div>
 {/if}

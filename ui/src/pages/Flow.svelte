@@ -10,13 +10,16 @@
   import { STAGES, STAGE_LABEL, fold, layout, share, type FlowLink, type FlowNode, type PlacedLink, type PlacedNode } from '../lib/sankey';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import { t, tn, type MessageKey } from '../lib/i18n';
 
-  const windows = [
-    { id: '15m', label: '15 min', from: '-15m', device: true },
-    { id: '1h', label: '1 h', from: '-1h', device: true },
-    { id: '6h', label: '6 h', from: '-6h', device: true },
-    { id: '24h', label: '24 h', from: '-24h', device: true },
-    { id: '7d', label: '7 d', from: '-7d', device: false },
+
+  const stageName = (s: string | undefined) => (s && STAGE_LABEL[s] ? t(STAGE_LABEL[s]) : '');
+  const windows: { id: string; label: MessageKey; from: string; device: boolean }[] = [
+    { id: '15m', label: 'flow.window.15m', from: '-15m', device: true },
+    { id: '1h', label: 'flow.window.1h', from: '-1h', device: true },
+    { id: '6h', label: 'flow.window.6h', from: '-6h', device: true },
+    { id: '24h', label: 'flow.window.24h', from: '-24h', device: true },
+    { id: '7d', label: 'flow.window.7d', from: '-7d', device: false },
   ];
   // Nodes under this share of every answer fold into "other" unless "Show small" is on.
   const SMALL = 0.005;
@@ -131,8 +134,8 @@
   }
   function nodeText(n: PlacedNode): string {
     const pct = data?.total ? ` (${((100 * n.count) / data.total).toFixed(1)} %)` : '';
-    const dead = n.deadEnd ? ` · ${num(n.deadEnd)} end here` : '';
-    return `${STAGE_LABEL[n.stage]} ${n.name}: ${num(n.count)}${pct}${dead}`;
+    const dead = n.deadEnd ? tn('flow.nodeEndHere', n.deadEnd, { n: num(n.deadEnd) }) : '';
+    return `${stageName(n.stage)} ${n.name}: ${num(n.count)}${pct}${dead}`;
   }
   function at(e: MouseEvent): { x: number; y: number } {
     const r = (e.currentTarget as Element).closest('.flow-wrap')?.getBoundingClientRect();
@@ -176,27 +179,27 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>Flow<HelpButton id="flow" /></h1>
+    <h1>{t('nav.flow')}<HelpButton id="flow" /></h1>
     <div class="row controls">
-      <div class="seg" role="group" aria-label="What">
-        <button type="button" aria-pressed={!device} onclick={() => setDevice(false)}>Network</button>
-        <button type="button" aria-pressed={device} onclick={() => setDevice(true)}>Device</button>
+      <div class="seg" role="group" aria-label={t('flow.what')}>
+        <button type="button" aria-pressed={!device} onclick={() => setDevice(false)}>{t('flow.network')}</button>
+        <button type="button" aria-pressed={device} onclick={() => setDevice(true)}>{t('flow.device')}</button>
       </div>
-      <div class="seg" role="group" aria-label="Window">
+      <div class="seg" role="group" aria-label={t('flow.window')}>
         {#each windows.filter((w) => !device || w.device) as w (w.id)}
-          <button type="button" aria-pressed={win.id === w.id} onclick={() => (win = w)}>{w.label}</button>
+          <button type="button" aria-pressed={win.id === w.id} onclick={() => (win = w)}>{t(w.label)}</button>
         {/each}
       </div>
       <div class="switch-track">
-        <label class="switch"><input type="checkbox" role="switch" bind:checked={showSmall} data-testid="flow-small" />Show small</label>
-        <label class="switch"><input type="checkbox" role="switch" bind:checked={live} data-testid="flow-live" />Live</label>
+        <label class="switch"><input type="checkbox" role="switch" bind:checked={showSmall} data-testid="flow-small" />{t('flow.showSmall')}</label>
+        <label class="switch"><input type="checkbox" role="switch" bind:checked={live} data-testid="flow-live" />{t('flow.live')}</label>
       </div>
     </div>
   </div>
   {#if device}
     <form class="row keyform" onsubmit={setClient}>
-      <input bind:value={clientInput} placeholder="a device address, e.g. 192.168.2.14" aria-label="Device address" data-testid="flow-client" />
-      <button type="submit">Show</button>
+      <input bind:value={clientInput} placeholder={t('flow.devicePlaceholder')} aria-label={t('flow.deviceAddress')} data-testid="flow-client" />
+      <button type="submit">{t('flow.show')}</button>
     </form>
   {/if}
 
@@ -205,28 +208,28 @@
   <section class="card" data-testid="flow">
     <div class="card-head">
       <h2>
-        {#if !device}The whole network{:else if client}{client}{:else}Pick a device{/if}
-        {#if data}<span class="muted small">· {num(data.total)} answers{data.source === 'querylog' ? ', from the query log' : ''}</span>{/if}
-        {#if live && data}<span class="muted small" data-testid="flow-updated">· updated {clock(updated, true)}, every 15 s</span>{/if}
+        {#if !device}{t('heatmap.head.all')}{:else if client}{client}{:else}{t('flow.pickDevice')}{/if}
+        {#if data}<span class="muted small">{tn('flow.answers', data.total, { n: num(data.total) })}{data.source === 'querylog' ? t('flow.fromQueryLog') : ''}</span>{/if}
+        {#if live && data}<span class="muted small" data-testid="flow-updated">{t('flow.updated', { time: clock(updated, true) })}</span>{/if}
       </h2>
-      <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable} data-testid="flow-table-toggle">{showTable ? 'Diagram' : 'Table'}</button>
+      <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable} data-testid="flow-table-toggle">{showTable ? t('flow.diagram') : t('flow.table')}</button>
     </div>
-    {#if data?.missingNodes?.length}<p class="small muted">Without {data.missingNodes.join(', ')}: they didn't answer.</p>{/if}
-    {#if data?.partial}<p class="small muted" data-testid="flow-partial">Some of this window was counted by a build without flow counts: those answers are missing.</p>{/if}
-    {#if data?.truncated}<p class="small warn-text" data-testid="flow-truncated">The query log read stopped early: the numbers cover what it read.</p>{/if}
+    {#if data?.missingNodes?.length}<p class="small muted">{t('flow.missingNodes', { nodes: data.missingNodes.join(', ') })}</p>{/if}
+    {#if data?.partial}<p class="small muted" data-testid="flow-partial">{t('flow.partial')}</p>{/if}
+    {#if data?.truncated}<p class="small warn-text" data-testid="flow-truncated">{t('flow.truncated')}</p>{/if}
     {#if !data}
-      <p class="empty">{!device || client ? 'Loading…' : 'Enter one above.'}</p>
+      <p class="empty">{!device || client ? t('common.loading') : t('flow.enterDevice')}</p>
     {:else if !data.total}
-      <p class="empty">No answers in this window.</p>
+      <p class="empty">{t('flow.empty')}</p>
     {:else if showTable}
       <div class="table-wrap">
         <table class="compact" data-testid="flow-table">
-          <thead><tr><th>From</th><th>To</th><th class="num">Answers</th><th class="num">Share</th></tr></thead>
+          <thead><tr><th>{t('flow.col.from')}</th><th>{t('flow.col.to')}</th><th class="num">{t('flow.col.answers')}</th><th class="num">{t('flow.col.share')}</th></tr></thead>
           <tbody>
             {#each rows as r, i (i)}
               <tr class:fail={r.failure}>
-                <td>{STAGE_LABEL[r.from?.stage ?? '']} {r.from?.name}</td>
-                <td>{STAGE_LABEL[r.to?.stage ?? '']} {r.to?.name}</td>
+                <td>{stageName(r.from?.stage)} {r.from?.name}</td>
+                <td>{stageName(r.to?.stage)} {r.to?.name}</td>
                 <td class="num">{num(r.count)}</td>
                 <td class="num">{share(r, data.total, r.from)}</td>
               </tr>
@@ -238,14 +241,14 @@
     <div class="flow-wrap" bind:this={wrap} bind:clientWidth={width} hidden={!data || !data.total || showTable}>
       {#if lay}
         {#if !vertical}
-          <div class="stages" aria-hidden="true">{#each STAGES as s (s)}<span>{STAGE_LABEL[s]}</span>{/each}</div>
+          <div class="stages" aria-hidden="true">{#each STAGES as s (s)}<span>{stageName(s)}</span>{/each}</div>
         {/if}
         <svg
           width={width}
           {height}
           viewBox={`${-pad} 0 ${width} ${height}`}
           role="img"
-          aria-label="Query flow: groups, then decisions, upstreams and response codes; band widths are answer counts. The table view lists every link."
+          aria-label={t('flow.diagramAria')}
           data-testid="flow-svg"
           data-vertical={vertical ? '1' : '0'}
           data-scale={lay.scale}
@@ -290,7 +293,7 @@
           </g>
           {#if vertical}
             {#each STAGES as s, i (s)}
-              <text class="stage" x={width - 4} y={i * ((height - 24 - 14) / 3) + 11} text-anchor="end">{STAGE_LABEL[s]}</text>
+              <text class="stage" x={width - 4} y={i * ((height - 24 - 14) / 3) + 11} text-anchor="end">{stageName(s)}</text>
             {/each}
           {/if}
         </svg>
@@ -299,9 +302,9 @@
     </div>
     {#if data?.total}
       <p class="muted small legend">
-        Band width = answers, each counted for exactly that pair; <span class="sw fail-sw"></span> red bands end in a SERVFAIL.
-        {#if (folded?.folded ?? 0) > 0}{folded?.folded} nodes under 0.5 % are folded into “other” (Show small lists them).{/if}
-        Select a node for the page behind it.
+        {t('flow.legend.bands')}<span class="sw fail-sw"></span>{t('flow.legend.fail')}
+        {#if (folded?.folded ?? 0) > 0}{tn('flow.legend.folded', folded?.folded ?? 0, { n: folded?.folded ?? 0 })}{/if}
+        {t('flow.legend.select')}
       </p>
     {/if}
   </section>

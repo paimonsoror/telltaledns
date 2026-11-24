@@ -8,21 +8,16 @@
 // `…Lead`/`…Mid` end just before it, `…Tail`/`…After` carry on just after it, so the markup keeps
 // the element and the English reads as one sentence.
 export const settings = {
-  'settings.title': 'Settings',
   'settings.tab.account': 'Account',
   'settings.tab.tokens': 'API tokens',
   'settings.tab.users': 'Users',
   'settings.tab.audit': 'Audit log',
-  'settings.tab.system': 'System',
   'settings.tab.queries': 'Query handling',
-  'settings.tab.cluster': 'Cluster',
 
   // A switch's two states, wherever a table shows one.
   'settings.value.on': 'on',
-  'settings.value.off': 'off',
 
   // My account: the password, and two-factor sign-in.
-  'settings.account.title': 'Account',
   'settings.account.changePassword': 'Change password',
   'settings.account.currentPassword': 'Current password',
   'settings.account.newPassword': 'New password (at least 10 characters)',
@@ -39,7 +34,6 @@ export const settings = {
   'settings.twoFactor.stepOneTail': ', or enter the key by hand:',
   'settings.twoFactor.stepTwo': 'Enter the 6-digit code it shows.',
   'settings.twoFactor.codeLabel': '6-digit code',
-  'settings.twoFactor.codeTitle': '6 digits',
   'settings.twoFactor.turnOn': 'Turn on',
   'settings.twoFactor.about':
     'Ask for a code from an authenticator app when signing in, on top of the password.',
@@ -56,46 +50,35 @@ export const settings = {
   'settings.icons.size': 'Size',
   'settings.icons.default': 'Default',
   'settings.icons.small': 'Small',
-  'settings.icons.preview': 'Preview',
 
   // API tokens: the form, the agent scopes, the new token, and the table.
-  'settings.tokens.title': 'API tokens',
   'settings.tokens.aboutLead': 'For scripts, dashboards, and AI agents: send',
   'settings.tokens.aboutTail': '. A token never has more rights than you.',
   'settings.tokens.nameLabel': 'Token name',
   'settings.tokens.namePlaceholder': 'name, e.g. grafana',
-  'settings.tokens.kindLabel': 'Kind',
   'settings.tokens.kindUser': 'for my scripts',
   'settings.tokens.kindAgent': 'for an AI agent',
-  'settings.tokens.scopeLabel': 'Scope',
   'settings.tokens.scopeRead': 'read (viewer)',
   'settings.tokens.scopeWrite': 'write (operator)',
-  'settings.tokens.scopeAdmin': 'admin',
   'settings.tokens.expiresLabel': 'Expires',
   'settings.tokens.expiresNever': 'never expires',
-  'settings.tokens.expires7': '7 days',
   'settings.tokens.expires30': '30 days',
   'settings.tokens.expires90': '90 days',
   'settings.tokens.expiresYear': '1 year',
   'settings.tokens.create': 'Create token',
   'settings.tokens.agentLegend': 'What the agent may do',
   'settings.tokens.groupOnly': "Only this group's devices and queries (optional):",
-  'settings.tokens.groupLabel': 'Group',
   'settings.tokens.groupPlaceholder': 'e.g. kids',
   'settings.tokens.agentNoteLead':
     'Agents must give a reason for every change, are limited to 120 requests a minute, show as',
   'settings.tokens.agentNoteMid': 'in the audit log, and stop at once with',
   'settings.tokens.agentNoteTail': '.',
   'settings.tokens.copyNow': "Copy the token now; it won't be shown again.",
-  'settings.tokens.done': 'Done',
   'settings.tokens.empty': 'No tokens yet.',
-  'settings.tokens.colName': 'Name',
   'settings.tokens.colScope': 'Scope',
   'settings.tokens.colCreated': 'Created',
-  'settings.tokens.colLastUsed': 'Last used',
   'settings.tokens.colExpires': 'Expires',
   'settings.tokens.groupSuffix': ' · group {group}',
-  'settings.tokens.revoke': 'Revoke',
   // REQ: AGT-004 — what an agent token may do (the identifier it sends stays as it is).
   'settings.tokens.scope.analytics': 'Statistics, top lists, anomalies, explain',
   'settings.tokens.scope.querylog': 'The query log (who asked for what)',
@@ -107,18 +90,15 @@ export const settings = {
   'settings.tokens.scope.upgrade': 'Install newer TelltaleDNS versions on nodes',
 
   // Users (an admin's): where a password may be used, the table, and the form.
-  'settings.users.title': 'Users',
   'settings.users.passwordSignIn': 'Password sign-in',
   'settings.users.limitedTo': 'Password sign-in is limited to admins on these networks:',
   'settings.users.wholeNetworks': 'Includes whole networks',
   'settings.users.wholeNetworksLead':
     'Anyone on these networks is still shown the sign-in form, not just the machines you name. To limit it to the machines you manage from, list each as a single address, such as',
-  'settings.users.wholeNetworksTail': '.',
   'settings.users.onlyListed': 'Only the machines listed are shown the sign-in form.',
   'settings.users.loopbackLead':
     'If a reverse proxy on this machine serves this page, add',
   'settings.users.loopbackMid': 'to',
-  'settings.users.loopbackMid2': 'under',
   'settings.users.loopbackTail':
     '. Until then everyone it serves looks like this machine and can use a password.',
   'settings.users.noNetworks':
@@ -132,7 +112,6 @@ export const settings = {
   'settings.users.colRole': 'Role',
   'settings.users.colTwoFactor': 'Two-factor',
   'settings.users.colBasic': 'HTTP Basic',
-  'settings.users.colStatus': 'Status',
   'settings.users.you': '(you)',
   'settings.users.signsInWith': 'signs in with {provider}',
   'settings.users.roleOf': 'Role of {name}',
@@ -146,23 +125,15 @@ export const settings = {
   'settings.users.noTokens': '{name} has no API tokens.',
   'settings.users.tokenOf': "{name}'s token",
   'settings.users.addTitle': 'Add a user',
-  'settings.users.usernameLabel': 'Username',
   'settings.users.usernamePlaceholder': 'username',
-  'settings.users.passwordLabel': 'Password',
   'settings.users.passwordPlaceholder': 'password (10+ characters)',
-  'settings.users.roleLabel': 'Role',
   'settings.users.add': 'Add',
   'settings.users.rolesNote':
     'Viewers see dashboards and the query log; operators can also pause blocking and manage lists, clients, and groups; admins can do everything.',
 
   // The audit log (REQ: API-006): the filter, the chain check, and the table.
-  'settings.audit.title': 'Audit log',
-  'settings.audit.actionLabel': 'Action',
   'settings.audit.allChanges': 'All changes',
-  'settings.audit.users': 'Users',
-  'settings.audit.tokens': 'API tokens',
   'settings.audit.signIns': 'Sign-ins and lockouts',
-  'settings.audit.config': 'Configuration',
   'settings.audit.verify': 'Verify chain',
   'settings.audit.about':
     "Every change to users, passwords, two-factor sign-in, and API tokens, plus sign-ins, lockouts, and configuration reloads. Entries can't be edited, and each one is chained to the one before it, so tampering is detectable.",
@@ -170,17 +141,13 @@ export const settings = {
   'settings.audit.broken': 'Chain broken at entry {n}',
   'settings.audit.brokenTail': ': the log was changed outside TelltaleDNS.',
   'settings.audit.empty': 'No entries.',
-  'settings.audit.colWhen': 'When',
   'settings.audit.colWho': 'Who',
   'settings.audit.colWhat': 'What',
-  'settings.audit.colDetails': 'Details',
   'settings.audit.reason': 'Reason: {reason}',
-  'settings.audit.older': 'Older',
 
   // REQ: CLU-013 — staged rollouts (an admin's): the picker over the nodes, the bake, the guard.
   'settings.cluster.standalone':
     'This node runs on its own: staged rollouts need a cluster (see the Cluster page).',
-  'settings.cluster.rollout.title': 'Staged rollouts',
   'settings.cluster.rollout.noun': 'rollout settings',
   'settings.cluster.rollout.summaryOff': 'off: changes reach every node at once',
   'settings.cluster.rollout.summary.one': '{n} canary entry; bake {bake} s',
@@ -211,20 +178,14 @@ export const settings = {
     'Changes reach {names} (and the primary) first, and the rest after {time} if nothing fails.',
   'settings.cluster.rollout.minutes.one': '{n} minute',
   'settings.cluster.rollout.minutes.other': '{n} minutes',
-  'settings.cluster.rollout.seconds': '{n} s',
 
   // The node's system information (REQ: OBS-002).
-  'settings.system.title': 'System',
-  'settings.system.version': 'Version',
-  'settings.system.node': 'Node',
   'settings.system.started': 'Started',
   'settings.system.startedValue': '{time} · up {uptime}',
   'settings.system.restarts': 'Restarts',
   'settings.system.unclean': '({n} after a crash or a kill)',
   'settings.system.listeners': 'DNS listeners',
-  'settings.system.queryLog': 'Query log',
   'settings.system.snapshot': 'Filter snapshot',
-  'settings.system.noSnapshot': 'none yet',
   'settings.system.names': ' · {names} names',
   'settings.system.apiRef': 'API reference:',
   'settings.system.apiRefNote': '(OpenAPI 3.1).',
@@ -233,12 +194,9 @@ export const settings = {
   'settings.probes.title': 'Listener checks',
   'settings.probes.emptyLead':
     'No results yet (the first round runs a few seconds after start), or probes are off (',
-  'settings.probes.emptyTail': ').',
-  'settings.probes.colNode': 'Node',
   'settings.probes.colAsked': 'Asked',
   'settings.probes.colResult': 'Result',
   'settings.probes.colTime': 'Time',
-  'settings.probes.colNotes': 'Notes',
   'settings.probes.webUi': 'Web UI and API',
   'settings.probes.extraTarget': ' (extra target)',
   'settings.probes.skipped': 'skipped',
@@ -256,7 +214,6 @@ export const settings = {
 
   // REQ: OBS-033 — the change markers of the last 90 days (every node's).
   'settings.changes.title': 'Changes',
-  'settings.changes.kind': 'Kind',
   'settings.changes.kindLabel': 'Kind of change',
   'settings.changes.kindAll': 'every kind',
   'settings.changes.kindConfig': 'configuration applied',
@@ -273,10 +230,6 @@ export const settings = {
   'settings.changes.empty': 'No changes recorded',
   'settings.changes.emptyMatch': ' that match',
   'settings.changes.emptyTail': ' in the last 90 days.',
-  'settings.changes.colWhen': 'When',
-  'settings.changes.colNode': 'Node',
-  'settings.changes.colWhat': 'What',
-  'settings.changes.colWho': 'Who',
   'settings.changes.missing': 'Not answering: {nodes}.',
   'settings.changes.footnote':
     'The last 200 configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, upstreams benched or recovered, and notes, from every node. Each node keeps 90 days.',
@@ -285,7 +238,6 @@ export const settings = {
   'settings.updates.title': 'Version and updates',
   'settings.updates.thisBuild': 'This build',
   'settings.updates.built': 'Built',
-  'settings.updates.status': 'Status',
   'settings.updates.commit': ' · commit',
   'settings.updates.channel': ' · {channel} channel',
   'settings.updates.builtValue': '{date} · {target} · {install} install',
@@ -296,11 +248,8 @@ export const settings = {
   'settings.updates.newer': 'Newer than the published {channel} build',
   'settings.updates.newerVersion': ' ({version})',
   'settings.updates.notCheckedLead': 'Not checked (',
-  'settings.updates.notCheckedTail': ')',
   'settings.updates.unknown': 'Not known yet',
   'settings.updates.unknownError': ': {error}',
-  'settings.updates.checked': 'Checked {time}',
-  'settings.updates.checking': 'Checking…',
   'settings.updates.checkNow': 'Check now',
 
   // REQ: API-007 — one file with everything, and what it holds.
@@ -314,7 +263,6 @@ export const settings = {
   'settings.backup.privateTail': 'on the server.',
 
   // REQ: DNS-006 — the cache has its own page.
-  'settings.queries.cacheTitle': 'Cache',
   'settings.queries.cacheAboutLead':
     "Hit rates, what's cached, settings, lookups, and flushing are on the",
   'settings.queries.cacheAboutLink': 'Cache page',
@@ -323,7 +271,6 @@ export const settings = {
   // REQ: DNS-014 — the per-client rate limit.
   'settings.queries.ratelimit.title': 'Rate limit',
   'settings.queries.ratelimit.noun': 'rate limit',
-  'settings.queries.ratelimit.summaryOff': 'off',
   'settings.queries.ratelimit.summary':
     '{queries} queries per {window} s per client, then {action}',
   'settings.queries.ratelimit.footnote':
@@ -356,17 +303,14 @@ export const settings = {
   'settings.queries.exclusions.enabled': 'Leave these out of the log and stats',
   'settings.queries.exclusions.enabledHelp':
     'Off keeps the lists below but logs everything again.',
-  'settings.queries.exclusions.names': 'Names',
   'settings.queries.exclusions.namesHelp':
     'One per line; each covers its subdomains too. Noise like connectivity checks, time servers, or a monitoring probe.',
-  'settings.queries.exclusions.clients': 'Devices',
   'settings.queries.exclusions.clientsHelp':
     'Addresses or networks, one per line (a monitoring host, say).',
 
   // REQ: OBS-024 — change simulation's switches and bounds.
   'settings.queries.simulate.title': 'Change simulation',
   'settings.queries.simulate.noun': 'simulation settings',
-  'settings.queries.simulate.summaryOff': 'off',
   'settings.queries.simulate.summary': "on, {window} by default; agents' plans {plans}",
   'settings.queries.simulate.always': 'always simulate',
   'settings.queries.simulate.whenAsked': 'simulate when asked',
@@ -392,19 +336,14 @@ export const settings = {
   'settings.editor.editTitle': '{noun}: {name}',
   'settings.editor.none': 'None yet.',
   'settings.editor.hiddenNote': 'left out of the configuration',
-  'settings.editor.edit': 'Edit',
   'settings.editor.revert': 'Revert to the file',
-  'settings.editor.remove': 'Remove',
   'settings.editor.done': 'Done',
-  'settings.editor.name': 'Name',
-  'settings.editor.default': '(default)',
   'settings.editor.testing': 'Testing…',
   'settings.editor.sending': 'Sending…',
   'settings.editor.what': 'What this will do:',
   'settings.editor.whatFallback': 'Changes the configuration as shown.',
   'settings.editor.changeIt': 'Change it',
   'settings.editor.check': 'Check',
-  'settings.editor.badgeFile': 'config file',
   'settings.editor.badgeAdded': 'added here',
   'settings.editor.badgeOverride': 'overrides the file',
   'settings.editor.badgeHidden': 'hidden',
@@ -413,7 +352,6 @@ export const settings = {
   'settings.wall.title': 'Wall displays',
   'settings.wall.about':
     "A link for a screen on the wall: open it once on that screen's browser and it stays signed in, showing only the wall (the traffic map, the flow, the service level, the heatmaps, and the live queries). It can't open any other page or change anything. Limit it to the screen's address if you can; revoke it here to sign the screen out.",
-  'settings.wall.name': 'Name',
   'settings.wall.namePlaceholder': 'hallway',
   'settings.wall.onlyFrom': 'Only from',
   'settings.wall.networksPlaceholder': '192.168.2.40, 10.0.0.0/24 (optional)',
@@ -423,8 +361,6 @@ export const settings = {
   'settings.wall.linkNote': ": open this on the wall's browser. It's shown only now.",
   'settings.wall.copyLink': 'Copy the link',
   'settings.wall.empty': 'No wall displays.',
-  'settings.wall.colName': 'Name',
-  'settings.wall.colOnlyFrom': 'Only from',
   'settings.wall.colMadeBy': 'Made by',
   'settings.wall.colLastUsed': 'Last used',
   'settings.wall.colEnds': 'Ends',
@@ -468,11 +404,8 @@ export const settings = {
   'settings.support.mapTail': 'was only if you want to.',
   'settings.support.previewNote':
     'This is what a package would hold right now; nothing was saved.',
-  'settings.support.colNode': 'Node',
   'settings.support.colAnswered': 'Answered',
   'settings.support.colFiles': 'Files',
-  'settings.support.colSize': 'Size',
-  'settings.support.colNote': 'Note',
   'settings.support.yes': 'yes',
   'settings.support.missing': 'missing',
   'settings.support.colFile': 'File',

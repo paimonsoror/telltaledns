@@ -3,11 +3,9 @@ import type { MessageKey } from '../en';
 
 export const nav: Partial<Record<MessageKey, string>> = {
   'nav.section.monitor': '监控',
-  'nav.section.devices': '设备',
   'nav.section.filtering': '过滤与 DNS',
   'nav.section.system': '系统',
 
-  'nav.dashboard': '仪表盘',
   'nav.traffic': '流量地图',
   'nav.heatmap': '热力图',
   'nav.flow': '解析流程',
@@ -23,7 +21,6 @@ export const nav: Partial<Record<MessageKey, string>> = {
   'nav.localDns': '我的网络名称',
   'nav.cluster': '集群',
   'nav.alerts': '告警',
-  'nav.agentChanges': '代理变更',
   'nav.cache': '缓存',
   'nav.settings': '设置',
 
@@ -65,7 +62,6 @@ export const nav: Partial<Record<MessageKey, string>> = {
   'nav.banner.masked.fix': '如何修复',
   'nav.banner.maintenance.title': '本节点处于维护模式',
   'nav.banner.maintenance.body': '（{reason}）：它会报告未就绪并继续应答 DNS；其告警已暂停。',
-  'nav.banner.maintenance.link': '集群',
   // 外壳上的其他控件：暂停、代理收件箱、健康面板。
   'nav.pause.paused': '拦截已暂停 · 还剩 {time}',
   'nav.pause.resume': '恢复',
@@ -83,11 +79,9 @@ export const nav: Partial<Record<MessageKey, string>> = {
   'nav.health.aria.ok': '健康状态：一切正常',
   'nav.health.aria.reasons.one': '健康状态：{level}（{n} 个原因）',
   'nav.health.aria.reasons.other': '健康状态：{level}（{n} 个原因）',
-  'nav.health.level.healthy': '健康',
   'nav.health.level.degraded': '降级',
   'nav.health.level.severe': '严重',
   'nav.health.title': '健康状态',
-  'nav.health.checking': '检查中…',
   'nav.health.allGood': '所有上游都正常应答，所有节点都在服务且配置同步，也没有客户端被限速。',
   'nav.health.look': '查看',
   'nav.health.maintenance.one': '{n} 个节点处于维护模式：',

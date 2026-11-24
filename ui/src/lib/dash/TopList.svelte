@@ -116,7 +116,7 @@
 </script>
 
 {#if shown.length === 0}
-  <p class="empty">{t('dashboard.empty')}</p>
+  <p class="empty">{t('legacy.empty')}</p>
 {:else}
   <ol class="tl">
     {#each shown as r (r.it.key)}

@@ -12,18 +12,18 @@
   // The words a status reads as, from the catalog so they follow the language; an rcode, a breaker
   // state, or a state this build doesn't know yet is shown exactly as it comes.
   const STATUS_KEY: Record<string, MessageKey> = {
-    blocked: 'queries.status.blocked',
-    cached: 'queries.status.cached',
-    forwarded: 'queries.status.forwarded',
-    local: 'queries.status.local',
+    blocked: 'wall.kpi.blocked',
+    cached: 'legacy.status.cached',
+    forwarded: 'legacy.status.forwarded',
+    local: 'legacy.status.local',
     stale: 'queries.status.stale',
     refreshing: 'queries.status.refreshing',
-    refreshed: 'queries.status.refreshed',
+    refreshed: 'legacy.status.refreshed',
     special: 'queries.status.special',
-    refused: 'queries.status.refused',
+    refused: 'help.flow.refused',
     servfail: 'queries.status.servfail',
     rate_limited: 'queries.status.rate_limited',
-    paused: 'queries.status.paused',
+    paused: 'wall.paused',
     allowed: 'queries.status.allowed',
     malformed: 'queries.status.malformed',
   };

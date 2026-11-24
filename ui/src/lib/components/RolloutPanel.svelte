@@ -7,6 +7,8 @@
   import { can } from '../session.svelte';
   import { poll } from '../poll';
   import { duration, logDate, logTime, pct } from '../format';
+  // REQ: API-011 — the words the panel says itself; a version, a commit, and a reason are data.
+  import { t, type MessageKey } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -38,18 +40,22 @@
     const n = nodes.find((x) => x.nodeId === id);
     return n ? (n.pod ?? n.site) : id.slice(0, 8);
   };
-  const when = (t: string) => `${logDate(t)} ${logTime(t)}`;
-  const outcome: Record<string, [string, string]> = {
-    stable: ['stable', 'ok'],
-    canary: ['baking', 'warn'],
-    canary_promoted: ['promoted', 'ok'],
-    canary_failed: ['failed', 'bad'],
-    superseded: ['superseded', ''],
-    aborted: ['aborted', 'warn'],
-    pinned_to: ['pin', 'warn'],
+  const when = (iso: string) => `${logDate(iso)} ${logTime(iso)}`;
+  const outcome: Record<string, [MessageKey, string]> = {
+    stable: ['clusterWidgets.rollout.outcome.stable', 'ok'],
+    canary: ['cluster.stage.baking', 'warn'],
+    canary_promoted: ['clusterWidgets.rollout.outcome.promoted', 'ok'],
+    canary_failed: ['changes.state.failed', 'bad'],
+    superseded: ['clusterWidgets.rollout.outcome.superseded', ''],
+    aborted: ['clusterWidgets.rollout.outcome.aborted', 'warn'],
+    pinned_to: ['clusterWidgets.rollout.outcome.pin', 'warn'],
   };
   const readings = (r: S['GuardReadings']) =>
-    `SERVFAIL ${r.beforePercent != null ? pct(r.beforePercent) : '–'} before, ${r.afterPercent != null ? pct(r.afterPercent) : '–'} during (${r.answers.toLocaleString()} answers)`;
+    t('clusterWidgets.rollout.readings', {
+      before: r.beforePercent != null ? pct(r.beforePercent) : '–',
+      after: r.afterPercent != null ? pct(r.afterPercent) : '–',
+      answers: r.answers.toLocaleString(),
+    });
 
   async function run(f: () => Promise<S['RolloutAction']>) {
     busy = true;
@@ -117,20 +123,27 @@
   {@const p = status.pinned}
   <div class="notice warn pin-banner" role="status" data-testid="pin-banner">
     <div>
-      <strong>The cluster is pinned to version {p.to}</strong> since {when(p.since)} by {p.by}: {p.reason}. Every node serves
-      that version, and configuration changes wait until it's unpinned.<HelpButton id="pins" />
+      <strong>{t('cluster.pin.title', { version: p.to })}</strong>{t('clusterWidgets.rollout.pin.body', {
+        when: when(p.since),
+        by: p.by,
+        reason: p.reason,
+      })}<HelpButton id="pins" />
     </div>
     {#if p.changes?.length}
-      <div class="small" data-testid="pin-changes">Held back since then: {p.changes.join('; ')}.</div>
+      <div class="small" data-testid="pin-changes">{t('clusterWidgets.rollout.pin.held', { changes: p.changes.join('; ') })}</div>
     {/if}
     {#if admin}
       <div class="row">
         {#if unpinPreview}
-          <span class="small">Unpinning publishes the current configuration{status.canaries.length ? ', to the canary nodes first' : ''}.</span>
-          <button class="primary" disabled={busy} onclick={unpin} data-testid="unpin-confirm">Unpin</button>
-          <button disabled={busy} onclick={() => (unpinPreview = null)}>Cancel</button>
+          <span class="small"
+            >{t('clusterWidgets.rollout.unpin.preview', {
+              canaries: status.canaries.length ? t('clusterWidgets.rollout.unpin.canaries') : '',
+            })}</span
+          >
+          <button class="primary" disabled={busy} onclick={unpin} data-testid="unpin-confirm">{t('clusterWidgets.rollout.unpin.confirm')}</button>
+          <button disabled={busy} onclick={() => (unpinPreview = null)}>{t('common.cancel')}</button>
         {:else}
-          <button disabled={busy} onclick={checkUnpin} data-testid="unpin">Unpin…</button>
+          <button disabled={busy} onclick={checkUnpin} data-testid="unpin">{t('clusterWidgets.rollout.unpin.open')}</button>
         {/if}
       </div>
     {/if}
@@ -138,63 +151,66 @@
 {/if}
 
 <section class="card" data-testid="rollout-card">
-  <h2>Staged rollouts<HelpButton id="rollouts" /></h2>
+  <h2>{t('clusterWidgets.rollout.title')}<HelpButton id="rollouts" /></h2>
   <ErrorNote {error} />
   {#if status}
     {#if status.canaries.length === 0}
       <p class="small muted" data-testid="rollout-off">
-        Off: a change reaches every node at once. Name canary nodes in Settings → Cluster to give new versions to them
-        first.
+        {t('clusterWidgets.rollout.off')}
       </p>
     {:else}
       <p class="small">
-        Canaries: <strong>{status.canaries.join(', ')}</strong>. A change reaches them and the primary first, and every other
-        node after {duration(status.bakeSecs)} if nothing fails.
+        {t('clusterWidgets.rollout.canaries')}: <strong>{status.canaries.join(', ')}</strong>{t('clusterWidgets.rollout.canariesBody', {
+          bake: duration(status.bakeSecs),
+        })}
       </p>
     {/if}
     {#if status.stage === 'canary' && status.version}
       <div class="baking" data-testid="rollout-baking">
         <p>
-          <span class="badge warn">baking</span> Version <strong>{status.version}</strong> runs on {(status.rolloutCanaries ?? []).map(label).join(', ')}
-          and the primary; the others stay on {status.stable}.
-          {#if status.secondsLeft != null}<strong>{duration(status.secondsLeft)}</strong> left.{/if}
+          <span class="badge warn">{t('cluster.stage.baking')}</span> {t('cluster.col.version')} <strong>{status.version}</strong>{t(
+            'clusterWidgets.rollout.baking.runs',
+            { nodes: (status.rolloutCanaries ?? []).map(label).join(', '), stable: status.stable },
+          )}
+          {#if status.secondsLeft != null}<strong>{duration(status.secondsLeft)}</strong>{t('clusterWidgets.rollout.baking.left')}{/if}
         </p>
-        {#if status.readings}<p class="small muted" data-testid="rollout-readings">Guard: {readings(status.readings)}</p>{/if}
+        {#if status.readings}<p class="small muted" data-testid="rollout-readings">{t('clusterWidgets.rollout.guard', { readings: readings(status.readings) })}</p>{/if}
         {#if admin}
           <div class="row">
-            <button disabled={busy} onclick={() => run(api.promoteRollout)} data-testid="rollout-promote">Promote now</button>
-            <button disabled={busy} onclick={() => run(api.abortRollout)} data-testid="rollout-abort">Abort (pin to {status.stable})</button>
+            <button disabled={busy} onclick={() => run(api.promoteRollout)} data-testid="rollout-promote">{t('clusterWidgets.rollout.promote')}</button>
+            <button disabled={busy} onclick={() => run(api.abortRollout)} data-testid="rollout-abort">{t('clusterWidgets.rollout.abort', { version: status.stable })}</button>
           </div>
         {/if}
       </div>
     {:else if status.stage === 'waiting'}
       <p class="notice warn small" data-testid="rollout-waiting">
-        A change waits for a canary node to come online{#if status.waitingSince} (since {when(status.waitingSince)}){/if}; after a
-        minute it goes to every node at once.
+        {t('clusterWidgets.rollout.waiting', {
+          since: status.waitingSince ? t('clusterWidgets.rollout.waitingSince', { when: when(status.waitingSince) }) : '',
+        })}
       </p>
     {:else if status.stage !== 'pinned'}
-      <p class="small">Every node runs version {status.stable}.</p>
+      <p class="small">{t('clusterWidgets.rollout.everyNode', { version: status.stable })}</p>
     {/if}
-    {#if status.skipped}<p class="small muted">The last change went to every node at once: {status.skipped}.</p>{/if}
+    {#if status.skipped}<p class="small muted">{t('clusterWidgets.rollout.skipped', { reason: status.skipped })}</p>{/if}
     {#if status.stage !== 'canary' && status.readings?.reason}
-      <p class="small bad-text" data-testid="rollout-last-failure">Last failure: {status.readings.reason}</p>
+      <p class="small bad-text" data-testid="rollout-last-failure">{t('clusterWidgets.rollout.lastFailure', { reason: status.readings.reason })}</p>
     {/if}
     {#if status.nodes.length && status.canaries.length}
       <table class="compact" data-testid="rollout-nodes">
-        <thead><tr><th>Node</th><th></th><th>Runs</th><th>Ready</th><th class="num">SERVFAIL</th></tr></thead>
+        <thead><tr><th>{t('qw.cache.node')}</th><th></th><th>{t('clusterWidgets.rollout.col.runs')}</th><th>{t('clusterWidgets.rollout.col.ready')}</th><th class="num">SERVFAIL</th></tr></thead>
         <tbody>
           {#each status.nodes as n (n.node)}
             <tr>
               <td>{label(n.node)}</td>
-              <td>{#if n.canary}<span class="badge">canary</span>{/if}</td>
+              <td>{#if n.canary}<span class="badge">{t('cluster.node.canary')}</span>{/if}</td>
               <td>
                 {n.appliedSeq}
                 {#if status.version && status.stage === 'canary'}
-                  {#if String(n.appliedSeq) === status.version.split('.')[1]}<span class="ok-text" title="runs the version baking">✓</span>
-                  {:else if n.canary}<span class="muted" title="getting it">…</span>{/if}
+                  {#if String(n.appliedSeq) === status.version.split('.')[1]}<span class="ok-text" title={t('clusterWidgets.rollout.runsBaking')}>✓</span>
+                  {:else if n.canary}<span class="muted" title={t('clusterWidgets.rollout.gettingIt')}>…</span>{/if}
                 {/if}
               </td>
-              <td>{n.connected ? (n.ready ? 'ready' : 'not ready') : 'gone'}</td>
+              <td>{n.connected ? (n.ready ? t('cluster.node.ready') : t('cluster.node.notReady')) : t('clusterWidgets.rollout.gone')}</td>
               <td class="num">{pct(n.servfailPercent)}</td>
             </tr>
           {/each}
@@ -208,26 +224,26 @@
 
 {#if versions && versions.items.length}
   <section class="card" data-testid="versions-card">
-    <h2>Versions<HelpButton id="pins" /></h2>
-    <p class="muted small">The last {versions.history} versions the primary published, newest first. Pinning one serves it on every node again, as a new version.</p>
+    <h2>{t('clusterWidgets.rollout.versions.title')}<HelpButton id="pins" /></h2>
+    <p class="muted small">{t('clusterWidgets.rollout.versions.about', { n: versions.history })}</p>
     <div class="table-wrap">
       <table class="compact">
-        <thead><tr><th>Version</th><th>Published</th><th>Outcome</th><th>By</th><th></th></tr></thead>
+        <thead><tr><th>{t('cluster.col.version')}</th><th>{t('clusterWidgets.rollout.versions.col.published')}</th><th>{t('clusterWidgets.rollout.versions.col.outcome')}</th><th>{t('clusterWidgets.rollout.versions.col.by')}</th><th></th></tr></thead>
         <tbody>
           {#each versions.items as v (v.version)}
-            {@const [text, cls] = outcome[v.outcome] ?? [v.outcome, '']}
+            {@const [text, cls] = outcome[v.outcome] ?? ([null, ''] as [MessageKey | null, string])}
             <tr data-testid="version-row">
-              <td class="mono">{v.version}{#if v.current} <span class="badge ok">current</span>{/if}</td>
+              <td class="mono">{v.version}{#if v.current} <span class="badge ok">{t('clusterWidgets.rollout.versions.current')}</span>{/if}</td>
               <td class="small">{when(v.created)}</td>
               <td>
-                <span class="badge {cls}">{text}{v.pinnedTo ? ` ${v.pinnedTo}` : ''}</span>
+                <span class="badge {cls}">{text ? t(text) : v.outcome}{v.pinnedTo ? ` ${v.pinnedTo}` : ''}</span>
                 {#if v.readings?.reason}<div class="small muted">{v.readings.reason}</div>{/if}
                 {#if v.reason && v.outcome === 'pinned_to'}<div class="small muted">{v.reason}</div>{/if}
               </td>
               <td class="small">{v.by}</td>
               <td class="actions">
                 {#if admin && !v.current && v.pinnable && v.outcome !== 'pinned_to'}
-                  <button class="link small" onclick={() => openPin(v.version)} data-testid="pin-open">Pin…</button>
+                  <button class="link small" onclick={() => openPin(v.version)} data-testid="pin-open">{t('clusterWidgets.rollout.pin.open')}</button>
                 {/if}
               </td>
             </tr>
@@ -236,22 +252,29 @@
                 <td colspan="5">
                   <div class="pin-form" data-testid="pin-form">
                     <label>
-                      Why pin to version {v.version}?
-                      <input bind:value={reason} maxlength="200" placeholder="the new upstream breaks banking sites" aria-label="Reason" />
+                      {t('clusterWidgets.rollout.pin.why', { version: v.version })}
+                      <input
+                        bind:value={reason}
+                        maxlength="200"
+                        placeholder={t('clusterWidgets.rollout.pin.reasonPlaceholder')}
+                        aria-label={t('clusterWidgets.rollout.pin.reasonAria')}
+                      />
                     </label>
                     {#if pinPreview}
                       <p class="small" data-testid="pin-preview">
-                        {pinPreview.changes?.length ? `Every node changes: ${pinPreview.changes.join('; ')}.` : 'The configuration is the same; the filter snapshot may differ.'}
-                        Configuration changes wait until you unpin.
+                        {pinPreview.changes?.length
+                          ? t('clusterWidgets.rollout.pin.changes', { changes: pinPreview.changes.join('; ') })
+                          : t('clusterWidgets.rollout.pin.same')}
+                        {t('clusterWidgets.rollout.pin.waits')}
                       </p>
                       <div class="row">
-                        <button class="primary" disabled={busy} onclick={pin} data-testid="pin-confirm">Pin</button>
-                        <button disabled={busy} onclick={() => (pinPreview = null)}>Change it</button>
+                        <button class="primary" disabled={busy} onclick={pin} data-testid="pin-confirm">{t('clusterWidgets.rollout.pin.confirm')}</button>
+                        <button disabled={busy} onclick={() => (pinPreview = null)}>{t('settings.editor.changeIt')}</button>
                       </div>
                     {:else}
                       <div class="row">
-                        <button disabled={busy || !reason.trim()} onclick={checkPin} data-testid="pin-check">Check</button>
-                        <button onclick={() => (pinning = null)}>Cancel</button>
+                        <button disabled={busy || !reason.trim()} onclick={checkPin} data-testid="pin-check">{t('settings.editor.check')}</button>
+                        <button onclick={() => (pinning = null)}>{t('common.cancel')}</button>
                       </div>
                     {/if}
                   </div>

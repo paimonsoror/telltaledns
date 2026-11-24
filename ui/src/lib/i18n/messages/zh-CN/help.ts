@@ -9,7 +9,6 @@ export const help: Partial<Record<MessageKey, string>> = {
   'help.panel.example': '例子',
   'help.panel.caution': '注意',
   'help.panel.termBefore': '这个在 DNS 里的术语叫',
-  'help.panel.termAfter': '。',
   'help.panel.docs': '完整文档',
 
   // 流程图：先是方框里的字，再是图下面那句话。
@@ -19,10 +18,8 @@ export const help: Partial<Record<MessageKey, string>> = {
   'help.flow.decides': '做判定',
   'help.flow.refused': '拒绝',
   'help.flow.fromMemory': '来自记忆',
-  'help.flow.cacheSub': '缓存',
   'help.flow.local': '你自己的名字',
   'help.flow.localSub': '本地记录',
-  'help.flow.blocked': '已拦截',
   'help.flow.blockedSub': '拦截列表',
   'help.flow.route': '另一台服务器',
   'help.flow.routeSub': '路由',

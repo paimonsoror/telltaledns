@@ -2,44 +2,11 @@
 // the figures, the service level, where time goes, the upstreams, the top lists, and the chart.
 export const dashboard = {
   // The heading, the controls, and the partial-results notice.
-  'dashboard.title': 'Dashboard',
-  'dashboard.partialResults': "Partial results: {nodes} didn't answer, so these numbers cover the other cluster nodes.",
-  'dashboard.showing': 'Showing',
-  'dashboard.nodes': 'Nodes',
-  'dashboard.everyNode': 'every node',
-  'dashboard.everyDevice': 'every device',
-  'dashboard.topListsFor': 'Top lists for',
-  'dashboard.group': 'Group',
-  'dashboard.timeRange': 'Time range',
-  'dashboard.nodePod': '{site} pod {pod}',
-  'dashboard.nodePrimary': ' (primary)',
-  'dashboard.thisNode': 'this node',
-  'dashboard.siteAllNodes': 'site {site} (all its nodes)',
-  'dashboard.siteLabel': 'site {site}',
-  'dashboard.oneNode': 'one node',
   'dashboard.switchBack': 'Switch to the new dashboard',
 
   // The time ranges (the switch under the heading).
-  'dashboard.range.15m': '15 min',
-  'dashboard.range.1h': '1 h',
-  'dashboard.range.24h': '24 h',
-  'dashboard.range.48h': '48 h',
-  'dashboard.range.7d': '7 d',
-  'dashboard.range.30d': '30 d',
-  'dashboard.lastRange': 'last {range}',
-  'dashboard.sinceTime': 'since {time}',
-  'dashboard.thisHour': 'this hour',
 
   // The figures.
-  'dashboard.queries': 'Queries',
-  'dashboard.blocked': 'Blocked',
-  'dashboard.cacheHits': 'Cache hits',
-  'dashboard.upstreamP90': 'Upstream p90',
-  'dashboard.activeClients': 'Active clients',
-  'dashboard.cacheFreshRefreshed': '{fresh} fresh · {refreshed} refreshed',
-  'dashboard.cacheAnswers': '{answers} answers',
-  'dashboard.cacheP50': 'cache p50 {value}',
-  'dashboard.blockedQueries': '{queries} queries',
   'dashboard.nxdomainLine': '{nxdomain} NXDOMAIN · {servfail} SERVFAIL in the last {range}',
 
   // The change against the previous period (the small figure under a number).
@@ -48,88 +15,27 @@ export const dashboard = {
   // The chart: its views and its titles.
   'dashboard.chartView': 'Chart view',
   'dashboard.view.totals': 'Totals',
-  'dashboard.view.status': 'Status',
-  'dashboard.view.groups': 'Groups',
-  'dashboard.view.upstream': 'Upstream',
-  'dashboard.chart.queriesByStatus': 'Queries by status',
-  'dashboard.chart.trafficByGroup': 'Traffic by group',
-  'dashboard.chart.upstreamExchanges': 'Upstream exchanges',
   'dashboard.upstreamFailures': 'Upstream failures',
   'dashboard.upstreamQueries': 'Upstream queries',
   'dashboard.failures': 'Failures',
 
   // The service level (the Advanced view): what the objectives and their alerts say.
-  'dashboard.slo.heading': 'Service level',
   'dashboard.slo.window.one': 'last {n} day',
   'dashboard.slo.window.other': 'last {n} days',
-  'dashboard.slo.off': 'Objectives are off (',
-  'dashboard.slo.offEnd': ').',
-  'dashboard.slo.missing': "Without {nodes}: they didn’t answer.",
   'dashboard.slo.availability': 'Answers that work',
   'dashboard.slo.latency': 'Answers that are quick',
-  'dashboard.slo.alert.fast': 'burning fast',
-  'dashboard.slo.alert.fastTip':
-    'Over the last hour (and the last 5 minutes) the budget is going more than 14 times faster than it can last: at this rate a month’s budget is gone in about two days.',
-  'dashboard.slo.alert.slow': 'burning',
-  'dashboard.slo.alert.slowTip':
-    'Over the last 6 hours (and the last 30 minutes) the budget is going more than 6 times faster than it can last.',
-  'dashboard.slo.alert.ticket': 'on course to run out',
-  'dashboard.slo.alert.ticketTip':
-    'Over the last 3 days the budget has been going faster than it can last: worth a look this week.',
-  'dashboard.slo.onTrack': 'on track',
-  'dashboard.slo.target': '{means} · target {target}%',
-  'dashboard.slo.ofAnswers': 'of {answers} answers',
-  'dashboard.slo.budgetTitle': 'Error budget left: the bad answers the target still allows over the window',
-  'dashboard.slo.noAnswers': 'no answers yet',
-  'dashboard.slo.overspent': 'budget overspent',
-  'dashboard.slo.budgetLeft': '{pct}% of the error budget left',
-  'dashboard.slo.who': 'Who spent it?',
-  'dashboard.slo.burnRate': 'Burn rate',
-  'dashboard.slo.burn.none': 'No answers to judge in the last {window}.',
-  'dashboard.slo.burn.some': 'Last {window}: {bad} bad of {total} answers. 1× spends exactly the budget over the window.',
 
   // Where time goes (the Advanced view): the views, the table, and what each path means.
-  'dashboard.whereTimeGoes': 'Where time goes',
-  'dashboard.whereTimeGoesAs': 'Where time goes as',
-  'dashboard.percentiles': 'Percentiles',
-  'dashboard.heatmap': 'Heatmap',
-  'dashboard.noAnswersHour': 'No answers yet this hour.',
-  'dashboard.table.path': 'Path',
-  'dashboard.table.answers': 'Answers',
-  'dashboard.table.max': 'max',
   'dashboard.path.cache':
     'Answered from the cache: a repeat question, no upstream asked. Includes answers whose cached copy had just expired and was given at once while it was refreshed in the background. Usually well under a millisecond.',
-  'dashboard.path.upstream':
-    'Not in the cache: asked an upstream resolver and waited for it. Also counts stale answers served because the upstream was slow or failing, and SERVFAIL. Usually the slowest path.',
-  'dashboard.path.local': 'Answered from names on your network (local records), without asking anyone.',
-  'dashboard.path.synthesized':
-    "Answered without looking anything up: blocked names, refused or rate-limited queries, malformed ones, and special names (like Firefox's DNS-over-HTTPS canary).",
-  'dashboard.path.fallback': 'Answers that took this path.',
-  'dashboard.path.waitUpstream':
-    "Of the upstream path above: the time spent waiting for upstream resolvers (the rest is this node's own work).",
-  'dashboard.path.wait': 'Time spent waiting for {what} when it answered.',
-  'dashboard.path.over': '{path} Over {proto}.',
-  'dashboard.proto.udp': 'plain DNS over UDP, what most devices use',
-  'dashboard.proto.tcp': 'plain DNS over TCP, for large answers and some tools',
-  'dashboard.proto.dot': 'DNS over TLS (port 853), e.g. Android Private DNS',
-  'dashboard.proto.doh': 'DNS over HTTPS, e.g. browsers or Apple devices with a profile',
 
   // The upstreams (the Advanced view).
-  'dashboard.upstreams': 'Upstreams',
   'dashboard.asThisNode': 'as this node sees them',
-  'dashboard.details': 'Details',
-  'dashboard.noUpstreams': 'No upstreams configured.',
 
   // The top lists.
-  'dashboard.topDomains': 'Top domains',
-  'dashboard.topBlocked': 'Top blocked',
   'dashboard.topClients': 'Top clients',
-  'dashboard.domainsScope': 'Top domains on the internet or internal',
-  'dashboard.internet': 'Internet',
-  'dashboard.internal': 'Internal',
   'dashboard.byType': 'By type',
   'dashboard.clients': 'Clients',
-  'dashboard.empty': 'Nothing yet.',
   'dashboard.searchSuffix': 'search suffix ×{n}',
   'dashboard.detailsFor': 'Details for {name}',
   'dashboard.podsAskedPre': 'Pods asked for ',
@@ -141,9 +47,7 @@ export const dashboard = {
 
   // The chart's own chrome.
   'dashboard.chart': 'Chart',
-  'dashboard.table': 'Table',
   'dashboard.noData': 'No data yet.',
-  'dashboard.time': 'Time',
   'dashboard.changed': 'Changed',
   'dashboard.what': 'What',
   'dashboard.total': 'Total',

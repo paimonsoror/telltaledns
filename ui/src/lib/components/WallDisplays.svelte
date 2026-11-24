@@ -76,7 +76,7 @@
   </p>
   <ErrorNote {error} />
   <form class="row" onsubmit={create}>
-    <label class="small">{t('settings.wall.name')} <input bind:value={name} placeholder={t('settings.wall.namePlaceholder')} maxlength="64" required data-testid="display-name" /></label>
+    <label class="small">{t('clients.col.name')} <input bind:value={name} placeholder={t('settings.wall.namePlaceholder')} maxlength="64" required data-testid="display-name" /></label>
     <label class="small">{t('settings.wall.onlyFrom')} <input bind:value={networks} placeholder={t('settings.wall.networksPlaceholder')} data-testid="display-networks" /></label>
     <label class="small">{t('settings.wall.endsAfter')} <input bind:value={days} inputmode="numeric" placeholder={t('settings.wall.daysPlaceholder')} size="10" /></label>
     <button class="primary" disabled={busy || !name.trim()} data-testid="display-create">{t('settings.wall.make')}</button>
@@ -93,7 +93,7 @@
   {:else}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>{t('settings.wall.colName')}</th><th>{t('settings.wall.colOnlyFrom')}</th><th>{t('settings.wall.colMadeBy')}</th><th>{t('settings.wall.colLastUsed')}</th><th>{t('settings.wall.colEnds')}</th><th></th></tr></thead>
+        <thead><tr><th>{t('clients.col.name')}</th><th>{t('settings.wall.onlyFrom')}</th><th>{t('settings.wall.colMadeBy')}</th><th>{t('settings.wall.colLastUsed')}</th><th>{t('settings.wall.colEnds')}</th><th></th></tr></thead>
         <tbody>
           {#each items as d (d.id)}
             <tr data-testid="display-row">

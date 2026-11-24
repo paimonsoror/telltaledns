@@ -1,10 +1,13 @@
 <script lang="ts" module>
-  export const COMPARE_WINDOWS = [
-    { id: '1h', label: '1 h', from: '-1h' },
-    { id: '6h', label: '6 h', from: '-6h' },
-    { id: '24h', label: '24 h', from: '-24h' },
-    { id: '7d', label: '7 d', from: '-7d' },
-    { id: '30d', label: '30 d', from: '-30d' },
+  // REQ: API-011 — the window labels are keys: the window itself is an ID the API takes.
+  import type { MessageKey } from '../i18n';
+
+  export const COMPARE_WINDOWS: { id: string; label: MessageKey; from: string }[] = [
+    { id: '1h', label: 'flow.window.1h', from: '-1h' },
+    { id: '6h', label: 'flow.window.6h', from: '-6h' },
+    { id: '24h', label: 'flow.window.24h', from: '-24h' },
+    { id: '7d', label: 'flow.window.7d', from: '-7d' },
+    { id: '30d', label: 'legacy.range.30d', from: '-30d' },
   ];
 </script>
 
@@ -16,6 +19,8 @@
   import type { S } from '../api';
   import { ms, num } from '../format';
   import { navigate } from '../router.svelte';
+  // REQ: API-011 — the words the comparison says itself; a metric is a column of numbers.
+  import { t, localeTag } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -28,15 +33,17 @@
 
   type Key = 'qps' | 'servfailPct' | 'slowPct' | 'fromCachePct' | 'upstreamFailPct' | 'p50Us' | 'p99Us';
   type Node = S['NodeNumbers'];
-  const METRICS: { key: Key; label: string; series?: keyof S['NodeSeries'] }[] = [
-    { key: 'qps', label: 'Queries/s', series: 'qps' },
-    { key: 'servfailPct', label: 'SERVFAIL', series: 'servfailPct' },
-    { key: 'slowPct', label: 'Slow', series: 'slowPct' },
-    { key: 'fromCachePct', label: 'From cache', series: 'fromCachePct' },
-    { key: 'upstreamFailPct', label: 'Upstream failures', series: 'upstreamFailPct' },
-    { key: 'p50Us', label: 'p50' },
-    { key: 'p99Us', label: 'p99', series: 'p99Us' },
+  // A metric's label is a key; `token` is a name nobody translates (SERVFAIL, p50, p99).
+  const METRICS: { key: Key; label?: MessageKey; token?: string; series?: keyof S['NodeSeries'] }[] = [
+    { key: 'qps', label: 'clusterWidgets.compare.metric.qps', series: 'qps' },
+    { key: 'servfailPct', token: 'SERVFAIL', series: 'servfailPct' },
+    { key: 'slowPct', label: 'clusterWidgets.compare.metric.slow', series: 'slowPct' },
+    { key: 'fromCachePct', label: 'qw.cache.fromCache', series: 'fromCachePct' },
+    { key: 'upstreamFailPct', label: 'clusterWidgets.compare.metric.upstreamFailures', series: 'upstreamFailPct' },
+    { key: 'p50Us', token: 'p50' },
+    { key: 'p99Us', token: 'p99', series: 'p99Us' },
   ];
+  const metricLabel = (m: (typeof METRICS)[number]) => (m.label ? t(m.label) : (m.token ?? ''));
 
   let table = $state(false);
   let width = $state(0);
@@ -90,7 +97,7 @@
     });
     return d;
   }
-  const since = (t: string) => new Date(t).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const since = (iso: string) => new Date(iso).toLocaleString(localeTag(), { weekday: 'short', hour: '2-digit', minute: '2-digit' });
 
   // "Open in dashboard": the dashboard reads its scope from this key when it opens.
   function openDashboard(n: Node) {
@@ -106,37 +113,37 @@
 
 <section class="card" data-testid="compare" bind:clientWidth={width}>
   <div class="head">
-    <h2>Compare nodes<HelpButton id="cluster-compare" /></h2>
+    <h2>{t('clusterWidgets.compare.title')}<HelpButton id="cluster-compare" /></h2>
     <div class="controls">
-      <div class="seg" role="group" aria-label="Window">
+      <div class="seg" role="group" aria-label={t('dashw.window')}>
         {#each COMPARE_WINDOWS as w (w.id)}
-          <button type="button" aria-pressed={win === w.id} onclick={() => onwindow(w.id)}>{w.label}</button>
+          <button type="button" aria-pressed={win === w.id} onclick={() => onwindow(w.id)}>{t(w.label)}</button>
         {/each}
       </div>
-      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="compare-table-toggle" />Table</label></span>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="compare-table-toggle" />{t('flow.table')}</label></span>
     </div>
   </div>
   <ErrorNote {error} />
   {#if data}
     {#if data.missingNodes?.length}
-      <p class="muted small" data-testid="compare-missing">Not answering: {data.missingNodes.join(', ')}; the comparison covers the rest.</p>
+      <p class="muted small" data-testid="compare-missing">{t('clusterWidgets.compare.missing', { nodes: data.missingNodes.join(', ') })}</p>
     {/if}
     {#if data.nodes.length < 2}
-      <p class="muted" data-testid="compare-single">One node; nothing to compare.</p>
+      <p class="muted" data-testid="compare-single">{t('clusterWidgets.compare.single')}</p>
     {:else if table}
       <div class="scroll">
         <table data-testid="compare-table">
           <thead>
             <tr>
-              <th>Node</th>
-              <th class="num">Answered</th>
-              {#each METRICS as m (m.key)}<th class="num">{m.label}</th>{/each}
+              <th>{t('qw.cache.node')}</th>
+              <th class="num">{t('clusterWidgets.compare.col.answered')}</th>
+              {#each METRICS as m (m.key)}<th class="num">{metricLabel(m)}</th>{/each}
             </tr>
           </thead>
           <tbody>
             {#each data.nodes as n (n.nodeId)}
               <tr>
-                <td>{n.label}{#if n.thisNode} <span class="muted small">(this node)</span>{/if}</td>
+                <td>{n.label}{#if n.thisNode} <span class="muted small">{t('clusterWidgets.compare.thisNode')}</span>{/if}</td>
                 <td class="num">{num(n.answered)}</td>
                 {#each METRICS as m (m.key)}
                   <td class="num" class:odd={finding(n, m.key)?.level === 'odd'}>{interval(n, m.key)}</td>
@@ -146,12 +153,12 @@
           </tbody>
         </table>
       </div>
-      <p class="muted small">Percentages with their 95 % intervals: with few answers the interval is wide, and a high share means little.</p>
+      <p class="muted small">{t('clusterWidgets.compare.intervals')}</p>
     {:else}
       {#if narrow}
-        <label class="pill-field">Metric
+        <label class="pill-field">{t('clusterWidgets.compare.metric')}
           <select bind:value={phoneMetric} data-testid="compare-metric">
-            {#each METRICS as m (m.key)}<option value={m.key}>{m.label}</option>{/each}
+            {#each METRICS as m (m.key)}<option value={m.key}>{metricLabel(m)}</option>{/each}
           </select>
         </label>
       {/if}
@@ -160,13 +167,13 @@
           <div></div>
           {#each data.nodes as n (n.nodeId)}
             <div class="node">
-              <strong>{n.label}</strong>{#if n.thisNode} <span class="muted small">this node</span>{/if}
-              <button type="button" class="link small" onclick={() => openDashboard(n)}>Open in dashboard</button>
+              <strong>{n.label}</strong>{#if n.thisNode} <span class="muted small">{t('legacy.thisNode')}</span>{/if}
+              <button type="button" class="link small" onclick={() => openDashboard(n)}>{t('clusterWidgets.compare.openDashboard')}</button>
             </div>
           {/each}
         {/if}
         {#each shown as m (m.key)}
-          {#if !narrow}<div class="metric">{m.label}</div>{/if}
+          {#if !narrow}<div class="metric">{metricLabel(m)}</div>{/if}
           {#each data.nodes as n (n.nodeId)}
             {@const f = finding(n, m.key)}
             <div
@@ -180,7 +187,7 @@
               {#if narrow}
                 <div class="node">
                   <strong>{n.label}</strong>
-                  <button type="button" class="link small" onclick={() => openDashboard(n)}>Open in dashboard</button>
+                  <button type="button" class="link small" onclick={() => openDashboard(n)}>{t('clusterWidgets.compare.openDashboard')}</button>
                 </div>
               {/if}
               <div class="big">{value(n, m.key)}</div>
@@ -191,7 +198,7 @@
               {/if}
               {#if f}
                 <div class="finding small" class:note={f.level === 'note'} data-testid="compare-finding">
-                  {f.detail.replace(/, since .*$/, '')}{#if f.oddSince}, since {since(f.oddSince)}{/if}
+                  {f.detail.replace(/, since .*$/, '')}{#if f.oddSince}{t('clusterWidgets.compare.since', { when: since(f.oddSince) })}{/if}
                 </div>
               {/if}
             </div>
@@ -200,7 +207,7 @@
       </div>
     {/if}
     {#if data.partial}
-      <p class="muted small">Some answers have no latency counts (an older build's), so their p50 and p99 are missing.</p>
+      <p class="muted small">{t('clusterWidgets.compare.partial')}</p>
     {/if}
   {/if}
 </section>

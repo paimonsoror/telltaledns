@@ -2,6 +2,7 @@
 // the page (one request per window change, not one per chart), the Changes toggle (remembered
 // in this browser), and the kind filter.
 import { api, type S } from './api';
+import type { MessageKey } from './i18n';
 
 export interface Marker {
   /** Unix seconds. */
@@ -15,18 +16,18 @@ export interface Marker {
 }
 
 /** Every kind, in the order the filter chips show them. */
-export const KINDS: { id: string; label: string }[] = [
-  { id: 'config.applied', label: 'Configuration' },
-  { id: 'note', label: 'Notes' },
-  { id: 'lists.refreshed', label: 'Lists' },
-  { id: 'rollout.stage', label: 'Rollouts' },
-  { id: 'build.started', label: 'Builds' },
-  { id: 'node.restarted', label: 'Restarts' },
-  { id: 'maintenance.entered', label: 'Maintenance' },
-  { id: 'drill.started', label: 'Drills' },
-  { id: 'blocking.paused', label: 'Pauses' },
-  { id: 'cache.flushed', label: 'Cache' },
-  { id: 'upstream.breaker', label: 'Breakers' },
+export const KINDS: { id: string; label: MessageKey }[] = [
+  { id: 'config.applied', label: 'cluster.configuration' },
+  { id: 'note', label: 'annotations.kind.note' },
+  { id: 'lists.refreshed', label: 'nav.lists' },
+  { id: 'rollout.stage', label: 'cluster.rollouts.title' },
+  { id: 'build.started', label: 'annotations.kind.buildStarted' },
+  { id: 'node.restarted', label: 'annotations.kind.nodeRestarted' },
+  { id: 'maintenance.entered', label: 'cluster.maint.title' },
+  { id: 'drill.started', label: 'cluster.drills.title' },
+  { id: 'blocking.paused', label: 'annotations.kind.blockingPaused' },
+  { id: 'cache.flushed', label: 'nav.cache' },
+  { id: 'upstream.breaker', label: 'annotations.kind.upstreamBreaker' },
 ];
 /** Kinds a chip stands for besides its own. */
 const ALSO: Record<string, string[]> = {

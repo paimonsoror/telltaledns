@@ -9,6 +9,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import QuickRuleForm from '../lib/components/QuickRuleForm.svelte';
+  import { t } from '../lib/i18n';
 
   let rules = $state<S['RuleInfo'][]>([]);
   let error = $state<unknown>(null);
@@ -50,40 +51,43 @@
   async function afterEdit(message: string) {
     editing = null;
     // The message names the saved rule (its domain may have changed), so it isn't named again here.
-    edited = `Rule updated. ${message}`;
+    edited = t('rules.updated', { message });
     await load();
   }
   const whom = (r: S['RuleInfo']) =>
-    r.devices.length ? r.devices.join(', ') : r.groups.length ? `group ${r.groups.join(', ')}` : 'everyone';
+    r.devices.length
+      ? r.devices.join(', ')
+      : r.groups.length
+        ? t('rules.group', { groups: r.groups.join(', ') })
+        : t('rules.everyone');
 </script>
 
 <div class="page">
   <div class="page-head">
-    <h1>Quick rules<HelpButton id="quick-rules" /></h1>
+    <h1>{t('nav.rules')}<HelpButton id="quick-rules" /></h1>
   </div>
   <p class="muted small">
-    Allow or block a site for one device, a group, or everyone, for a while or for good. Quick rules decide before any
-    list: a device's rule beats its group's, which beats everyone's.
+    {t('rules.intro')}
   </p>
   <ErrorNote {error} />
   {#if edited}<div class="notice ok small" role="status" data-testid="rule-edited">{edited}</div>{/if}
 
   {#if writable}
     <section class="card">
-      <h2>New rule</h2>
+      <h2>{t('rules.new')}</h2>
       <QuickRuleForm onsaved={() => load()} />
     </section>
   {/if}
 
   <section class="card">
-    <h2>In effect</h2>
+    <h2>{t('rules.inEffect')}</h2>
     {#if rules.length === 0}
-      <p class="empty">No quick rules. Make one here, or from "Why?" in the query log.</p>
+      <p class="empty">{t('rules.empty')}</p>
     {:else}
       <div class="table-wrap">
         <table data-testid="rules-table">
           <thead>
-            <tr><th>Rule</th><th>For</th><th>Ends</th><th>Note</th><th>Made</th><th></th></tr>
+            <tr><th>{t('rules.col.rule')}</th><th>{t('rules.col.for')}</th><th>{t('rules.col.ends')}</th><th>{t('rules.col.note')}</th><th>{t('rules.col.made')}</th><th></th></tr>
           </thead>
           <tbody>
             {#each rules as r (r.id)}
@@ -94,26 +98,26 @@
                 </td>
                 <td>{whom(r)}</td>
                 <td class="small">
-                  {#if r.expiresInSeconds == null}never{:else if r.expiresInSeconds === 0}expired{:else}in {duration(r.expiresInSeconds)}<div class="muted">at {endsAt(r.expires)}</div>{/if}
+                  {#if r.expiresInSeconds == null}{t('rules.ends.never')}{:else if r.expiresInSeconds === 0}{t('rules.ends.expired')}{:else}{t('rules.ends.in', { when: duration(r.expiresInSeconds) })}<div class="muted">{t('rules.ends.at', { time: endsAt(r.expires) })}</div>{/if}
                 </td>
                 <td class="small">{r.note ?? ''}</td>
-                <td class="small muted">{r.createdBy ?? (r.source === 'file' ? 'config file' : '')}{#if r.created}<div>{logDate(r.created)}</div>{/if}</td>
+                <td class="small muted">{r.createdBy ?? (r.source === 'file' ? t('rules.source.file') : '')}{#if r.created}<div>{logDate(r.created)}</div>{/if}</td>
                 <td>
                   {#if r.source === 'api' && writable}
                     {#if fitsForm(r) && r.expiresInSeconds !== 0}
-                      <button class="link" disabled={editing?.id === r.id} onclick={() => edit(r)}>Edit</button>
+                      <button class="link" disabled={editing?.id === r.id} onclick={() => edit(r)}>{t('rules.edit')}</button>
                     {/if}
-                    <button class="link" disabled={removing === r.id} onclick={() => remove(r.id)}>Remove</button>
-                    {#if !fitsForm(r)}<div class="muted small">Several devices or groups: change it through the API.</div>{/if}
+                    <button class="link" disabled={removing === r.id} onclick={() => remove(r.id)}>{t('rules.remove')}</button>
+                    {#if !fitsForm(r)}<div class="muted small">{t('rules.manyScopes')}</div>{/if}
                   {:else if r.source === 'file'}
-                    <span class="muted small">in the config file</span>
+                    <span class="muted small">{t('rules.inConfigFile')}</span>
                   {/if}
                 </td>
               </tr>
               {#if editing?.id === r.id}
                 <tr data-testid="rule-edit-row">
                   <td colspan="6">
-                    <h3>Edit rule</h3>
+                    <h3>{t('rules.editRule')}</h3>
                     <QuickRuleForm rule={editing} onsaved={afterEdit} oncancel={() => (editing = null)} />
                   </td>
                 </tr>

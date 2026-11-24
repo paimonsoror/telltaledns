@@ -15,7 +15,7 @@
   }: { name?: string; compact?: boolean; title?: string } = $props();
 
   // A caller that names the card ("Look up and flush") says it; otherwise the catalog does.
-  const title = $derived(titleProp ?? t('qw.cache.title'));
+  const title = $derived(titleProp ?? t('nav.cache'));
 
   let stats = $state<S['CacheNodeStats'][]>([]);
   let name = $state('');
@@ -82,7 +82,7 @@
         <tbody>
           {#each stats as s, i (s.node ?? i)}
             <tr>
-              <td>{s.node ?? t('qw.cache.thisNode')}</td>
+              <td>{s.node ?? t('legacy.thisNode')}</td>
               <td class="num">{num(s.entries)}</td>
               <td class="num">{bytes(s.bytes)}</td>
               <td class="num">{pct(s.answeredPercent ?? s.hitPercent)}</td>
@@ -110,7 +110,7 @@
           <tbody>
             {#each found.entries as e, i (i)}
               <tr>
-                <td>{e.node ?? t('qw.cache.thisNode')}</td>
+                <td>{e.node ?? t('legacy.thisNode')}</td>
                 <td>{e.qtype}{#if e.dnssecOk}<span class="muted small"> (DO)</span>{/if}</td>
                 <td>{e.rcode} · {tn('qw.cache.answers', e.answers)}{#if e.authentic}<span class="badge ok">{t('qw.cache.validated')}</span>{/if}</td>
                 <td class="small">{ttl(e.ttlLeftSeconds)}</td>

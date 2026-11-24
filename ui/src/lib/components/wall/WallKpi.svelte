@@ -5,6 +5,7 @@
   import { api, type S } from '../../api';
   import { poll } from '../../poll';
   import { num } from '../../format';
+  import { t } from '../../i18n';
 
   let summary = $state<S['Summary'] | null>(null);
   let health = $state<S['Health'] | null>(null);
@@ -22,18 +23,18 @@
   const span = $derived(summary ? Math.max(1, summary.toUnixSeconds - summary.fromUnixSeconds) : 3600);
   const qps = $derived(summary ? summary.queries / span : null);
   const tiles = $derived([
-    { label: 'queries / s', value: qps == null ? '–' : qps < 10 ? qps.toFixed(1) : num(Math.round(qps)) },
-    { label: 'blocked', value: summary ? `${summary.blockedPercent.toFixed(1)}%` : '–' },
-    { label: 'from the cache', value: summary ? `${summary.cacheHitPercent.toFixed(0)}%` : '–' },
-    { label: 'health', value: health?.level ?? '–', tone: health?.level },
+    { label: t('wall.kpi.qps'), value: qps == null ? '–' : qps < 10 ? qps.toFixed(1) : num(Math.round(qps)) },
+    { label: t('wall.kpi.blocked'), value: summary ? `${summary.blockedPercent.toFixed(1)}%` : '–' },
+    { label: t('wall.kpi.fromCache'), value: summary ? `${summary.cacheHitPercent.toFixed(0)}%` : '–' },
+    { label: t('wall.kpi.health'), value: health?.level ?? '–', tone: health?.level },
   ]);
 </script>
 
 <div class="kpi" class:narrow={w > 0 && w < 420} bind:clientWidth={w} data-testid="wall-kpi">
-  {#each tiles as t (t.label)}
+  {#each tiles as tile (tile.label)}
     <div class="tile">
-      <span class="value {t.tone ?? ''}">{t.value}</span>
-      <span class="label">{t.label}</span>
+      <span class="value {tile.tone ?? ''}">{tile.value}</span>
+      <span class="label">{tile.label}</span>
     </div>
   {/each}
 </div>

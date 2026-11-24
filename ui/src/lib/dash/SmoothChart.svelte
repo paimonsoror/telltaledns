@@ -280,7 +280,7 @@
       {/if}
       <span class="spacer"></span>
       {#if tableToggle}
-        <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? tr('dashboard.chart') : tr('dashboard.table')}</button>
+        <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? tr('dashboard.chart') : tr('flow.table')}</button>
       {/if}
     </div>
   {/if}
@@ -292,7 +292,7 @@
       <table class="compact">
         <thead>
           <tr>
-            <th>{tr('dashboard.time')}</th>
+            <th>{tr('dashw.time')}</th>
             {#each view.series as s (s.label)}<th class="num">{s.label}</th>{/each}
           </tr>
         </thead>

@@ -2,6 +2,7 @@
 // REQ: API-005 — the UI uses only the public API, the same one scripts and agents use.
 
 import type { components } from './api-types';
+import { t } from './i18n';
 
 export type S = components['schemas'];
 export type Problem = S['Problem'];
@@ -61,7 +62,7 @@ async function call<T>(
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch {
-    throw new ApiError({ status: 0, code: 'unavailable', detail: 'cannot reach the server' });
+    throw new ApiError({ status: 0, code: 'unavailable', detail: t('common.unreachableShort') });
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -124,7 +125,7 @@ async function callFile(method: string, path: string, body: unknown): Promise<Re
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError({ status: 0, code: 'unavailable', detail: 'cannot reach the server' });
+    throw new ApiError({ status: 0, code: 'unavailable', detail: t('common.unreachableShort') });
   }
   if (!res.ok) {
     const text = await res.text();

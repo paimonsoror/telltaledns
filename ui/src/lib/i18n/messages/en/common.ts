@@ -23,4 +23,5 @@ export const common = {
   'common.role.admin': 'admin',
   'common.role.operator': 'operator',
   'common.role.viewer': 'viewer',
+  'common.unreachableShort': 'cannot reach the server',
 } as const;

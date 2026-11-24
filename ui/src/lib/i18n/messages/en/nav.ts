@@ -2,11 +2,9 @@
 // belong to every page.
 export const nav = {
   'nav.section.monitor': 'Monitor',
-  'nav.section.devices': 'Devices',
   'nav.section.filtering': 'Filtering & DNS',
   'nav.section.system': 'System',
 
-  'nav.dashboard': 'Dashboard',
   'nav.traffic': 'Traffic map',
   'nav.heatmap': 'Heatmap',
   'nav.flow': 'Flow',
@@ -22,7 +20,6 @@ export const nav = {
   'nav.localDns': 'Names on my network',
   'nav.cluster': 'Cluster',
   'nav.alerts': 'Alerts',
-  'nav.agentChanges': 'Agent changes',
   'nav.cache': 'Cache',
   'nav.settings': 'Settings',
 
@@ -66,7 +63,6 @@ export const nav = {
   'nav.banner.maintenance.title': 'This node is in maintenance',
   'nav.banner.maintenance.body':
     '({reason}): it reports not ready and keeps answering DNS; its alerts are paused.',
-  'nav.banner.maintenance.link': 'Cluster',
   // The shell's other controls: pausing, the agents' inbox, and the health panel.
   'nav.pause.paused': 'Blocking paused · {time} left',
   'nav.pause.resume': 'Resume',
@@ -84,11 +80,9 @@ export const nav = {
   'nav.health.aria.ok': 'Health: everything is working',
   'nav.health.aria.reasons.one': 'Health: {level} ({n} reason)',
   'nav.health.aria.reasons.other': 'Health: {level} ({n} reasons)',
-  'nav.health.level.healthy': 'Healthy',
   'nav.health.level.degraded': 'Degraded',
   'nav.health.level.severe': 'Severe',
   'nav.health.title': 'Health',
-  'nav.health.checking': 'Checking…',
   'nav.health.allGood': 'Every upstream answers, every node serves and is in sync, and nothing is rate-limited.',
   'nav.health.look': 'Look',
   'nav.health.maintenance.one': '{n} node in maintenance:',

@@ -34,7 +34,7 @@
       {#if t.when}<h3>{tr('help.panel.when')}</h3><p>{t.when}</p>{/if}
       {#if t.example}<h3>{tr('help.panel.example')}</h3><p>{t.example}</p>{/if}
       {#if t.caution}<h3>{tr('help.panel.caution')}</h3><p class="notice warn">{t.caution}</p>{/if}
-      {#if t.term}<p class="muted small">{tr('help.panel.termBefore')}<b>{t.term}</b>{tr('help.panel.termAfter')}</p>{/if}
+      {#if t.term}<p class="muted small">{tr('help.panel.termBefore')}<b>{t.term}</b>{tr('queries.whyEnd')}</p>{/if}
       {#if docsUrl(t)}<p><a href={docsUrl(t)} target="_blank" rel="noreferrer">{tr('help.panel.docs')}</a></p>{/if}
     </div>
   </Drawer>

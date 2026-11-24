@@ -1,6 +1,7 @@
 // REQ: OBS-029 (ADR-129) — the rhythm heatmap's layout: slots (UTC starts from the API) laid
 // out by local time, one row per day (or per weekday, folded to the mean), one column per slot of
 // the day; and drawing the grid on a canvas. Pure functions, like `treemap.ts`.
+import { localeTag } from './i18n';
 
 export interface Cell {
   /** Queries (folded: the mean over the days it covers); `null` where nothing is known. */
@@ -24,7 +25,11 @@ export interface Grid {
   colSums: number[];
 }
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+/** Monday-first weekday names in the UI language (1 Jan 2024 was a Monday). */
+function weekdayLabels(): string[] {
+  const fmt = new Intl.DateTimeFormat(localeTag(), { weekday: 'short' });
+  return Array.from({ length: 7 }, (_, i) => fmt.format(new Date(2024, 0, 1 + i)));
+}
 
 /** Local midnight (Unix seconds) of the day `t` (Unix seconds) falls in. */
 function dayStart(t: number): number {
@@ -67,7 +72,7 @@ export function layout(
       c.start = Math.max(c.start, t);
     });
     for (let wd = 0; wd < 7; wd++) {
-      rows.push({ label: WEEKDAYS[wd], start: 0 });
+      rows.push({ label: weekdayLabels()[wd], start: 0 });
       cells.push(
         sums[wd].map((c) => ({
           value: c.n ? c.sum / c.n : null,
@@ -86,7 +91,7 @@ export function layout(
         r = rows.length;
         index.set(day, r);
         rows.push({
-          label: new Date(day * 1000).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }),
+          label: new Date(day * 1000).toLocaleDateString(localeTag(), { weekday: 'short', month: 'short', day: 'numeric' }),
           start: day,
         });
         cells.push(Array.from({ length: cols }, (_, c) => empty(day + c * slot)));

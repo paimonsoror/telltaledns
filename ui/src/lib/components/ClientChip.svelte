@@ -9,7 +9,7 @@
   import HelpButton from './HelpButton.svelte';
   import ChangePreview from './ChangePreview.svelte';
   import Icon from './Icon.svelte';
-  import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
+  import { groupFromLabel, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
   import { t as tr, type MessageKey } from '../i18n';
   import { isMac, listsMac, normMac, sameIp } from '../macKeys';
 
@@ -379,11 +379,11 @@
       <form class="stack" onsubmit={saveWorkload} data-testid="workload-group-form">
         <p class="muted small">
           <b>{workload.name}</b> {tr('qw.chip.workload.isK8s')}
-          {#if workload.group}{tr('qw.chip.workload.groupNow', { group: workload.group, from: groupFromText[workload.groupFrom] ?? workload.groupFrom })}{:else}{tr('qw.chip.workload.noGroup')}{/if} {tr('qw.chip.workload.ruleLead')} <code>telltaledns.io/group</code> {tr('qw.chip.workload.ruleTail')}<HelpButton id="kubernetes-workloads" />
+          {#if workload.group}{tr('qw.chip.workload.groupNow', { group: workload.group, from: groupFromLabel(workload.groupFrom) })}{:else}{tr('qw.chip.workload.noGroup')}{/if} {tr('qw.chip.workload.ruleLead')} <code>telltaledns.io/group</code> {tr('qw.chip.workload.ruleTail')}<HelpButton id="kubernetes-workloads" />
         </p>
         <label>
-          {tr('qw.chip.group')}
-          <select bind:value={wGroup} onchange={() => (preview = null)} aria-label={tr('qw.chip.group')}>
+          {tr('legacy.group')}
+          <select bind:value={wGroup} onchange={() => (preview = null)} aria-label={tr('legacy.group')}>
             <option value="" disabled>{tr('qw.chip.group.choose')}</option>
             {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
           </select>
@@ -421,7 +421,7 @@
           {#if macChosen}{tr('qw.chip.form.intro.macLead')}<code>{mac}</code>{tr('qw.chip.form.intro.macMid')} <code>{ip}</code>{tr('qw.chip.form.intro.macTail', { match: matchFor().join(', ') })}{:else}{tr('qw.chip.form.intro.ipLead')} <code>{ip}</code> {tr('qw.chip.form.intro.ipTail', { match: matchFor().join(', ') })}{/if}
         </p>
         <label>
-          {tr('qw.chip.form.name')}
+          {tr('clients.col.name')}
           <input name="device-name" bind:value={newName} placeholder={tr('qw.chip.form.namePlaceholder')} maxlength="64" required />
         </label>
         <HelpButton id="device-name" />
@@ -439,7 +439,7 @@
           </select>
         </label>
         <fieldset>
-          <legend>{tr('qw.chip.form.groups')} <span class="muted small">{tr('qw.chip.form.groupsFirst')}</span><HelpButton id="device-groups" /></legend>
+          <legend>{tr('nav.groups')} <span class="muted small">{tr('qw.chip.form.groupsFirst')}</span><HelpButton id="device-groups" /></legend>
           {#each groups as g (g.name)}
             <label class="check"><input type="checkbox" checked={chosen.includes(g.name)} onchange={() => toggle(g.name)} /> {g.name}</label>
           {/each}

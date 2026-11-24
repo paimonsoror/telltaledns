@@ -21,9 +21,9 @@
   const shown = $derived(deviceWord.length > 18 ? deviceWord.slice(0, 17) + '…' : deviceWord);
 
   const outs: { id: FlowPath; label: string; sub: string }[] = $derived([
-    { id: 'cache', label: t('help.flow.fromMemory'), sub: t('help.flow.cacheSub') },
+    { id: 'cache', label: t('help.flow.fromMemory'), sub: t('dashw.path.cache') },
     { id: 'local', label: t('help.flow.local'), sub: t('help.flow.localSub') },
-    { id: 'blocked', label: t('help.flow.blocked'), sub: t('help.flow.blockedSub') },
+    { id: 'blocked', label: t('legacy.blocked'), sub: t('help.flow.blockedSub') },
     { id: 'route', label: t('help.flow.route'), sub: t('help.flow.routeSub') },
     { id: 'upstream', label: t('help.flow.upstream'), sub: t('help.flow.upstreamSub') },
   ]);

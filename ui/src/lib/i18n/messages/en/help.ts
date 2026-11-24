@@ -7,7 +7,6 @@ export const help = {
   'help.panel.example': 'Example',
   'help.panel.caution': 'Careful',
   'help.panel.termBefore': 'The DNS term for this is ',
-  'help.panel.termAfter': '.',
   'help.panel.docs': 'Full documentation',
 
   // The flow diagram: the boxes, then the sentence under it.
@@ -17,10 +16,8 @@ export const help = {
   'help.flow.decides': 'decides',
   'help.flow.refused': 'refused',
   'help.flow.fromMemory': 'From memory',
-  'help.flow.cacheSub': 'cache',
   'help.flow.local': 'Your names',
   'help.flow.localSub': 'local records',
-  'help.flow.blocked': 'Blocked',
   'help.flow.blockedSub': 'filter lists',
   'help.flow.route': 'Another server',
   'help.flow.routeSub': 'routes',

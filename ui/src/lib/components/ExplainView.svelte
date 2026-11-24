@@ -25,8 +25,8 @@
   // MACs) a router's MAC is "from a router".
   const MAC_FROM: Record<string, MessageKey> = {
     given: 'qw.explain.macFrom.given',
-    neighbor: 'qw.explain.macFrom.neighbor',
-    router: 'qw.explain.macFrom.router',
+    neighbor: 'qw.chip.mac.source.neighbor',
+    router: 'qw.chip.mac.source.router',
     peer: 'qw.explain.macFrom.peer',
   };
   /** Where a MAC came from, in the words the server's `macFrom` means (a value we don't know stays as it is). */
@@ -81,10 +81,10 @@
     <dl>
       <dt>{t('qw.explain.address')}</dt>
       <dd class="mono">{x.client.ip}</dd>
-      {#if x.client.mac}<dt>MAC</dt><dd><span class="mono">{x.client.mac}</span>{#if x.client.macFrom} <span class="muted small" data-testid="explain-mac-from">{t('qw.explain.macFromSpan', { from: macFromLabel(x.client.macFrom) })}</span>{/if}</dd>{/if}
-      <dt>{t('qw.explain.device')}</dt>
+      {#if x.client.mac}<dt>{t('qw.explain.mac')}</dt><dd><span class="mono">{x.client.mac}</span>{#if x.client.macFrom} <span class="muted small" data-testid="explain-mac-from">{t('qw.explain.macFromSpan', { from: macFromLabel(x.client.macFrom) })}</span>{/if}</dd>{/if}
+      <dt>{t('flow.device')}</dt>
       <dd>{x.client.device ?? t('qw.explain.notConfigured')} <span class="muted small" data-testid="explain-identified-by">{t('qw.explain.identifiedBy', { by })}</span></dd>
-      <dt>{t('qw.explain.groups')}</dt>
+      <dt>{t('nav.groups')}</dt>
       <dd>{x.client.groups.join(', ') || '–'}</dd>
       <dt>{t('qw.explain.query')}</dt>
       <dd><span class="mono">{x.name}</span> {x.qtype}</dd>
@@ -95,9 +95,9 @@
     <section class="card">
       <h3>{t('qw.explain.blockResponse')}</h3>
       <dl>
-        <dt>{t('qw.explain.list')}</dt>
+        <dt>{t('lists.col.list')}</dt>
         <dd>{x.block.list}</dd>
-        <dt>{t('qw.explain.answer')}</dt>
+        <dt>{t('qw.cache.answer')}</dt>
         <dd>{x.block.mode} · TTL {x.block.ttlSeconds} s · EDE {x.block.edeCode}</dd>
       </dl>
     </section>

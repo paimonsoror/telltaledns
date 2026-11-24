@@ -3,19 +3,24 @@
   // player (likely) · Roku · talks to roku.com", the group suggested for its kind, and the
   // evidence on request. A guess never names or moves a device on its own.
   import { api, type S } from '../api';
+  import { t, type MessageKey } from '../i18n';
   import HelpButton from './HelpButton.svelte';
 
   let { identity }: { identity: S['DeviceIdentity'] | null | undefined } = $props();
   let evidence = $state<S['DeviceIdentity'] | null>(null);
   let open = $state(false);
 
-  const article = (p: string) => (/^[aeiou]/i.test(p) ? 'an' : 'a');
+  // Which English article a product or kind takes ('an' before a vowel); Chinese has neither.
+  const articleKey = (family: 'setAs' | 'looks' | 'couldBe', p: string): MessageKey =>
+    /^[aeiou]/i.test(p)
+      ? (`deviceWidgets.identity.${family}.an` as MessageKey)
+      : (`deviceWidgets.identity.${family}.a` as MessageKey);
   const line = $derived.by(() => {
     const i = identity;
     if (!i || !i.available) return '';
-    if (i.source === 'override') return `Set as ${article(i.class)} ${i.class}`;
-    if (i.level === 'unknown' || !i.product) return i.vendor ? `Made by ${i.vendor}` : '';
-    return `Looks like ${article(i.product)} ${i.product} (${i.level})`;
+    if (i.source === 'override') return t(articleKey('setAs', i.class), { what: i.class });
+    if (i.level === 'unknown' || !i.product) return i.vendor ? t('deviceWidgets.identity.madeBy', { vendor: i.vendor }) : '';
+    return t(articleKey('looks', i.product), { product: i.product, level: i.level });
   });
 
   async function toggle() {
@@ -31,21 +36,21 @@
     <span>{line}</span>
     {#if identity.source !== 'override' && identity.level !== 'unknown' && identity.vendor}<span class="muted">· {identity.vendor}</span>{/if}
     {#if identity.suggestedGroup}
-      <span class="badge info" title="This group's settings ask for this kind of device. Add it from the address's menu: Add to group…"
-        >{identity.suggestedGroup} suggested</span
+      <span class="badge info" title={t('deviceWidgets.identity.suggestedTitle')}
+        >{t('deviceWidgets.identity.suggested', { group: identity.suggestedGroup })}</span
       >
     {/if}
     {#if identity.source !== 'override'}
-      <button class="link small" onclick={toggle} aria-expanded={open}>{open ? 'Hide why' : 'Why?'}</button><HelpButton id="identify" />
+      <button class="link small" onclick={toggle} aria-expanded={open}>{open ? t('deviceWidgets.identity.hideWhy') : t('queries.why')}</button><HelpButton id="identify" />
     {/if}
     {#if open && evidence?.evidence}
       {@const e = evidence.evidence}
       <ul class="why">
-        {#if e.domains.length}<li>Talks to {e.domains.map((d) => d.name).join(', ')}</li>{/if}
-        {#if evidence.vendor}<li>MAC vendor {evidence.vendor}{e.macPrefix ? ` (${e.macPrefix})` : ''}</li>{/if}
-        {#if e.matchedName}<li>Calls itself “{e.matchedName}”</li>{/if}
-        {#if e.runnerUp}<li class="muted">Could also be {article(e.runnerUp.product)} {e.runnerUp.product}</li>{/if}
-        <li class="muted">Not right? Name the device and set what it is (“What it is”).</li>
+        {#if e.domains.length}<li>{t('deviceWidgets.identity.talksTo', { domains: e.domains.map((d) => d.name).join(', ') })}</li>{/if}
+        {#if evidence.vendor}<li>{t('deviceWidgets.identity.macVendor', { vendor: evidence.vendor, prefix: e.macPrefix ? ` (${e.macPrefix})` : '' })}</li>{/if}
+        {#if e.matchedName}<li>{t('deviceWidgets.identity.callsItself', { name: e.matchedName })}</li>{/if}
+        {#if e.runnerUp}<li class="muted">{t(articleKey('couldBe', e.runnerUp.product), { product: e.runnerUp.product })}</li>{/if}
+        <li class="muted">{t('deviceWidgets.identity.notRight')}</li>
       </ul>
     {/if}
   </div>

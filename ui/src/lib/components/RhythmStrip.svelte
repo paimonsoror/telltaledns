@@ -19,6 +19,7 @@
   // is one dark cell; a browser is a smear.
   import { href } from '../router.svelte';
   import { num } from '../format';
+  import { t, type MessageKey } from '../i18n';
 
   let {
     rows,
@@ -36,9 +37,16 @@
   const bins = (r: RhythmRow) => (view === 'hour' ? r.hour : r.recent) ?? r.recent ?? r.hour ?? [];
 
   const label = (i: number) => {
-    const s = (x: number) => (x < 60 ? `${x} s` : x < 3600 ? `${Math.round(x / 60)} min` : `${(x / 3600).toFixed(1)} h`);
-    if (i === 0) return `under ${s(binsS[0])}`;
-    return i >= binsS.length ? `${s(binsS[binsS.length - 1])} and longer` : `${s(binsS[i - 1])}–${s(binsS[i])}`;
+    const s = (x: number) =>
+      x < 60
+        ? t('deviceWidgets.rhythm.unit.s', { n: x })
+        : x < 3600
+          ? t('nav.pause.minutesLeft', { n: Math.round(x / 60) })
+          : t('deviceWidgets.rhythm.unit.h', { n: (x / 3600).toFixed(1) });
+    if (i === 0) return t('deviceWidgets.rhythm.under', { span: s(binsS[0]) });
+    return i >= binsS.length
+      ? t('deviceWidgets.rhythm.andLonger', { span: s(binsS[binsS.length - 1]) })
+      : t('deviceWidgets.rhythm.range', { from: s(binsS[i - 1]), to: s(binsS[i]) });
   };
   // Where a period sits on the axis (log within its bin).
   function x(t: number): number {
@@ -48,12 +56,12 @@
     const hi = bin < binsS.length ? binsS[bin] : lo * 1.5;
     return (bin + Math.log(t / lo) / Math.log(hi / lo)) * CELL;
   }
-  const ticks = [
-    { t: 1, text: '1 s' },
-    { t: 10, text: '10 s' },
-    { t: 60, text: '1 min' },
-    { t: 600, text: '10 min' },
-    { t: 3600, text: '1 h' },
+  const ticks: { t: number; unit: MessageKey; n: number }[] = [
+    { t: 1, unit: 'deviceWidgets.rhythm.unit.s', n: 1 },
+    { t: 10, unit: 'deviceWidgets.rhythm.unit.s', n: 10 },
+    { t: 60, unit: 'nav.pause.minutesLeft', n: 1 },
+    { t: 600, unit: 'nav.pause.minutesLeft', n: 10 },
+    { t: 3600, unit: 'deviceWidgets.rhythm.unit.h', n: 1 },
   ];
   function cells(r: RhythmRow) {
     const b = bins(r);
@@ -68,21 +76,21 @@
   {#if toggle}
     <div class="controls">
       {#if hasRecent}
-        <div class="seg" role="group" aria-label="Which hours">
-          <button type="button" aria-pressed={view === 'recent'} onclick={() => (view = 'recent')}>Recent</button>
-          <button type="button" aria-pressed={view === 'hour'} onclick={() => (view = 'hour')}>This hour</button>
+        <div class="seg" role="group" aria-label={t('deviceWidgets.rhythm.hours')}>
+          <button type="button" aria-pressed={view === 'recent'} onclick={() => (view = 'recent')}>{t('deviceWidgets.rhythm.recent')}</button>
+          <button type="button" aria-pressed={view === 'hour'} onclick={() => (view = 'hour')}>{t('deviceWidgets.rhythm.thisHour')}</button>
         </div>
       {/if}
-      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="rhythm-table-toggle" />Table</label></span>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="rhythm-table-toggle" />{t('flow.table')}</label></span>
     </div>
   {/if}
   {#if rows.length === 0}
-    <p class="empty">No tracked domains for this device yet.</p>
+    <p class="empty">{t('deviceWidgets.rhythm.empty')}</p>
   {:else if table}
     <div class="scroll">
       <table data-testid="rhythm-table">
         <thead>
-          <tr><th>Domain</th>{#each Array(N) as _, i (i)}<th class="num" title={label(i)}>{i}</th>{/each}</tr>
+          <tr><th>{t('localdns.forward.domain')}</th>{#each Array(N) as _, i (i)}<th class="num" title={label(i)}>{i}</th>{/each}</tr>
         </thead>
         <tbody>
           {#each rows as r (r.domain)}
@@ -91,7 +99,7 @@
         </tbody>
       </table>
     </div>
-    <p class="muted small">Columns are the gap between two queries: 0 is under 1 s, then 1–1.5 s, 1.5–2.2 s, … up to 2 hours and longer.</p>
+    <p class="muted small">{t('deviceWidgets.rhythm.legend')}</p>
   {:else}
     <div class="scroll">
       <div class="grid">
@@ -103,9 +111,9 @@
             href={href('/queries', { client, name: r.domain, match: 'suffix' })}
             data-testid="rhythm-row"
             data-domain={r.domain}
-            title="Open these queries">{r.domain}</a
+            title={t('deviceWidgets.rhythm.openQueries')}>{r.domain}</a
           >
-          <svg width={W} height={CELL} viewBox="0 0 {W} {CELL}" role="img" aria-label="{r.domain}: {r.period ?? 'no single rhythm'}">
+          <svg width={W} height={CELL} viewBox="0 0 {W} {CELL}" role="img" aria-label={t('deviceWidgets.rhythm.aria', { domain: r.domain, period: r.period ?? t('deviceWidgets.rhythm.noRhythm') })}>
             {#each cs as c (c.i)}
               <rect
                 x={c.i * CELL + 1}
@@ -118,19 +126,19 @@
                 class:dominant={c.i === top.i && top.share >= 0.5}
                 data-bin={c.i}
                 data-n={c.n}
-              ><title>{label(c.i)}: {num(c.n)} ({Math.round(c.share * 100)} %)</title></rect>
+              ><title>{t('deviceWidgets.rhythm.cell', { gap: label(c.i), count: num(c.n), pct: Math.round(c.share * 100) })}</title></rect>
             {/each}
           </svg>
           <span class="small period">
             {#if r.period}<span data-testid="rhythm-period">{r.period}</span>{/if}
-            {#if r.knownPeriodic}<span class="badge">usual</span>
-            {:else if (r.regularHours ?? 0) >= 4}<span class="badge warn">new rhythm</span>{/if}
+            {#if r.knownPeriodic}<span class="badge">{t('deviceWidgets.rhythm.usual')}</span>
+            {:else if (r.regularHours ?? 0) >= 4}<span class="badge warn">{t('deviceWidgets.rhythm.newRhythm')}</span>{/if}
           </span>
         {/each}
         <span></span>
         <svg width={W} height="14" viewBox="0 0 {W} 14" aria-hidden="true" class="axis">
-          {#each ticks as t (t.t)}
-            <text x={x(t.t)} y="11" text-anchor="middle">{t.text}</text>
+          {#each ticks as tick (tick.t)}
+            <text x={x(tick.t)} y="11" text-anchor="middle">{t(tick.unit, { n: tick.n })}</text>
           {/each}
         </svg>
         <span></span>

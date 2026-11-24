@@ -28,12 +28,12 @@
       ...(can('admin')
         ? [{ id: 'users', label: tr('settings.tab.users') }, { id: 'audit', label: tr('settings.tab.audit') }]
         : []),
-      { id: 'system', label: tr('settings.tab.system') },
+      { id: 'system', label: tr('nav.section.system') },
       // REQ: API-005 (ADR-121) — how queries are handled (cache, rate limit, what's kept out of
       // the log, simulation), apart from the node's own housekeeping.
       { id: 'queries', label: tr('settings.tab.queries') },
       // REQ: CLU-013 — staged rollouts are an admin's.
-      ...(can('admin') ? [{ id: 'cluster', label: tr('settings.tab.cluster') }] : []),
+      ...(can('admin') ? [{ id: 'cluster', label: tr('nav.cluster') }] : []),
     ],
   );
   // REQ: DNS-014 (review 01 q1) — the fields of `[ratelimit]`. A getter: the labels follow the
@@ -56,9 +56,9 @@
   const exclusionFields = $derived.by((): Field[] => [
     { key: 'enabled', label: tr('settings.queries.exclusions.enabled'), type: 'bool', initial: true,
       help: tr('settings.queries.exclusions.enabledHelp') },
-    { key: 'names', label: tr('settings.queries.exclusions.names'), type: 'lines', placeholder: 'connectivitycheck.gstatic.com\nntp.org',
+    { key: 'names', label: tr('traffic.mode.name'), type: 'lines', placeholder: 'connectivitycheck.gstatic.com\nntp.org',
       help: tr('settings.queries.exclusions.namesHelp') },
-    { key: 'clients', label: tr('settings.queries.exclusions.clients'), type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
+    { key: 'clients', label: tr('clients.tab.devices'), type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
       help: tr('settings.queries.exclusions.clientsHelp') },
   ]);
   // REQ: OBS-024 (T13.1) — the fields of `[simulate]`.
@@ -107,7 +107,7 @@
     if (!c.length) return tr('settings.cluster.rollout.noteNone');
     const named = c.map((x) => rolloutFields[0].optionLabels?.[x] ?? x).join(', ');
     const secs = Number(v.bake_secs ?? 300);
-    const time = secs >= 120 ? tn('settings.cluster.rollout.minutes', Math.round(secs / 60)) : tr('settings.cluster.rollout.seconds', { n: secs });
+    const time = secs >= 120 ? tn('settings.cluster.rollout.minutes', Math.round(secs / 60)) : tr('deviceWidgets.rhythm.unit.s', { n: secs });
     return tr('settings.cluster.rollout.noteBody', { names: named, time });
   };
   const tab = $derived(activeTab(tabs));
@@ -440,14 +440,14 @@
 </script>
 
 <div class="page">
-  <h1>{tr('settings.title')}</h1>
-  <Tabs {tabs} active={tab} label={tr('settings.title')} />
+  <h1>{tr('nav.settings')}</h1>
+  <Tabs {tabs} active={tab} label={tr('nav.settings')} />
 
   <TabPanel active={tab}>
   {#if tab === 'account' && session.user}
     <div class="grid-2">
       <section class="card">
-        <h2>{tr('settings.account.title')}<HelpButton id="account" /></h2>
+        <h2>{tr('settings.tab.account')}<HelpButton id="account" /></h2>
         <p><strong>{session.user.username}</strong> · <span class="badge">{roleName(session.user.role)}</span></p>
         <form class="stack" onsubmit={changePassword}>
           <h3>{tr('settings.account.changePassword')}</h3>
@@ -489,7 +489,7 @@
           </ol>
           <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
           <form class="row" onsubmit={enableTotp}>
-            <input aria-label={tr('settings.twoFactor.codeLabel')} title={tr('settings.twoFactor.codeTitle')} inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={'[0-9]{6}'} required placeholder="123456" bind:value={totpCode} />
+            <input aria-label={tr('settings.twoFactor.codeLabel')} title={tr('auth.codeTitle')} inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={'[0-9]{6}'} required placeholder="123456" bind:value={totpCode} />
             <button class="primary" type="submit">{tr('settings.twoFactor.turnOn')}</button>
             <button type="button" onclick={() => (totp = null)}>{tr('common.cancel')}</button>
           </form>
@@ -520,7 +520,7 @@
             <button aria-pressed={iconPrefs.size === 'small'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'small' })}>{tr('settings.icons.small')}</button>
           </span>
         </div>
-        <ul class="icon-preview" aria-label={tr('settings.icons.preview')}>
+        <ul class="icon-preview" aria-label={tr('qw.chip.preview')}>
           {#each ICON_PREVIEW as n (n)}
             <li><DomainIcon name={n} /><span class="mono small">{n}</span></li>
           {/each}
@@ -529,26 +529,26 @@
     </div>
   {:else if tab === 'tokens'}
     <section class="card">
-      <h2>{tr('settings.tokens.title')}<HelpButton id="api-tokens" /></h2>
+      <h2>{tr('settings.tab.tokens')}<HelpButton id="api-tokens" /></h2>
       <p class="muted">
         {tr('settings.tokens.aboutLead')} <code>Authorization: Bearer &lt;token&gt;</code>{tr('settings.tokens.aboutTail')}
       </p>
       <form class="row" onsubmit={createToken}>
         <input aria-label={tr('settings.tokens.nameLabel')} required placeholder={tr('settings.tokens.namePlaceholder')} bind:value={tokenName} />
-        <select aria-label={tr('settings.tokens.kindLabel')} bind:value={tokenKind}>
+        <select aria-label={tr('lists.col.kind')} bind:value={tokenKind}>
           <option value="user">{tr('settings.tokens.kindUser')}</option>
           <option value="agent">{tr('settings.tokens.kindAgent')}</option>
         </select>
         {#if tokenKind === 'user'}
-          <select aria-label={tr('settings.tokens.scopeLabel')} bind:value={tokenScope}>
+          <select aria-label={tr('settings.tokens.colScope')} bind:value={tokenScope}>
             <option value="read">{tr('settings.tokens.scopeRead')}</option>
             <option value="write">{tr('settings.tokens.scopeWrite')}</option>
-            <option value="admin">{tr('settings.tokens.scopeAdmin')}</option>
+            <option value="admin">{tr('common.role.admin')}</option>
           </select>
         {/if}
         <select aria-label={tr('settings.tokens.expiresLabel')} bind:value={tokenDays}>
           <option value="">{tr('settings.tokens.expiresNever')}</option>
-          <option value="7">{tr('settings.tokens.expires7')}</option>
+          <option value="7">{tr('queries.range.7d')}</option>
           <option value="30">{tr('settings.tokens.expires30')}</option>
           <option value="90">{tr('settings.tokens.expires90')}</option>
           <option value="365">{tr('settings.tokens.expiresYear')}</option>
@@ -563,7 +563,7 @@
             <label><input type="checkbox" value={id} bind:group={tokenScopes} /> {label} <code class="small">{id}</code></label>
           {/each}
           <label>{tr('settings.tokens.groupOnly')}
-            <input aria-label={tr('settings.tokens.groupLabel')} placeholder={tr('settings.tokens.groupPlaceholder')} bind:value={tokenGroup} /></label>
+            <input aria-label={tr('legacy.group')} placeholder={tr('settings.tokens.groupPlaceholder')} bind:value={tokenGroup} /></label>
           <p class="muted small">
             {tr('settings.tokens.agentNoteLead')}
             <code>agent:&lt;name&gt;</code> {tr('settings.tokens.agentNoteMid')} <code>[agents] enabled = false</code>{tr('settings.tokens.agentNoteTail')}
@@ -574,7 +574,7 @@
       {#if newToken}
         <div class="notice ok new-token">
           <strong>{tr('settings.tokens.copyNow')}</strong>
-          <div class="row"><code class="token">{newToken}</code><button onclick={() => copy(newToken)}>{tr('common.copy')}</button><button class="link" onclick={() => (newToken = '')}>{tr('settings.tokens.done')}</button></div>
+          <div class="row"><code class="token">{newToken}</code><button onclick={() => copy(newToken)}>{tr('common.copy')}</button><button class="link" onclick={() => (newToken = '')}>{tr('settings.editor.done')}</button></div>
         </div>
       {/if}
       {#if tokens.length === 0}
@@ -582,7 +582,7 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>{tr('settings.tokens.colName')}</th><th>{tr('settings.tokens.colScope')}</th><th>{tr('settings.tokens.colCreated')}</th><th>{tr('settings.tokens.colLastUsed')}</th><th>{tr('settings.tokens.colExpires')}</th><th></th></tr></thead>
+            <thead><tr><th>{tr('clients.col.name')}</th><th>{tr('settings.tokens.colScope')}</th><th>{tr('settings.tokens.colCreated')}</th><th>{tr('settings.wall.colLastUsed')}</th><th>{tr('settings.tokens.colExpires')}</th><th></th></tr></thead>
             <tbody>
               {#each tokens as t (t.id)}
                 <tr>
@@ -598,7 +598,7 @@
                   <td class="small">{ago(t.createdUnixSeconds)}</td>
                   <td class="small">{ago(t.lastUsedUnixSeconds)}</td>
                   <td class="small">{t.expiresUnixSeconds ? dateTime(t.expiresUnixSeconds) : tr('common.never')}</td>
-                  <td class="num"><button class="danger" onclick={() => revoke(t.id)}>{tr('settings.tokens.revoke')}</button></td>
+                  <td class="num"><button class="danger" onclick={() => revoke(t.id)}>{tr('settings.wall.revoke')}</button></td>
                 </tr>
               {/each}
             </tbody>
@@ -618,11 +618,11 @@
             {#each passwordLogin.networks as n}<li>{n}</li>{/each}
           </ul>
           {#if passwordLogin.coversWholeNetworks}
-            <p class="small"><span class="badge warn">{tr('settings.users.wholeNetworks')}</span> {tr('settings.users.wholeNetworksLead')} <code>192.168.1.10/32</code>{tr('settings.users.wholeNetworksTail')}</p>
+            <p class="small"><span class="badge warn">{tr('settings.users.wholeNetworks')}</span> {tr('settings.users.wholeNetworksLead')} <code>192.168.1.10/32</code>{tr('queries.whyEnd')}</p>
           {:else}
             <p class="muted small">{tr('settings.users.onlyListed')}</p>
             {#if passwordLogin.includesLoopback && !passwordLogin.loopbackIsTrustedProxy}
-              <p class="muted small">{tr('settings.users.loopbackLead')} <code>127.0.0.1/32</code> {tr('settings.users.loopbackMid')} <code>trusted_proxies</code> {tr('settings.users.loopbackMid2')} <code>[api]</code>{tr('settings.users.loopbackTail')}</p>
+              <p class="muted small">{tr('settings.users.loopbackLead')} <code>127.0.0.1/32</code> {tr('settings.users.loopbackMid')} <code>trusted_proxies</code> {tr('settings.users.changeMid')} <code>[api]</code>{tr('settings.users.loopbackTail')}</p>
             {/if}
           {/if}
         {:else}
@@ -632,11 +632,11 @@
       </section>
     {/if}
     <section class="card">
-      <h2>{tr('settings.users.title')}<HelpButton id="users" /></h2>
+      <h2>{tr('settings.tab.users')}<HelpButton id="users" /></h2>
       <ErrorNote error={userError} />
       <div class="table-wrap">
         <table>
-          <thead><tr><th>{tr('settings.users.colUser')}</th><th>{tr('settings.users.colRole')}</th><th>{tr('settings.users.colTwoFactor')}</th><th>{tr('settings.users.colBasic')}</th><th>{tr('settings.users.colStatus')}</th><th></th></tr></thead>
+          <thead><tr><th>{tr('settings.users.colUser')}</th><th>{tr('settings.users.colRole')}</th><th>{tr('settings.users.colTwoFactor')}</th><th>{tr('settings.users.colBasic')}</th><th>{tr('cluster.col.status')}</th><th></th></tr></thead>
           <tbody>
             {#each users as u (u.id)}
               <tr>
@@ -652,7 +652,7 @@
                   </select>
                 </td>
                 <td>
-                  {#if u.totpEnabled}<span class="badge ok">{tr('settings.value.on')}</span> <button class="link small" onclick={() => patchUser(u, { resetTotp: true })}>{tr('settings.users.reset')}</button>{:else}<span class="muted">{tr('settings.value.off')}</span>{/if}
+                  {#if u.totpEnabled}<span class="badge ok">{tr('settings.value.on')}</span> <button class="link small" onclick={() => patchUser(u, { resetTotp: true })}>{tr('settings.users.reset')}</button>{:else}<span class="muted">{tr('lists.badge.off')}</span>{/if}
                 </td>
                 <td><input type="checkbox" role="switch" aria-label={tr('settings.users.basicFor', { name: u.username })} checked={u.allowBasicApi} onchange={(e) => patchUser(u, { allowBasicApi: e.currentTarget.checked })} /></td>
                 <td>
@@ -672,7 +672,7 @@
                       <span class="muted small">{tr('settings.users.noTokens', { name: u.username })}</span>
                     {:else}
                       <table>
-                        <thead><tr><th>{tr('settings.users.tokenOf', { name: u.username })}</th><th>{tr('settings.tokens.colScope')}</th><th>{tr('settings.tokens.colLastUsed')}</th><th>{tr('settings.tokens.colExpires')}</th><th></th></tr></thead>
+                        <thead><tr><th>{tr('settings.users.tokenOf', { name: u.username })}</th><th>{tr('settings.tokens.colScope')}</th><th>{tr('settings.wall.colLastUsed')}</th><th>{tr('settings.tokens.colExpires')}</th><th></th></tr></thead>
                         <tbody>
                           {#each userTokens as t (t.id)}
                             <tr>
@@ -680,7 +680,7 @@
                               <td>{#if t.kind === 'agent'}<span class="badge">agent</span>{:else}<span class="badge">{t.scope}</span>{/if}</td>
                               <td class="small">{ago(t.lastUsedUnixSeconds)}</td>
                               <td class="small">{t.expiresUnixSeconds ? dateTime(t.expiresUnixSeconds) : tr('common.never')}</td>
-                              <td class="num"><button class="danger" onclick={() => revokeUserToken(u, t.id)}>{tr('settings.tokens.revoke')}</button></td>
+                              <td class="num"><button class="danger" onclick={() => revokeUserToken(u, t.id)}>{tr('settings.wall.revoke')}</button></td>
                             </tr>
                           {/each}
                         </tbody>
@@ -696,9 +696,9 @@
       <form class="stack add-user" onsubmit={addUser}>
         <h3>{tr('settings.users.addTitle')}</h3>
         <div class="row">
-          <input aria-label={tr('settings.users.usernameLabel')} required placeholder={tr('settings.users.usernamePlaceholder')} autocomplete="off" bind:value={nu.username} />
-          <input aria-label={tr('settings.users.passwordLabel')} required type="password" minlength="10" placeholder={tr('settings.users.passwordPlaceholder')} autocomplete="new-password" bind:value={nu.password} />
-          <select aria-label={tr('settings.users.roleLabel')} bind:value={nu.role}>
+          <input aria-label={tr('auth.username')} required placeholder={tr('settings.users.usernamePlaceholder')} autocomplete="off" bind:value={nu.username} />
+          <input aria-label={tr('auth.password')} required type="password" minlength="10" placeholder={tr('settings.users.passwordPlaceholder')} autocomplete="new-password" bind:value={nu.password} />
+          <select aria-label={tr('settings.users.colRole')} bind:value={nu.role}>
             <option value="viewer">{tr('common.role.viewer')}</option>
             <option value="operator">{tr('common.role.operator')}</option>
             <option value="admin">{tr('common.role.admin')}</option>
@@ -714,15 +714,15 @@
   {:else if tab === 'audit' && can('admin')}
     <section class="card">
       <div class="card-head">
-        <h2>{tr('settings.audit.title')}<HelpButton id="audit-log" /></h2>
+        <h2>{tr('settings.tab.audit')}<HelpButton id="audit-log" /></h2>
         <div class="row">
           <span class="pill-field bare">
-            <select aria-label={tr('settings.audit.actionLabel')} bind:value={auditAction} onchange={() => loadAudit()}>
+            <select aria-label={tr('queries.quickRule.action')} bind:value={auditAction} onchange={() => loadAudit()}>
               <option value="">{tr('settings.audit.allChanges')}</option>
-              <option value="user.">{tr('settings.audit.users')}</option>
-              <option value="token.">{tr('settings.audit.tokens')}</option>
+              <option value="user.">{tr('settings.tab.users')}</option>
+              <option value="token.">{tr('settings.tab.tokens')}</option>
               <option value="auth.">{tr('settings.audit.signIns')}</option>
-              <option value="config.">{tr('settings.audit.config')}</option>
+              <option value="config.">{tr('cluster.configuration')}</option>
             </select>
           </span>
           <button onclick={verifyAudit}>{tr('settings.audit.verify')}</button>
@@ -746,7 +746,7 @@
       {:else}
         <div class="table-wrap">
           <table class="audit">
-            <thead><tr><th class="num">#</th><th>{tr('settings.audit.colWhen')}</th><th>{tr('settings.audit.colWho')}</th><th>{tr('settings.audit.colWhat')}</th><th>{tr('settings.audit.colDetails')}</th></tr></thead>
+            <thead><tr><th class="num">#</th><th>{tr('changes.plan.when')}</th><th>{tr('settings.audit.colWho')}</th><th>{tr('settings.audit.colWhat')}</th><th>{tr('legacy.details')}</th></tr></thead>
             <tbody>
               {#each audit as e (e.seq)}
                 <tr>
@@ -767,7 +767,7 @@
           </table>
         </div>
         {#if auditCursor}
-          <div class="row foot"><span class="spacer"></span><button onclick={() => loadAudit(true)}>{tr('settings.audit.older')}</button></div>
+          <div class="row foot"><span class="spacer"></span><button onclick={() => loadAudit(true)}>{tr('queries.older')}</button></div>
         {/if}
       {/if}
     </section>
@@ -776,7 +776,7 @@
       <section class="card"><p class="empty">{tr('settings.cluster.standalone')}</p></section>
     {:else}
       <!-- REQ: CLU-013 (T13.2) — staged rollouts: who gets a change first, and the guard. -->
-      <ConfigEditor kind="rollout" path="cluster/rollout-settings" singleton role="admin" title={tr('settings.cluster.rollout.title')} noun={tr('settings.cluster.rollout.noun')}
+      <ConfigEditor kind="rollout" path="cluster/rollout-settings" singleton role="admin" title={tr('clusterWidgets.rollout.title')} noun={tr('settings.cluster.rollout.noun')}
         fields={rolloutFields} help="rollouts" note={rolloutNote}
         summary={(d) => {
           const c = Array.isArray(d.canaries) ? (d.canaries as string[]) : [];
@@ -790,19 +790,19 @@
     {/if}
   {:else if tab === 'system'}
     <section class="card">
-      <h2>{tr('settings.system.title')}<HelpButton id="system" /></h2>
+      <h2>{tr('nav.section.system')}<HelpButton id="system" /></h2>
       {#if info}
         <dl class="sys">
-          <dt>{tr('settings.system.version')}</dt><dd>{info.version}</dd>
-          <dt>{tr('settings.system.node')}</dt><dd>{info.node} ({nodeRole(info.role)})</dd>
+          <dt>{tr('cluster.col.version')}</dt><dd>{info.version}</dd>
+          <dt>{tr('qw.cache.node')}</dt><dd>{info.node} ({nodeRole(info.role)})</dd>
           <dt>{tr('settings.system.started')}</dt><dd>{tr('settings.system.startedValue', { time: dateTime(Date.parse(info.startedAt) / 1000), uptime: duration(info.uptimeSeconds) })}</dd>
           <!-- REQ: OBS-002 (T9.13) -->
           {#if info.starts > 1}
             <dt>{tr('settings.system.restarts')}</dt><dd data-testid="restarts">{info.starts - 1}{#if info.uncleanStarts} {tr('settings.system.unclean', { n: info.uncleanStarts })}{/if}</dd>
           {/if}
           <dt>{tr('settings.system.listeners')}</dt><dd class="mono">{info.listeners.join(', ')}</dd>
-          <dt>{tr('settings.system.queryLog')}</dt><dd>{info.queryLog ? tr('settings.value.on') : tr('settings.value.off')}</dd>
-          <dt>{tr('settings.system.snapshot')}</dt><dd>{info.filterSnapshot ?? tr('settings.system.noSnapshot')}{tr('settings.system.names', { names: info.filterNames.toLocaleString() })}</dd>
+          <dt>{tr('nav.queries')}</dt><dd>{info.queryLog ? tr('settings.value.on') : tr('lists.badge.off')}</dd>
+          <dt>{tr('settings.system.snapshot')}</dt><dd>{info.filterSnapshot ?? tr('lists.noneYet')}{tr('settings.system.names', { names: info.filterNames.toLocaleString() })}</dd>
         </dl>
       {/if}
       <p class="muted small">{tr('settings.system.apiRef')} <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> {tr('settings.system.apiRefNote')}</p>
@@ -813,11 +813,11 @@
       {#if probes == null}
         <p class="empty">{tr('common.loading')}</p>
       {:else if probes.length === 0}
-        <p class="empty">{tr('settings.probes.emptyLead')}<code>[probe] enabled = false</code>{tr('settings.probes.emptyTail')}</p>
+        <p class="empty">{tr('settings.probes.emptyLead')}<code>[probe] enabled = false</code>{tr('slo.offEnd')}</p>
       {:else}
         <div class="table-wrap">
           <table class="compact">
-            <thead><tr>{#if probes.some((p) => p.node)}<th>{tr('settings.probes.colNode')}</th>{/if}<th>{tr('settings.probes.colAsked')}</th><th>{tr('settings.probes.colResult')}</th><th class="num">{tr('settings.probes.colTime')}</th><th>{tr('settings.probes.colNotes')}</th></tr></thead>
+            <thead><tr>{#if probes.some((p) => p.node)}<th>{tr('qw.cache.node')}</th>{/if}<th>{tr('settings.probes.colAsked')}</th><th>{tr('settings.probes.colResult')}</th><th class="num">{tr('settings.probes.colTime')}</th><th>{tr('annotations.kind.note')}</th></tr></thead>
             <tbody>
               {#each probes as p (`${p.node ?? ''}|${p.target}`)}
                 <tr>
@@ -849,7 +849,7 @@
       <h2>{tr('settings.changes.title')}<HelpButton id="change-markers" /></h2>
       <div class="change-filters">
         <label class="pill-field">
-          {tr('settings.changes.kind')}
+          {tr('lists.col.kind')}
           <select bind:value={changeKind} aria-label={tr('settings.changes.kindLabel')}>
             <option value="">{tr('settings.changes.kindAll')}</option>
             <option value="config.applied">{tr('settings.changes.kindConfig')}</option>
@@ -873,7 +873,7 @@
       {:else}
         <div class="table-wrap">
           <table class="compact">
-            <thead><tr><th>{tr('settings.changes.colWhen')}</th>{#if shownChanges.some((a) => a.node)}<th>{tr('settings.changes.colNode')}</th>{/if}<th>{tr('settings.changes.colWhat')}</th><th>{tr('settings.changes.colWho')}</th></tr></thead>
+            <thead><tr><th>{tr('changes.plan.when')}</th>{#if shownChanges.some((a) => a.node)}<th>{tr('qw.cache.node')}</th>{/if}<th>{tr('dashboard.what')}</th><th>{tr('settings.audit.colWho')}</th></tr></thead>
             <tbody>
               {#each shownChanges as a, i (i)}
                 <tr>
@@ -897,7 +897,7 @@
         <dl class="sys">
           <dt>{tr('settings.updates.thisBuild')}</dt><dd><strong>{info.build.version}</strong>{tr('settings.updates.commit')} <code>{info.build.commit}</code>{tr('settings.updates.channel', { channel: info.build.channel })}</dd>
           <dt>{tr('settings.updates.built')}</dt><dd>{tr('settings.updates.builtValue', { date: info.build.date, target: info.build.target, install: info.build.install })}</dd>
-          <dt>{tr('settings.updates.status')}</dt>
+          <dt>{tr('cluster.col.status')}</dt>
           <dd>
             {#if info.update.state === 'available'}
               <span class="badge warn">{tr('settings.updates.available')}</span> {info.update.latest}{#if info.update.latestDate} {tr('settings.updates.date', { date: info.update.latestDate })}{/if}
@@ -907,15 +907,15 @@
             {:else if info.update.state === 'newer'}
               {tr('settings.updates.newer', { channel: info.build.channel })}{#if info.update.latest} {tr('settings.updates.newerVersion', { version: info.update.latest })}{/if}
             {:else if info.update.state === 'off'}
-              {tr('settings.updates.notCheckedLead')}<code>[updates] check = false</code>{tr('settings.updates.notCheckedTail')}
+              {tr('settings.updates.notCheckedLead')}<code>[updates] check = false</code>{tr('groups.dns64OnEnd')}
             {:else}
               {tr('settings.updates.unknown')}{#if info.update.error}{tr('settings.updates.unknownError', { error: info.update.error })}{/if}
             {/if}
             <div class="muted small">
-              {#if info.update.checkedUnixSeconds}{tr('settings.updates.checked', { time: ago(info.update.checkedUnixSeconds) })}{/if}
+              {#if info.update.checkedUnixSeconds}{tr('nav.health.checked', { time: ago(info.update.checkedUnixSeconds) })}{/if}
               {#if can('admin') && info.update.state !== 'off'}
                 <button class="link small" disabled={checking} onclick={checkNow} data-testid="check-updates"
-                  >{checking ? tr('settings.updates.checking') : tr('settings.updates.checkNow')}</button
+                  >{checking ? tr('qw.chip.checking') : tr('settings.updates.checkNow')}</button
                 >
               {/if}
             </div>
@@ -944,13 +944,13 @@
   {:else if tab === 'queries'}
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
     <section class="card">
-      <h2>{tr('settings.queries.cacheTitle')}</h2>
+      <h2>{tr('nav.cache')}</h2>
       <p class="small">{tr('settings.queries.cacheAboutLead')} <a href="#/cache">{tr('settings.queries.cacheAboutLink')}</a>{tr('settings.queries.cacheAboutTail')}</p>
     </section>
     <!-- REQ: DNS-014 (review 01 q1) — the per-client rate limit, adjustable here and in the config file. -->
     <ConfigEditor kind="ratelimit" path="ratelimit" singleton title={tr('settings.queries.ratelimit.title')} noun={tr('settings.queries.ratelimit.noun')} fields={rateLimitFields}
       summary={(d) => (d.enabled === false
-        ? tr('settings.queries.ratelimit.summaryOff')
+        ? tr('lists.badge.off')
         : tr('settings.queries.ratelimit.summary', { queries: String(d.queries), window: String(d.window_secs), action: String(d.action) }))} />
     <p class="muted small">
       {tr('settings.queries.ratelimit.footnote')}
@@ -970,7 +970,7 @@
       help="simulate"
       summary={(d) =>
         d.enabled === false
-          ? tr('settings.queries.simulate.summaryOff')
+          ? tr('lists.badge.off')
           : tr('settings.queries.simulate.summary', {
               window: String(d.default_window ?? '24h'),
               plans: d.plans_by_default ? tr('settings.queries.simulate.always') : tr('settings.queries.simulate.whenAsked'),

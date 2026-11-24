@@ -3,6 +3,7 @@
   // the query log, on request only (it can take seconds on a Pi). Every logged query in the
   // window is decided again with and without the change; only the differences are shown.
   import type { S } from '../api';
+  import { t as tr, tn, type MessageKey } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -35,31 +36,31 @@
     }
   }
 
+  // Each class's words are a key (what it says follows the language on screen); the class and its
+  // tone stay as they are.
   const classes = [
-    ['newlyBlocked', 'Newly blocked', 'bad'],
-    ['newlyAllowed', 'Newly allowed', 'ok'],
-    ['changedRoute', 'Changed route', ''],
-    ['changedAnswer', 'Changed answer', ''],
+    ['newlyBlocked', 'simulation.preview.newlyBlocked', 'bad'],
+    ['newlyAllowed', 'simulation.preview.newlyAllowed', 'ok'],
+    ['changedRoute', 'simulation.preview.changedRoute', ''],
+    ['changedAnswer', 'simulation.preview.changedAnswer', ''],
   ] as const;
 
-  const reasons: Record<string, string> = {
-    disabled: 'Simulation is off on this cluster (Settings → Query handling → Change simulation).',
-    privacy_level:
-      "The query log keeps names hashed or hidden at this node's privacy level, so this change can't be replayed. Moving a device between groups with the same lists still can be.",
-    no_query_log: 'The query log is off on this node, so there is nothing to replay.',
-    busy: 'Another simulation is running on this node. Try again in a few seconds.',
+  // The identifiers the server sends, as keys: `reason` says why it couldn't run, `note` what an
+  // approximation was. One this file doesn't know is shown as the server sent it.
+  const reasons: Record<string, MessageKey> = {
+    disabled: 'simulation.preview.reason.disabled',
+    privacy_level: 'simulation.preview.reason.privacyLevel',
+    no_query_log: 'simulation.preview.reason.noQueryLog',
+    busy: 'simulation.preview.reason.busy',
     // REQ: OBS-024 (ADR-180)
-    local_file: "This change names a local file the configuration doesn't read yet, so only an administrator can replay it.",
-    download_limit:
-      'This change adds or changes more lists than one simulation reads on this node (at most 4 by URL or from a file, within 4 times its list size limit). Simulate fewer list changes at a time.',
+    local_file: 'simulation.preview.reason.localFile',
+    download_limit: 'simulation.preview.reason.downloadLimit',
   };
-  const notes: Record<string, string> = {
-    identity_from_event:
-      'Some devices were recognized by MAC address or client ID when they asked; they keep the group their queries were logged with.',
-    badfilter_cross_snapshot: "A changed list has $badfilter rules; they don't cancel rules of the other lists in a preview.",
-    names_capped: 'Very many names changed: counts are complete, but not every name is listed.',
-    privacy_level_1_devices_only:
-      'At privacy level 1 only devices moving between groups can be checked: queries of a device whose new groups decide differently are counted as undetermined.',
+  const notes: Record<string, MessageKey> = {
+    identity_from_event: 'simulation.preview.note.identityFromEvent',
+    badfilter_cross_snapshot: 'simulation.preview.note.badfilterCrossSnapshot',
+    names_capped: 'simulation.preview.note.namesCapped',
+    privacy_level_1_devices_only: 'simulation.preview.note.privacyLevel1DevicesOnly',
   };
 
   const total = (s: S['Simulation']) =>
@@ -67,51 +68,65 @@
   const logLink = (name: string, s: S['Simulation']) =>
     `#/queries?name=${encodeURIComponent(name)}&match=exact&from=${encodeURIComponent(s.from ?? '-24h')}`;
   const n = (v: number) => v.toLocaleString();
+  /** Why a simulation didn't run, in words; an unknown reason is the server's own. */
+  const reasonText = (id: string | null | undefined) =>
+    id && reasons[id] ? tr(reasons[id]) : tr('simulation.preview.notSimulated', { reason: String(id) });
+  /** What a note about the numbers says; an unknown one is the server's own. */
+  const noteText = (id: string) => (notes[id] ? tr(notes[id]) : id);
+  /** "Over n logged queries since …:" — the count's own words, then when the window started. */
+  const overText = (s: S['Simulation']) =>
+    tn('simulation.preview.over', s.rows, {
+      n: n(s.rows),
+      when: s.from ? tr('simulation.preview.since', { time: new Date(s.from).toLocaleString() }) : '',
+    });
 </script>
 
 <div class="sim" data-testid="simulation">
   {#if run}
     <div class="row">
       <button type="button" onclick={go} disabled={busy} data-testid="simulate-button"
-        >{busy ? 'Replaying the logged queries…' : 'What would this have done?'}</button
+        >{busy ? tr('simulation.preview.replaying') : tr('simulation.preview.button')}</button
       ><HelpButton id="simulate" />
     </div>
   {/if}
   <ErrorNote {error} />
   {#if sim}
     {#if !sim.available}
-      <p class="notice small" data-testid="simulation-unavailable">{reasons[sim.reason ?? ''] ?? `Not simulated: ${sim.reason}`}</p>
+      <p class="notice small" data-testid="simulation-unavailable">{reasonText(sim.reason)}</p>
     {:else if !sim.applicable}
       <p class="muted small" data-testid="simulation-not-applicable">
-        This change can't affect how queries are answered, so there is nothing to replay.
+        {tr('simulation.preview.notApplicable')}
       </p>
     {:else}
       <div class="card-in" data-testid="simulation-card">
         <p class="small">
-          Over {n(sim.rows)} logged queries{sim.from ? ` since ${new Date(sim.from).toLocaleString()}` : ''}:
-          {total(sim) === 0 ? 'none would have been answered differently.' : `${n(total(sim))} would have been answered differently.`}
-          {#if sim.partial}<b>Partial:</b> the time or row limit was reached, so older queries weren't replayed.{/if}
+          {overText(sim)}
+          {total(sim) === 0
+            ? tr('simulation.preview.noneDifferent')
+            : tr('simulation.preview.different', { n: n(total(sim)) })}
+          {#if sim.partial}<b>{tr('simulation.preview.partialLabel')}</b> {tr('simulation.preview.partialNote')}{/if}
         </p>
         <div class="tiles">
           {#each classes as [k, label, cls] (k)}
             <div class="tile {sim[k].queries > 0 ? cls : ''}" data-testid={`sim-${k}`}>
               <b class="num">{n(sim[k].queries)}</b>
-              <span>{label}</span>
-              <span class="muted small">{n(sim[k].devices)} device{sim[k].devices === 1 ? '' : 's'}</span>
+              <span>{tr(label)}</span>
+              <span class="muted small">{tn('simulation.preview.devices', sim[k].devices, { n: n(sim[k].devices) })}</span>
             </div>
           {/each}
         </div>
         {#each classes as [k, label] (k)}
           {#if sim[k].topNames.length}
-            <h4>{label}</h4>
+            <h4>{tr(label)}</h4>
             <ul class="names">
               {#each sim[k].topNames as t (t.name)}
                 <li>
                   <a class="mono" href={logLink(t.name, sim)}>{t.name}</a>
                   <span class="muted small"
-                    >{n(t.queries)} quer{t.queries === 1 ? 'y' : 'ies'}, {n(t.devices)} device{t.devices === 1 ? '' : 's'}{t.list
-                      ? ` · ${t.list}`
-                      : ''}</span
+                    >{tr('simulation.preview.counts', {
+                      queries: tn('simulation.preview.queries', t.queries, { n: n(t.queries) }),
+                      devices: tn('simulation.preview.devices', t.devices, { n: n(t.devices) }),
+                    })}{t.list ? ` · ${t.list}` : ''}</span
                   >
                 </li>
               {/each}
@@ -119,15 +134,15 @@
           {/if}
         {/each}
         {#if sim.byDevice.length}
-          <h4>By device</h4>
+          <h4>{tr('simulation.preview.byDevice')}</h4>
           <div class="chips">
             {#each sim.byDevice.slice(0, 12) as d (d.client)}
               <span class="chip small" title={d.client}
                 >{d.name ?? d.client}: {[
-                  d.newlyBlocked ? `${n(d.newlyBlocked)} blocked` : '',
-                  d.newlyAllowed ? `${n(d.newlyAllowed)} allowed` : '',
-                  d.changedRoute ? `${n(d.changedRoute)} rerouted` : '',
-                  d.changedAnswer ? `${n(d.changedAnswer)} answered differently` : '',
+                  d.newlyBlocked ? tr('simulation.preview.chip.blocked', { n: n(d.newlyBlocked) }) : '',
+                  d.newlyAllowed ? tr('simulation.preview.chip.allowed', { n: n(d.newlyAllowed) }) : '',
+                  d.changedRoute ? tr('simulation.preview.chip.rerouted', { n: n(d.changedRoute) }) : '',
+                  d.changedAnswer ? tr('simulation.preview.chip.answeredDifferently', { n: n(d.changedAnswer) }) : '',
                 ]
                   .filter(Boolean)
                   .join(', ')}</span
@@ -136,11 +151,11 @@
           </div>
         {/if}
         {#if sim.undetermined > 0}
-          <p class="small">{n(sim.undetermined)} queries couldn't be decided again (names hashed in the log).</p>
+          <p class="small">{tn('simulation.preview.undetermined', sim.undetermined, { n: n(sim.undetermined) })}</p>
         {/if}
-        {#each sim.notes as note (note)}<p class="muted small">{notes[note] ?? note}</p>{/each}
+        {#each sim.notes as note (note)}<p class="muted small">{noteText(note)}</p>{/each}
         {#if sim.missingNodes?.length}
-          <p class="small warn-text">Not included (didn't answer): {sim.missingNodes.join(', ')}.</p>
+          <p class="small warn-text">{tr('simulation.preview.missingNodes', { nodes: sim.missingNodes.join(', ') })}</p>
         {/if}
       </div>
     {/if}

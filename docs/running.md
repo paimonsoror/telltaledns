@@ -3358,7 +3358,7 @@ The menu ends with the health icon ([Health](#health)), links to the project on 
 ### Language
 The web UI speaks English and Simplified Chinese. The language button in the header — a globe, or `EN`/`中` on a phone — switches (a link ending in `?lang=zh-CN` or `?lang=en` does the same); the choice is kept in your browser, and until you choose, a Chinese browser opens in Chinese and every other one in English. There is no server setting and nothing is stored about it.
 
-The header and menu, sign-in and first-run setup, the dashboard, the query log (with **Why?**), Settings, and every **?** help panel are translated. The remaining pages are still English and are being translated page by page (ADR-185). Configuration keys, API values and messages, DNS terms, and domain or device names are the same in both languages. The switch names the language it goes to, so it is usable without reading the current one.
+Every screen is translated: the header and menu, sign-in and first-run setup, both dashboards, the query log (with **Why?**), Settings, the wall and display pages, and every **?** help panel (ADR-185). Documentation prose, the site's pages, the CLI, and messages the server sends stay English. Configuration keys, API values and messages, DNS terms, and domain or device names are the same in both languages. The switch names the language it goes to, so it is usable without reading the current one.
 
 
 ### Domain icons

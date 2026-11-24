@@ -21,10 +21,10 @@
   }: { by?: 'path' | 'upstream'; upstream?: string; testid?: string; wall?: boolean } = $props();
 
   const windows = [
-    { id: '1h', label: 'dashw.window.1h' as MessageKey, from: '-1h', step: 'minute' },
-    { id: '6h', label: 'dashw.window.6h' as MessageKey, from: '-6h', step: 'minute' },
-    { id: '24h', label: 'dashw.window.24h' as MessageKey, from: '-24h', step: 'minute' },
-    { id: '7d', label: 'dashw.window.7d' as MessageKey, from: '-7d', step: 'hour' },
+    { id: '1h', label: 'flow.window.1h' as MessageKey, from: '-1h', step: 'minute' },
+    { id: '6h', label: 'flow.window.6h' as MessageKey, from: '-6h', step: 'minute' },
+    { id: '24h', label: 'flow.window.24h' as MessageKey, from: '-24h', step: 'minute' },
+    { id: '7d', label: 'flow.window.7d' as MessageKey, from: '-7d', step: 'hour' },
   ];
   const PATHS = ['cache', 'upstream', 'local', 'synthesized'];
   const PATH_LABEL: Record<string, MessageKey> = {
@@ -96,7 +96,7 @@
     h: top + rows * ROW_H + 18,
   });
   const boundLabel = (us: number) => (us >= 1_000_000 ? `${us / 1_000_000} s` : us >= 1000 ? `${us / 1000} ms` : `${us} µs`);
-  const rowLabel = (r: number) => (data && r < data.boundsUs.length ? `≤ ${boundLabel(data.boundsUs[r])}` : '> 5 s');
+  const rowLabel = (r: number) => (data && r < data.boundsUs.length ? `≤ ${boundLabel(data.boundsUs[r])}` : tr('dashw.rowOver'));
   /** The tooltip over a cell: when, which latency band, how many answers. */
   const tipText = $derived.by(() => {
     if (!tip || !data) return '';
@@ -239,12 +239,12 @@
       </div>
     {/if}
     <span class="spacer"></span>
-    <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? tr('dashw.showGrid') : tr('dashw.showTable')}</button>
+    <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? tr('dashw.showGrid') : tr('flow.table')}</button>
   </div>
   {/if}
   <ErrorNote {error} />
   {#if !data}
-    <p class="empty">{tr('dashw.loading')}</p>
+    <p class="empty">{tr('common.loading')}</p>
   {:else if data.starts.length === 0}
     <p class="empty">{tr('dashw.empty')}</p>
   {:else if showTable}

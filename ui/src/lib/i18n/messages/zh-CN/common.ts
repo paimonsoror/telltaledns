@@ -25,4 +25,5 @@ export const common: Partial<Record<MessageKey, string>> = {
   'common.role.admin': '管理员',
   'common.role.operator': '操作员',
   'common.role.viewer': '只读用户',
+  'common.unreachableShort': '无法连接服务器',
 };

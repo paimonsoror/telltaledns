@@ -43,7 +43,7 @@
 
   // T6.8 — the sidebar in sections, each page with an icon.
   const pages: { path: string; label: MessageKey; page: Component; icon: string; section: MessageKey }[] = [
-    { path: '/', label: 'nav.dashboard', page: Dashboard, icon: 'dashboard', section: 'nav.section.monitor' },
+    { path: '/', label: 'legacy.title', page: Dashboard, icon: 'dashboard', section: 'nav.section.monitor' },
     { path: '/traffic', label: 'nav.traffic', page: Traffic, icon: 'traffic', section: 'nav.section.monitor' },
     { path: '/heatmap', label: 'nav.heatmap', page: Heatmap, icon: 'heatmap', section: 'nav.section.monitor' },
     { path: '/flow', label: 'nav.flow', page: Flow, icon: 'flow', section: 'nav.section.monitor' },
@@ -51,15 +51,15 @@
     { path: '/analyze', label: 'nav.analyze', page: Analyze, icon: 'analyze', section: 'nav.section.monitor' },
     { path: '/explain', label: 'nav.explain', page: Explain, icon: 'explain', section: 'nav.section.monitor' },
     { path: '/anomalies', label: 'nav.anomalies', page: Anomalies, icon: 'anomalies', section: 'nav.section.monitor' },
-    { path: '/clients', label: 'nav.clients', page: Clients, icon: 'clients', section: 'nav.section.devices' },
-    { path: '/groups', label: 'nav.groups', page: Groups, icon: 'groups', section: 'nav.section.devices' },
+    { path: '/clients', label: 'nav.clients', page: Clients, icon: 'clients', section: 'clients.tab.devices' },
+    { path: '/groups', label: 'nav.groups', page: Groups, icon: 'groups', section: 'clients.tab.devices' },
     { path: '/lists', label: 'nav.lists', page: Lists, icon: 'lists', section: 'nav.section.filtering' },
     { path: '/rules', label: 'nav.rules', page: Rules, icon: 'rules', section: 'nav.section.filtering' },
     { path: '/upstreams', label: 'nav.upstreams', page: Upstreams, icon: 'upstreams', section: 'nav.section.filtering' },
     { path: '/local-dns', label: 'nav.localDns', page: LocalDns, icon: 'names', section: 'nav.section.filtering' },
     { path: '/cluster', label: 'nav.cluster', page: Cluster, icon: 'cluster', section: 'nav.section.system' },
     { path: '/alerts', label: 'nav.alerts', page: Alerts, icon: 'bell', section: 'nav.section.system' },
-    { path: '/agent-changes', label: 'nav.agentChanges', page: AgentChanges, icon: 'inbox', section: 'nav.section.system' },
+    { path: '/agent-changes', label: 'changes.title', page: AgentChanges, icon: 'inbox', section: 'nav.section.system' },
     { path: '/cache', label: 'nav.cache', page: Cache, icon: 'cache', section: 'nav.section.system' },
     { path: '/settings', label: 'nav.settings', page: Settings, icon: 'settings', section: 'nav.section.system' },
   ];
@@ -307,7 +307,7 @@
         <div class="notice warn banner" data-testid="maintenance-app-banner">
           <strong>{t('nav.banner.maintenance.title')}</strong>
           {t('nav.banner.maintenance.body', { reason: info.maintenance.reason })}
-          <a href="#/cluster">{t('nav.banner.maintenance.link')}</a><HelpButton id="maintenance" />
+          <a href="#/cluster">{t('nav.cluster')}</a><HelpButton id="maintenance" />
         </div>
       {/if}
       {#key current.path}

@@ -26,21 +26,21 @@
   const s = $derived(d.summary);
   const scopeLabel = $derived(
     d.scope.startsWith('node:')
-      ? (d.nodes.find((n) => `node:${n.nodeId}` === d.scope)?.site ?? t('dashboard.oneNode'))
+      ? (d.nodes.find((n) => `node:${n.nodeId}` === d.scope)?.site ?? t('legacy.oneNode'))
       : d.scope.startsWith('site:')
-        ? t('dashboard.siteLabel', { site: d.scope.slice(5) })
-        : t('dashboard.everyNode'),
+        ? t('legacy.siteLabel', { site: d.scope.slice(5) })
+        : t('legacy.everyNode'),
   );
 
   const lists = $derived([
     {
-      title: t('dashboard.topDomains'),
+      title: t('legacy.topDomains'),
       items: d.topDomains,
       kind: 'domains' as const,
       link: (k: string, merged: boolean) => href('/queries', { name: k, match: merged ? 'substring' : 'exact' }),
     },
     {
-      title: t('dashboard.topBlocked'),
+      title: t('legacy.topBlocked'),
       items: d.topBlocked,
       kind: 'blocked' as const,
       link: (k: string, merged: boolean) => href('/queries', { name: k, match: merged ? 'substring' : 'exact', status: 'blocked' }),
@@ -55,28 +55,28 @@
   const hasGroups = $derived(d.groupSeries.length > 1 || (d.groupSeries.length === 1 && d.groupSeries[0].label !== 'default'));
   const views = $derived([
     { id: 'totals' as View, name: t('dashboard.view.totals') },
-    { id: 'status' as View, name: t('dashboard.view.status') },
-    ...(d.advanced ? [...(hasGroups ? [{ id: 'group' as View, name: t('dashboard.view.groups') }] : []), { id: 'upstream' as View, name: t('dashboard.view.upstream') }] : []),
+    { id: 'status' as View, name: t('cluster.col.status') },
+    ...(d.advanced ? [...(hasGroups ? [{ id: 'group' as View, name: t('nav.groups') }] : []), { id: 'upstream' as View, name: t('flow.stage.upstream') }] : []),
   ]);
   const shown = $derived(views.some((v) => v.id === view) ? view : 'totals');
   const chart = $derived(
     shown === 'status'
-      ? { title: t('dashboard.chart.queriesByStatus'), series: d.statusSeries, mode: 'stack' as const }
+      ? { title: t('legacy.chartQueriesByStatus'), series: d.statusSeries, mode: 'stack' as const }
       : shown === 'group'
-        ? { title: t('dashboard.chart.trafficByGroup'), series: d.groupSeries, mode: 'stack' as const }
+        ? { title: t('legacy.chartTrafficByGroup'), series: d.groupSeries, mode: 'stack' as const }
         : shown === 'upstream'
-          ? { title: t('dashboard.chart.upstreamExchanges'), series: d.upstreamSeries, mode: 'area' as const }
-          : { title: t('dashboard.queries'), series: [d.totalSeries, d.blockedSeries], mode: 'area' as const },
+          ? { title: t('legacy.chartUpstreamExchanges'), series: d.upstreamSeries, mode: 'area' as const }
+          : { title: t('legacy.queries'), series: [d.totalSeries, d.blockedSeries], mode: 'area' as const },
   );
 
   // The cache number, split the way the Advanced view splits it (DNS-007).
   const cacheSub = $derived(
     d.advanced && d.refreshedPercent != null && (s?.refreshed ?? 0) > 0
-      ? t('dashboard.cacheFreshRefreshed', {
+      ? t('legacy.cacheFreshRefreshed', {
           fresh: pct((s?.cacheHitPercent ?? 0) - d.refreshedPercent),
           refreshed: pct(d.refreshedPercent),
         })
-      : t('dashboard.cacheAnswers', { answers: short(s?.cached) }),
+      : t('legacy.cacheAnswers', { answers: short(s?.cached) }),
   );
 
   // Service level (OBS-016). Read through functions, not module-level tables: the words follow the
@@ -87,19 +87,19 @@
     name === 'availability' ? t('dashboard.slo.availability') : name === 'latency' ? t('dashboard.slo.latency') : name;
   const sloAlert = (name: string | null | undefined): { text: string; tone: string; tip: string } | null =>
     name === 'fast'
-      ? { text: t('dashboard.slo.alert.fast'), tone: 'bad', tip: t('dashboard.slo.alert.fastTip') }
+      ? { text: t('slo.alert.fast'), tone: 'bad', tip: t('slo.alert.fastTip') }
       : name === 'slow'
-        ? { text: t('dashboard.slo.alert.slow'), tone: 'bad', tip: t('dashboard.slo.alert.slowTip') }
+        ? { text: t('slo.alert.slow'), tone: 'bad', tip: t('slo.alert.slowTip') }
         : name === 'ticket'
-          ? { text: t('dashboard.slo.alert.ticket'), tone: 'warn', tip: t('dashboard.slo.alert.ticketTip') }
+          ? { text: t('slo.alert.ticket'), tone: 'warn', tip: t('slo.alert.ticketTip') }
           : null;
   const sloPct = (v: number | null | undefined, digits = 2) => (v == null ? '–' : `${v.toFixed(v >= 99.995 || v === 0 ? 0 : digits)}%`);
   const budgetTone = (v: number | null | undefined) => (v == null ? '' : v >= 50 ? 'ok' : v >= 25 ? 'warn' : 'bad');
   const burnText = (b: S['SloBurn']) => (b.rate == null ? '–' : `${b.rate >= 10 ? b.rate.toFixed(0) : b.rate.toFixed(1)}×`);
   const burnTip = (b: S['SloBurn']) =>
     b.rate == null
-      ? t('dashboard.slo.burn.none', { window: b.window })
-      : t('dashboard.slo.burn.some', { window: b.window, bad: short(b.bad), total: short(b.total) });
+      ? t('slo.burn.none', { window: b.window })
+      : t('slo.burn.some', { window: b.window, bad: short(b.bad), total: short(b.total) });
 
   // Where time goes (OBS-030): what each row means (path/transport, or a wait stage).
   let timeView = $state<'table' | 'heatmap'>('table');
@@ -107,31 +107,31 @@
     path === 'cache'
       ? t('dashboard.path.cache')
       : path === 'upstream'
-        ? t('dashboard.path.upstream')
+        ? t('legacy.path.upstream')
         : path === 'local'
-          ? t('dashboard.path.local')
+          ? t('legacy.path.local')
           : path === 'synthesized'
-            ? t('dashboard.path.synthesized')
-            : t('dashboard.path.fallback');
+            ? t('legacy.path.synthesized')
+            : t('legacy.path.fallback');
   const protoOf = (proto: string) =>
     proto === 'udp'
-      ? t('dashboard.proto.udp')
+      ? t('legacy.proto.udp')
       : proto === 'tcp'
-        ? t('dashboard.proto.tcp')
+        ? t('legacy.proto.tcp')
         : proto === 'dot'
-          ? t('dashboard.proto.dot')
+          ? t('legacy.proto.dot')
           : proto === 'doh'
-            ? t('dashboard.proto.doh')
+            ? t('legacy.proto.doh')
             : '';
   const pathTip = (key: string) => {
     if (key.startsWith('wait: ')) {
       const what = key.slice(6);
-      return what === 'upstream' ? t('dashboard.path.waitUpstream') : t('dashboard.path.wait', { what });
+      return what === 'upstream' ? t('legacy.path.waitUpstream') : t('legacy.path.wait', { what });
     }
     const [path, proto] = key.split('/');
     const p = pathOf(path);
     const pr = proto ? protoOf(proto) : '';
-    return pr ? t('dashboard.path.over', { path: p, proto: pr }) : p;
+    return pr ? t('legacy.path.over', { path: p, proto: pr }) : p;
   };
   const timeRows = $derived([...d.byPath, ...d.stages.map((x) => ({ ...x, key: `wait: ${x.key}` }))]);
 
@@ -159,26 +159,26 @@
   <DashHead {d} />
 
   <div class="stats">
-    <div class="cell" data-testid="stat-queries"><Stat label={t('dashboard.queries')} value={short(s?.queries)} delta={change(s?.queries, d.previous?.queries)} sub={`${t('dashboard.lastRange', { range: d.range.label })}${d.scope ? ` · ${scopeLabel}` : ''}`} /></div>
-    <div class="cell" data-testid="stat-blocked"><Stat label={t('dashboard.blocked')} value={pct(s?.blockedPercent)} delta={change(s?.blockedPercent, d.previous?.blockedPercent)} sub={t('dashboard.blockedQueries', { queries: short(s?.blocked) })} /></div>
-    <div class="cell" data-testid="stat-cache"><Stat label={t('dashboard.cacheHits')} value={pct(s?.cacheHitPercent)} delta={change(s?.cacheHitPercent, d.previous?.cacheHitPercent)} good="up" sub={cacheSub} /></div>
-    <div class="cell" data-testid="stat-upstream"><Stat label={t('dashboard.upstreamP90')} value={ms(d.upstreamP90?.p90Ms)} sub={d.cacheP50 ? t('dashboard.cacheP50', { value: ms(d.cacheP50.p50Ms) }) : t('dashboard.thisHour')} delta={change(d.upstreamP90?.p90Ms, d.prevP90?.p90Ms)} good="down" /></div>
-    <div class="cell" data-testid="stat-clients"><Stat label={t('dashboard.activeClients')} value={num(s?.activeClients)} sub={d.rangeLabel} /></div>
+    <div class="cell" data-testid="stat-queries"><Stat label={t('legacy.queries')} value={short(s?.queries)} delta={change(s?.queries, d.previous?.queries)} sub={`${t('legacy.lastRange', { range: d.range.label })}${d.scope ? ` · ${scopeLabel}` : ''}`} /></div>
+    <div class="cell" data-testid="stat-blocked"><Stat label={t('legacy.blocked')} value={pct(s?.blockedPercent)} delta={change(s?.blockedPercent, d.previous?.blockedPercent)} sub={t('legacy.blockedQueries', { queries: short(s?.blocked) })} /></div>
+    <div class="cell" data-testid="stat-cache"><Stat label={t('legacy.cacheHits')} value={pct(s?.cacheHitPercent)} delta={change(s?.cacheHitPercent, d.previous?.cacheHitPercent)} good="up" sub={cacheSub} /></div>
+    <div class="cell" data-testid="stat-upstream"><Stat label={t('legacy.upstreamP90')} value={ms(d.upstreamP90?.p90Ms)} sub={d.cacheP50 ? t('legacy.cacheP50', { value: ms(d.cacheP50.p50Ms) }) : t('legacy.thisHour')} delta={change(d.upstreamP90?.p90Ms, d.prevP90?.p90Ms)} good="down" /></div>
+    <div class="cell" data-testid="stat-clients"><Stat label={t('legacy.activeClients')} value={num(s?.activeClients)} sub={d.rangeLabel} /></div>
   </div>
   <p class="fine muted small">{t('dashboard.nxdomainLine', { nxdomain: short(s?.nxdomain), servfail: short(s?.servfail), range: d.range.label })}</p>
 
   {#if d.advanced}
-    <section class="slo sec" data-testid="slo-card" aria-label={t('dashboard.slo.heading')}>
+    <section class="slo sec" data-testid="slo-card" aria-label={t('slo.title')}>
       <div class="sh">
-        <h2>{t('dashboard.slo.heading')} {#if d.slo?.enabled}<span class="muted small">{sloWindow(d.slo.windowDays)}</span>{/if}<HelpButton id="slo" /></h2>
+        <h2>{t('slo.title')} {#if d.slo?.enabled}<span class="muted small">{sloWindow(d.slo.windowDays)}</span>{/if}<HelpButton id="slo" /></h2>
       </div>
       {#if !d.slo}
         <p class="muted small">{t('common.loading')}</p>
       {:else if !d.slo.enabled}
-        <p class="muted small">{t('dashboard.slo.off')}<code>[slo] enabled = false</code>{t('dashboard.slo.offEnd')}</p>
+        <p class="muted small">{t('slo.off')}<code>[slo] enabled = false</code>{t('slo.offEnd')}</p>
       {:else}
         {#if d.slo.missingNodes?.length}
-          <p class="small muted">{t('dashboard.slo.missing', { nodes: d.slo.missingNodes.join(', ') })}</p>
+          <p class="small muted">{t('slo.missing', { nodes: d.slo.missingNodes.join(', ') })}</p>
         {/if}
         <div class="objs">
           {#each d.slo.objectives as o (o.name)}
@@ -190,18 +190,18 @@
                 {#if alert}
                   <Tip text={alert.tip}><span class="badge {alert.tone}">{alert.text}</span></Tip>
                 {:else if o.total > 0}
-                  <span class="badge ok">{t('dashboard.slo.onTrack')}</span>
+                  <span class="badge ok">{t('slo.onTrack')}</span>
                 {/if}
               </div>
-              <div class="muted small">{t('dashboard.slo.target', { means: o.goodMeans, target: o.targetPercent })}</div>
-              <div class="fig"><b>{sloPct(o.sliPercent, 3)}</b> <span class="muted small">{t('dashboard.slo.ofAnswers', { answers: short(o.total) })}</span></div>
-              <div class="track {budgetTone(left)}" title={t('dashboard.slo.budgetTitle')}><span style:width={`${Math.max(0, Math.min(100, left ?? 0))}%`}></span></div>
+              <div class="muted small">{t('slo.target', { means: o.goodMeans, target: o.targetPercent })}</div>
+              <div class="fig"><b>{sloPct(o.sliPercent, 3)}</b> <span class="muted small">{t('slo.ofAnswers', { answers: short(o.total) })}</span></div>
+              <div class="track {budgetTone(left)}" title={t('slo.budgetTitle')}><span style:width={`${Math.max(0, Math.min(100, left ?? 0))}%`}></span></div>
               <div class="small">
-                {#if left == null}{t('dashboard.slo.noAnswers')}{:else if left < 0}{t('dashboard.slo.overspent')}{:else}{t('dashboard.slo.budgetLeft', { pct: left.toFixed(0) })}{/if}
-                · <a href={href('/analyze', { tab: 'budget', objective: o.name })} data-testid={`slo-who-${o.name}`}>{t('dashboard.slo.who')}</a>
+                {#if left == null}{t('slo.budget.none')}{:else if left < 0}{t('slo.budget.overspent')}{:else}{t('slo.budget.left', { pct: left.toFixed(0) })}{/if}
+                · <a href={href('/analyze', { tab: 'budget', objective: o.name })} data-testid={`slo-who-${o.name}`}>{t('slo.who')}</a>
               </div>
               <div class="small muted">
-                {t('dashboard.slo.burnRate')}
+                {t('slo.burnRate')}
                 {#each o.burnRates as b, i (b.window)}{i ? ' · ' : ' '}<Tip text={burnTip(b)}><span class="burn" class:hot={(b.rate ?? 0) >= 6}>{b.window} {burnText(b)}</span></Tip>{/each}
               </div>
             </div>
@@ -224,20 +224,20 @@
     <div class="pair">
       <section class="sec" class:wide={timeView === 'heatmap'}>
         <div class="sh">
-          <h2>{t('dashboard.whereTimeGoes')} {#if timeView === 'table'}<span class="muted small">{t('dashboard.thisHour')}</span>{/if}{#if timeView === 'heatmap'}<HelpButton id="latency-heatmap" />{:else}<HelpButton id="cache" />{/if}</h2>
-          <div class="seg" role="group" aria-label={t('dashboard.whereTimeGoesAs')}>
-            <button type="button" aria-pressed={timeView === 'table'} onclick={() => (timeView = 'table')}>{t('dashboard.percentiles')}</button>
-            <button type="button" aria-pressed={timeView === 'heatmap'} onclick={() => (timeView = 'heatmap')} data-testid="time-heatmap-tab">{t('dashboard.heatmap')}</button>
+          <h2>{t('legacy.whereTimeGoes')} {#if timeView === 'table'}<span class="muted small">{t('legacy.thisHour')}</span>{/if}{#if timeView === 'heatmap'}<HelpButton id="latency-heatmap" />{:else}<HelpButton id="cache" />{/if}</h2>
+          <div class="seg" role="group" aria-label={t('legacy.whereTimeGoesAs')}>
+            <button type="button" aria-pressed={timeView === 'table'} onclick={() => (timeView = 'table')}>{t('legacy.percentiles')}</button>
+            <button type="button" aria-pressed={timeView === 'heatmap'} onclick={() => (timeView = 'heatmap')} data-testid="time-heatmap-tab">{t('nav.heatmap')}</button>
           </div>
         </div>
         {#if timeView === 'heatmap'}
           <LatencyHeatmap />
         {:else if timeRows.length === 0}
-          <p class="empty">{t('dashboard.noAnswersHour')}</p>
+          <p class="empty">{t('legacy.noAnswersHour')}</p>
         {:else}
           <div class="table-wrap">
             <table class="compact times">
-              <thead><tr><th>{t('dashboard.table.path')}</th><th class="num hide-sm">{t('dashboard.table.answers')}</th><th class="num">p50</th><th class="num">p90</th><th class="num">p99</th><th class="num hide-sm">{t('dashboard.table.max')}</th></tr></thead>
+              <thead><tr><th>{t('legacy.col.path')}</th><th class="num hide-sm">{t('flow.col.answers')}</th><th class="num">p50</th><th class="num">p90</th><th class="num">p99</th><th class="num hide-sm">{t('legacy.col.max')}</th></tr></thead>
               <tbody>
                 {#each timeRows as r (r.key)}
                   <tr>
@@ -257,11 +257,11 @@
 
       <section class="sec">
         <div class="sh">
-          <h2>{t('dashboard.upstreams')}{#if otherNode} <span class="muted small">{t('dashboard.asThisNode')}</span>{/if}</h2>
-          <a href={href('/upstreams')} class="small">{t('dashboard.details')}</a>
+          <h2>{t('nav.upstreams')}{#if otherNode} <span class="muted small">{t('dashboard.asThisNode')}</span>{/if}</h2>
+          <a href={href('/upstreams')} class="small">{t('legacy.details')}</a>
         </div>
         {#if d.upstreams.length === 0}
-          <p class="empty">{t('dashboard.noUpstreams')}</p>
+          <p class="empty">{t('legacy.noUpstreams')}</p>
         {:else}
           <ul class="ups">
             {#each d.upstreams as u (u.id)}
@@ -287,9 +287,9 @@
         {#if l.kind === 'domains'}
           <div class="sh">
             <h2>{l.title} <span class="muted small">{d.topLabel}</span><HelpButton id="internal-names" /></h2>
-            <div class="seg" role="group" aria-label={t('dashboard.domainsScope')}>
-              <button type="button" aria-pressed={d.domainsView === 'internet'} onclick={() => (d.domainsView = 'internet')}>{t('dashboard.internet')}</button>
-              <button type="button" aria-pressed={d.domainsView === 'internal'} onclick={() => (d.domainsView = 'internal')} data-testid="domains-internal-tab">{t('dashboard.internal')}</button>
+            <div class="seg" role="group" aria-label={t('legacy.domainsScope')}>
+              <button type="button" aria-pressed={d.domainsView === 'internet'} onclick={() => (d.domainsView = 'internet')}>{t('legacy.internet')}</button>
+              <button type="button" aria-pressed={d.domainsView === 'internal'} onclick={() => (d.domainsView = 'internal')} data-testid="domains-internal-tab">{t('legacy.internal')}</button>
             </div>
           </div>
         {:else}

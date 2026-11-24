@@ -5,8 +5,6 @@ import type { MessageKey } from '../en';
 
 export const queries: Partial<Record<MessageKey, string>> = {
   // 标题、实时视图，以及筛选条件上方的提示。
-  'queries.title': '查询日志',
-  'queries.live': '实时',
   'queries.live.streaming': '实时接收中',
   'queries.live.connecting': '正在连接',
   'queries.live.retrying': '正在重试',
@@ -15,7 +13,6 @@ export const queries: Partial<Record<MessageKey, string>> = {
   'queries.showAllQueries': '显示全部查询',
 
   // 筛选条件：标签、匹配方式菜单，以及“非”复选框。
-  'queries.filter.name': '名称',
   'queries.filter.match': '匹配方式',
   'queries.match.substring': '包含',
   'queries.match.exact': '完全一致',
@@ -27,14 +24,11 @@ export const queries: Partial<Record<MessageKey, string>> = {
   'queries.match.notSuffix': '不是，也不在其下',
   'queries.match.notGlob': '不匹配通配符',
   'queries.match.notRegex': '不匹配正则表达式',
-  'queries.filter.client': '客户端',
   'queries.filter.clientNot': '除这台客户端以外的所有客户端',
-  'queries.filter.type': '类型',
   'queries.filter.qtypeNot': '除这些以外的所有类型',
   'queries.filter.rcode': '响应码',
   'queries.filter.rcodeNot': '除这些以外的所有响应码',
   'queries.filter.minLatency': '慢于（ms）',
-  'queries.filter.group': '分组',
   'queries.filter.any': '任意',
   'queries.filter.since': '起始时间',
   'queries.not': '非',
@@ -42,35 +36,19 @@ export const queries: Partial<Record<MessageKey, string>> = {
   'queries.clear': '清除',
 
   // 查询状态：徽标和筛选标签上的文字（发给接口的仍然是标识符本身）。
-  'queries.status.blocked': '已拦截',
   'queries.status.other': '其他',
-  'queries.status.cached': '缓存',
-  'queries.status.forwarded': '转发',
-  'queries.status.local': '本地',
   'queries.status.stale': '陈旧',
   'queries.status.refreshing': '刷新中',
-  'queries.status.refreshed': '已刷新',
   'queries.status.special': '特殊',
-  'queries.status.refused': '拒绝',
   'queries.status.servfail': '上游故障',
   'queries.status.rate_limited': '限速',
-  'queries.status.paused': '已暂停',
   'queries.status.allowed': '已放行',
   'queries.status.malformed': '格式错误',
 
   // “起始时间”菜单里的时间范围（值由接口决定，这里只有文字）。
-  'queries.range.15m': '15 分钟',
-  'queries.range.1h': '1 小时',
-  'queries.range.24h': '24 小时',
   'queries.range.7d': '7 天',
 
   // 表格：列名、行上的提示，以及没有结果时的说明。
-  'queries.col.time': '时间',
-  'queries.col.client': '客户端',
-  'queries.col.name': '名称',
-  'queries.col.type': '类型',
-  'queries.col.status': '状态',
-  'queries.col.rule': '规则',
   'queries.col.took': '耗时',
   'queries.nodeTitle': '做出应答的集群节点',
   'queries.timing': '其中上游 {upstream}（共 {total}）',
@@ -98,27 +76,18 @@ export const queries: Partial<Record<MessageKey, string>> = {
   'queries.quickRule.action': '操作',
   'queries.quickRule.allow': '放行',
   'queries.quickRule.block': '拦截',
-  'queries.quickRule.domain': '域名',
-  'queries.quickRule.for': '针对',
   'queries.quickRule.appliesTo': '适用于',
   'queries.quickRule.scopeDevice': '一台设备',
   'queries.quickRule.scopeGroup': '一个分组',
-  'queries.quickRule.scopeEveryone': '所有设备',
-  'queries.quickRule.device': '设备',
   'queries.quickRule.devicePlaceholder': '已命名的设备、IP 或网段',
-  'queries.quickRule.group': '分组',
   'queries.quickRule.forLower': '持续',
   'queries.quickRule.duration': '时长',
-  'queries.quickRule.note': '备注',
   'queries.quickRule.notePlaceholder': '备注（可选），例如：妈妈玩的游戏',
-  'queries.quickRule.saving': '正在保存…',
   'queries.quickRule.saveChanges': '保存修改',
   'queries.quickRule.save': '保存规则',
-  'queries.quickRule.saved': '已保存。',
 
   // 规则持续多久。
   'queries.duration.30m': '30 分钟',
-  'queries.duration.1h': '1 小时',
   'queries.duration.2h': '2 小时',
   'queries.duration.today': '到今晚零点',
   'queries.duration.1d': '1 天',
@@ -147,7 +116,6 @@ export const queries: Partial<Record<MessageKey, string>> = {
   'queries.seen.namedDevice': '{address} 是你的设备“',
   'queries.seen.namedDeviceEnd': '”。',
   'queries.seen.seenAsStart': '{address}（日志里显示为 ',
-  'queries.seen.seenAsEnd': '）。',
   'queries.seen.podUnknown': '这看起来像是一个本节点不认识的 Kubernetes Pod：Pod 一旦重启地址就会改变，所以请用操作员为它设定的分组，而不是这个地址。',
   'queries.seen.address': '针对地址的规则会在地址改变后失效：请在路由器里为该地址保留固定 IP，或者给设备命名，这样只需改一处，而不必改每一条规则。',
 

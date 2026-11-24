@@ -5,17 +5,11 @@ export const dashWidgets: Partial<Record<MessageKey, string>> = {
   // 延迟热力图自身的控件。
   'dashw.window': '时间窗口',
   'dashw.paths': '路径',
-  'dashw.window.1h': '1 小时',
-  'dashw.window.6h': '6 小时',
-  'dashw.window.24h': '24 小时',
-  'dashw.window.7d': '7 天',
   'dashw.path.cache': '缓存',
   'dashw.path.upstream': '上游服务器',
   'dashw.path.local': '本地名称',
   'dashw.path.synthesized': '已拦截与特殊',
   'dashw.showGrid': '网格',
-  'dashw.showTable': '表格',
-  'dashw.loading': '加载中…',
   'dashw.empty': '此时间窗口内还没有应答。',
   'dashw.time': '时间',
   // 格子上的提示，以及样例点。
@@ -31,8 +25,8 @@ export const dashWidgets: Partial<Record<MessageKey, string>> = {
   'dashw.legend.partial': '部分 {step} 数据来自较早的版本，没有延迟区间。',
   'dashw.legend.missing': '不含 {nodes}。',
   // 熔断器徽标：状态用日常说法，提示里给出熔断器模式自己的说法。
-  'dashw.breaker.closed': '健康',
   'dashw.breaker.open': '已停用',
   'dashw.breaker.halfOpen': '探测中',
   'dashw.breaker.title': '熔断器：{state}',
+  'dashw.rowOver': '> 5 秒',
 };
