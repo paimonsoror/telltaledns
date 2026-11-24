@@ -273,11 +273,17 @@ fn plan(inputs: Vec<ListInput>, threads: usize) -> io::Result<Vec<Vec<Unit>>> {
         let mut start = 0;
         let mut line = 0u32;
         for p in 0..pieces {
+            // REQ: FLT-003 — a line longer than `step` can carry a cut to the end of the data;
+            // the pieces after it are then empty.
+            if start >= data.len() {
+                break;
+            }
             let end = if p + 1 == pieces {
                 data.len()
             } else {
-                // Cut after the next newline at or past the nominal boundary.
-                let nominal = (start + step).max(start);
+                // Cut after the next newline at or past the nominal boundary, which is never
+                // past the end of the data.
+                let nominal = start.saturating_add(step).min(data.len());
                 data[nominal..]
                     .iter()
                     .position(|&b| b == b'\n')

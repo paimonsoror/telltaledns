@@ -476,3 +476,334 @@ fn flt_003_the_live_matcher_decides_like_the_finished_snapshot() {
             .is_none()
     );
 }
+
+/// What a compile produced, in a form that doesn't depend on how many FST shards it wrote:
+/// every scope's (key, list set) entries over all shards in key order, the hash of every
+/// other blob, the compile statistics (but `bytes_per_name`, which follows the sizes of the
+/// shard files), the parse statistics with their sample lines, and the regex errors.
+#[derive(Debug, PartialEq)]
+struct Canon {
+    domains: [Vec<(Vec<u8>, u64)>; 3],
+    blobs: Vec<(String, String)>,
+    stats: CompileStats,
+    parse: Vec<ParseStats>,
+    regex_errors: Vec<(String, u32, String)>,
+}
+
+fn canon(report: &CompileReport, dir: &Path) -> Canon {
+    use fst::Streamer;
+    let snap = Snapshot::open(dir).unwrap();
+    let mut domains: [Vec<(Vec<u8>, u64)>; 3] = Default::default();
+    for (entries, maps) in domains.iter_mut().zip(&snap.domains) {
+        for map in maps {
+            let mut stream = map.stream();
+            while let Some((key, value)) = stream.next() {
+                entries.push((key.to_vec(), value));
+            }
+        }
+        entries.sort();
+    }
+    let shard_file = |name: &str| {
+        crate::snapshot::SCOPE_NAMES
+            .iter()
+            .any(|s| name.starts_with(&format!("{s}-")))
+    };
+    let blobs = report
+        .manifest
+        .blobs
+        .iter()
+        .filter(|b| !shard_file(&b.name))
+        .map(|b| (b.name.clone(), b.blake3.clone()))
+        .collect();
+    let mut stats = report.manifest.stats.clone();
+    stats.bytes_per_name = 0.0;
+    Canon {
+        domains,
+        blobs,
+        stats,
+        parse: report.parse.clone(),
+        regex_errors: report.regex_errors.clone(),
+    }
+}
+
+/// Compiles `lists` (name, text) with `threads` threads into `dir/<tag>` and returns its
+/// canonical form; the snapshot directory is removed again.
+fn compile_canon(dir: &Path, tag: &str, lists: &[(&str, &[u8])], threads: usize) -> Canon {
+    let inputs = lists
+        .iter()
+        .map(|(name, text)| ListInput {
+            name: (*name).to_owned(),
+            options: ListOptions {
+                kind: ListKind::Block,
+                match_mode: ListMatch::Subtree,
+            },
+            data: ListData::Bytes(text.to_vec()),
+            source_hash: String::new(),
+            size: text.len() as u64,
+        })
+        .collect();
+    let out = dir.join(tag);
+    let opts = CompileOptions {
+        threads,
+        sync: false,
+        ..CompileOptions::default()
+    };
+    let report = compile(inputs, &out, &opts).unwrap();
+    let c = canon(&report, &out);
+    fs::remove_dir_all(&out).unwrap();
+    c
+}
+
+/// Asserts that every thread count from 2 to 8 compiles `lists` exactly as one thread does.
+fn assert_any_thread_count_compiles_alike(
+    dir: &Path,
+    what: &str,
+    lists: &[(&str, &[u8])],
+) -> Canon {
+    assert_thread_counts_compile_alike(dir, what, lists, 2..=8)
+}
+
+/// Asserts that each of `counts` compiles `lists` exactly as one thread does; returns the
+/// one-thread compile.
+fn assert_thread_counts_compile_alike(
+    dir: &Path,
+    what: &str,
+    lists: &[(&str, &[u8])],
+    counts: impl IntoIterator<Item = usize>,
+) -> Canon {
+    let one = compile_canon(dir, "t1", lists, 1);
+    for threads in counts {
+        let many = compile_canon(dir, &format!("t{threads}"), lists, threads);
+        let at = format!("{what}, {threads} threads");
+        assert_eq!(
+            many.parse, one.parse,
+            "{at}: parse statistics and sample lines"
+        );
+        assert_eq!(many.stats, one.stats, "{at}: compile statistics");
+        assert_eq!(
+            many.blobs, one.blobs,
+            "{at}: list sets, modifier rules, regexes"
+        );
+        assert_eq!(many.regex_errors, one.regex_errors, "{at}: regex errors");
+        for (scope, (m, o)) in many.domains.iter().zip(&one.domains).enumerate() {
+            assert!(
+                m == o,
+                "{at}: scope {scope} entries differ ({} vs {})",
+                m.len(),
+                o.len()
+            );
+        }
+        assert!(many == one, "{at}");
+    }
+    one
+}
+
+/// `entries` valid names (`n<i>.example<i % 7>.com`), one per line.
+fn entry_lines(entries: usize, prefix: &str) -> String {
+    (0..entries).fold(String::new(), |mut s, i| {
+        let _ = writeln!(s, "{prefix}{i}.example{}.com", i % 7);
+        s
+    })
+}
+
+/// A comment line of `len` bytes (without its newline).
+fn long_comment(len: usize) -> String {
+    let mut s = String::from("# ");
+    s.push_str(&"x".repeat(len.saturating_sub(2)));
+    s
+}
+
+const MIB: usize = 1 << 20;
+
+/// REQ: FLT-003 — a large list is cut into line-aligned pieces for the parser threads, for any
+/// thread count, when its last line is one comment that runs to the end of the file (with and
+/// without a final newline): the compile equals the one-thread compile.
+#[test]
+fn flt_003_chunked_compile_cuts_at_line_ends_for_any_thread_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    for final_newline in [true, false] {
+        let mut text = entry_lines(300, "n");
+        let room = 3 * MIB - text.len() - usize::from(final_newline);
+        text.push_str(&long_comment(room));
+        if final_newline {
+            text.push('\n');
+        }
+        assert_eq!(text.len(), 3 * MIB);
+        let what = format!("300 names then one comment to the end, final newline {final_newline}");
+        let one =
+            assert_any_thread_count_compiles_alike(tmp.path(), &what, &[("big", text.as_bytes())]);
+        let st = &one.parse[0];
+        assert_eq!((st.lines, st.rules, st.comments), (301, 300, 1), "{what}");
+        assert_eq!(one.stats.subtree_names, 300, "{what}");
+    }
+}
+
+/// Appends short lines until `text` holds `upto` bytes or more: names
+/// (`<prefix><i>.example<i % 7>.com`), each followed by a comment line of about 200 bytes.
+fn names_up_to(text: &mut String, upto: usize, prefix: &str) {
+    let filler = "c".repeat(200);
+    let mut i = 0;
+    while text.len() < upto {
+        let _ = writeln!(text, "{prefix}{i}.example{}.com\n# {filler}", i % 7);
+        i += 1;
+    }
+}
+
+/// Names up to `before` bytes, one comment line of `long` bytes, names up to 3 MiB less the
+/// last line, then `last` (which carries the final newline, if any).
+fn around_long_line(before: usize, long: usize, last: &str) -> String {
+    let mut text = String::new();
+    names_up_to(&mut text, before, "h");
+    text.push_str(&long_comment(long));
+    text.push('\n');
+    names_up_to(&mut text, 3 * MIB - last.len(), "a");
+    text.push_str(last);
+    text
+}
+
+/// The number of lines the parser sees in `text` (a final newline ends the last line).
+fn line_count(text: &str) -> u64 {
+    text.strip_suffix('\n').unwrap_or(text).split('\n').count() as u64
+}
+
+/// REQ: FLT-003 — the same wherever a line longer than a piece lies: in the first third, in
+/// the middle third, straddling the last cut, as the whole file (no newline at all), before a
+/// few last short lines, with CRLF line ends, and for a list only a little over the 1 MiB
+/// share; tiny and empty lists too.
+#[test]
+fn flt_003_chunked_compile_cuts_at_line_ends_wherever_a_long_line_lies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut just_over_share = String::new();
+    names_up_to(&mut just_over_share, 16 << 10, "h");
+    just_over_share.push_str(&long_comment(MIB));
+    just_over_share.push_str("\nnot valid! tail\n");
+    let shapes: Vec<(&str, String)> = vec![
+        (
+            "a long line in the first third",
+            around_long_line(16 << 10, MIB, "tail.example.com\n"),
+        ),
+        (
+            "a long line in the middle third",
+            around_long_line(600_000, 1_600_000, "tail.example.com\n"),
+        ),
+        (
+            "a long line straddling the last cut",
+            around_long_line(1_580_000, 950_000, "tail.example.com"),
+        ),
+        ("one line and no newline at all", long_comment(3 * MIB)),
+        (
+            "a long line, then a few last short lines",
+            around_long_line(16 << 10, 3 * MIB - 60_000, "not valid! tail"),
+        ),
+        (
+            "CRLF line ends around a long line",
+            around_long_line(16 << 10, 1_600_000, "tail.example.com\n").replace('\n', "\r\n"),
+        ),
+        ("a little over the 1 MiB share", just_over_share),
+    ];
+    for (what, text) in &shapes {
+        assert!(text.len() > MIB, "{what}");
+        let one =
+            assert_any_thread_count_compiles_alike(tmp.path(), what, &[("big", text.as_bytes())]);
+        assert_eq!(one.parse[0].lines, line_count(text), "{what}");
+    }
+    // The last short line keeps its line number.
+    let (what, text) = &shapes[4];
+    let one = compile_canon(tmp.path(), "tail", &[("big", text.as_bytes())], 4);
+    let last = u32::try_from(line_count(text)).unwrap();
+    let lines: Vec<u32> = one.parse[0].samples.iter().map(|s| s.line).collect();
+    assert_eq!(lines, vec![last], "{what}");
+    // Lists below the share are never cut.
+    for tiny in ["", "\n", "x.example.com", "x.example.com\n", "not valid!\n"] {
+        let lists = [("tiny", tiny.as_bytes())];
+        assert_thread_counts_compile_alike(tmp.path(), "a tiny list", &lists, [2, 3, 8]);
+    }
+}
+
+/// A fixed-seed xorshift64 generator (deterministic, no dependency).
+struct XorShift(u64);
+
+impl XorShift {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        usize::try_from(self.next() % (n as u64)).unwrap()
+    }
+}
+
+/// A list of about `target` bytes: mostly short lines (rules of every kind, comments, blanks,
+/// invalid and unsupported lines, a few with CRLF), sometimes lines of hundreds of KiB, and
+/// for some lists one line longer than half the file. The last line is never empty (a lone
+/// newline after the last line is a separate case, not covered here).
+fn random_list(rng: &mut XorShift, target: usize) -> String {
+    let mut text = String::with_capacity(target + 4096);
+    let giant_at = (rng.below(3) == 0).then(|| rng.below(target / 2));
+    let mut placed = false;
+    while text.len() < target {
+        if !placed && giant_at.is_some_and(|at| text.len() >= at) {
+            placed = true;
+            let len = target / 2 + rng.below(target / 4);
+            text.push_str(&long_comment(len));
+        } else {
+            let n = rng.below(5000);
+            let m = rng.below(13);
+            let line = match rng.below(1000) {
+                0..=1 => long_comment(100_000 + rng.below(500_000)),
+                2 => format!("bad line {}", "y".repeat(100_000 + rng.below(300_000))),
+                3..=299 => format!("n{n}.example{m}.com"),
+                300..=399 => format!("0.0.0.0 h{n}.example{m}.net"),
+                400..=499 => format!("||a{n}.example{m}.org^"),
+                500..=519 => format!("@@||a{n}.example{m}.org^"),
+                520..=539 => format!("||m{n}.example.org^$dnstype=AAAA"),
+                540..=541 => format!("/^r{n}[0-9]+\\./"),
+                542..=559 => format!("||a{n}.example{m}.org^$badfilter"),
+                560..=579 => format!("*.w{n}.example.com"),
+                580..=599 => format!("|e{n}.example.org^"),
+                600..=699 => format!("# comment {n}"),
+                700..=749 => format!("! comment {n}"),
+                750..=799 => String::new(),
+                800..=849 => " \t ".to_owned(),
+                850..=899 => format!("not valid! {n}"),
+                900..=949 => format!("bad..name{n}"),
+                _ => format!("example{n}.com##.ad"),
+            };
+            text.push_str(&line);
+        }
+        text.push_str(if rng.below(20) == 0 { "\r\n" } else { "\n" });
+    }
+    let _ = write!(text, "last{}.example.com", rng.below(100));
+    if rng.below(2) == 0 {
+        text.push('\n');
+    }
+    text
+}
+
+/// REQ: FLT-003 — over generated lists of 2.1 to 6 MiB with lines of any length and every kind
+/// of line, compiling with 2 to 8 threads (cut into line-aligned pieces) gives exactly what one
+/// thread gives: the same names and list sets (FST entries over all shards), the same other
+/// blobs, statistics, sample lines and line numbers. (Six lists keep it to a few seconds in a
+/// debug build; the generator makes as many as asked.)
+#[test]
+fn flt_003_chunked_compile_equals_single_thread() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
+    let small: &[u8] = b"n5.example5.com\n||other.example.net^\n||a7.example7.org^\n";
+    for case in 0..6 {
+        let target = 2_100_000 + rng.below(6 * MIB - 2_100_000);
+        let text = random_list(&mut rng, target);
+        let what = format!("generated list {case} ({} bytes)", text.len());
+        let mut lists = vec![("big", text.as_bytes())];
+        if case % 2 == 1 {
+            lists.push(("small", small));
+        }
+        let one = assert_any_thread_count_compiles_alike(tmp.path(), &what, &lists);
+        assert_eq!(one.parse[0].lines, line_count(&text), "{what}");
+    }
+}
