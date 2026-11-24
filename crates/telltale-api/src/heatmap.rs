@@ -17,6 +17,24 @@ use crate::{Shared, blocking, pick, time_param};
 /// The most slots one answer has (7 days of minutes).
 pub const MAX_SLOTS: usize = 10_080;
 
+/// The finest slot the API asks for (`grain=minute`), in seconds.
+const MIN_SLOT: u64 = 60;
+
+/// REQ: OBS-029 — how many slots of `slot` seconds `[from_s, to_s)` has, as a node answers a
+/// read: none when `to_s` isn't after `from_s`, a zero slot counting as a minute (the finest
+/// grain the API asks for), and at most [`MAX_SLOTS`]. Every window the API sends (`span`)
+/// has at most that many, so for those it is the plain count.
+#[must_use]
+pub fn window_slots(from_s: u64, to_s: u64, slot: u64) -> usize {
+    let n = to_s.saturating_sub(from_s).div_ceil(slot_secs(slot));
+    usize::try_from(n.min(MAX_SLOTS as u64)).unwrap_or(MAX_SLOTS)
+}
+
+/// A slot's seconds: a zero slot (the API never sends one) is a minute.
+fn slot_secs(slot: u64) -> u64 {
+    if slot == 0 { MIN_SLOT } else { slot }
+}
+
 /// `GET /api/v1/stats/heatmap` parameters.
 #[derive(Debug, Clone, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -54,15 +72,10 @@ pub struct NetworkQuery {
 }
 
 impl NetworkQuery {
-    /// How many slots the answer has.
+    /// How many slots the answer has ([`window_slots`]).
     #[must_use]
     pub fn slot_count(&self) -> usize {
-        usize::try_from(
-            self.to_s
-                .saturating_sub(self.from_s)
-                .div_ceil(self.slot.max(1)),
-        )
-        .unwrap_or(0)
+        window_slots(self.from_s, self.to_s, self.slot)
     }
     /// The time buckets the slots are summed from: hours for hour slots, minutes otherwise.
     #[must_use]
@@ -189,14 +202,17 @@ fn span(from: u64, to: u64, slot: u64, max: u64) -> Option<(u64, usize)> {
     Some((from_s + drop * slot, usize::try_from(n - drop).ok()?))
 }
 
-/// Sums `(start, value)` pairs into the slots of `[from_s, from_s + n × slot)`.
+/// Sums `(start, value)` pairs into the slots of `[from_s, from_s + n × slot)`: at most
+/// [`MAX_SLOTS`] of them, a zero slot counting as a minute.
 pub fn slots(
     points: impl IntoIterator<Item = (u64, u64)>,
     from_s: u64,
     slot: u64,
     n: usize,
 ) -> Vec<u64> {
-    let mut v = vec![0; n];
+    // REQ: OBS-029 — bounded for any arguments (a peer's read reaches this with its own).
+    let slot = slot_secs(slot);
+    let mut v = vec![0; n.min(MAX_SLOTS)];
     for (start, value) in points {
         if start < from_s {
             continue;
@@ -480,6 +496,98 @@ mod tests {
         add_slots(&mut sum, &part);
         add_slots(&mut sum, &part);
         assert_eq!(sum[0], 2 * 15 * 30);
+    }
+
+    // REQ: OBS-029 — whatever window and slot a caller names, a part has at most `MAX_SLOTS`
+    // slots: none when the window doesn't end after it starts, and a zero slot counts as a
+    // minute (the finest grain the API asks for).
+    #[test]
+    fn obs_029_slot_counts_are_bounded_for_any_window() {
+        let q = |from_s, to_s, slot| NetworkQuery {
+            from_s,
+            to_s,
+            slot,
+            blocked: false,
+        };
+        assert_eq!(q(0, u64::MAX, 1).slot_count(), MAX_SLOTS);
+        assert_eq!(q(0, u64::MAX, 0).slot_count(), MAX_SLOTS);
+        assert_eq!(q(0, u64::MAX, u64::MAX).slot_count(), 1);
+        assert_eq!(q(5, 0, 60).slot_count(), 0);
+        assert_eq!(q(5, 5, 60).slot_count(), 0);
+        assert_eq!(q(0, 7200, 0).slot_count(), 120);
+        let bucket = |s| crate::model::TimeBucket {
+            start_unix_seconds: s,
+            total: 2,
+            ..crate::model::TimeBucket::default()
+        };
+        let part = q(0, 7200, 0).slots_of(&[bucket(0), bucket(61), bucket(7199), bucket(7200)]);
+        assert_eq!(part.len(), 120);
+        assert_eq!((part[0], part[1], part[119]), (2, 2, 2));
+        assert_eq!(part.iter().sum::<u64>(), 6);
+        assert_eq!(slots([(30, 1)], 0, 0, usize::MAX).len(), MAX_SLOTS);
+        assert_eq!(slots([(30, 1), (90, 1)], 0, 0, 3), [1, 1, 0]);
+    }
+
+    // REQ: OBS-029 — every window the API sends (`span` of a `from < to` it accepts, for each
+    // grain) keeps the slot count it always had (span's, the plain formula's, and
+    // `slot_count`'s are one), and its points sum into the same slots.
+    #[test]
+    fn obs_029_api_windows_keep_their_slot_counts() {
+        let now = 1_791_072_000 + 37;
+        let backs = [
+            1,
+            59,
+            60,
+            61,
+            899,
+            900,
+            3599,
+            3600,
+            3601,
+            86_400,
+            7 * 86_400,
+            7 * 86_400 + 1800,
+            400 * 86_400,
+            400 * 86_400 + 1,
+        ];
+        let mut checked = 0;
+        for (slot, max_days) in [(3600u64, 400u64), (900, 7), (60, 7)] {
+            let max = ((max_days * 86_400 + 3600) / slot).min(MAX_SLOTS as u64);
+            for back in backs {
+                for to in [now, now + 1, now + slot - 1] {
+                    let Some((from_s, n)) = span(to - back, to, slot, max) else {
+                        continue;
+                    };
+                    let q = NetworkQuery {
+                        from_s,
+                        to_s: to,
+                        slot,
+                        blocked: false,
+                    };
+                    let plain = usize::try_from((to - from_s).div_ceil(slot)).unwrap();
+                    assert_eq!((q.slot_count(), plain), (n, n), "{slot} {back} {to}");
+                    // A point before the window, one at every slot's start and middle, and two past it.
+                    let mut points = vec![(from_s - 1, 7)];
+                    for i in 0..n as u64 + 2 {
+                        points.push((from_s + i * slot, i + 1));
+                        points.push((from_s + i * slot + slot / 2, 1));
+                    }
+                    let mut plain_slots = vec![0u64; n];
+                    for &(start, value) in &points {
+                        if start >= from_s
+                            && let Some(x) = plain_slots.get_mut(
+                                usize::try_from((start - from_s) / slot).unwrap_or(usize::MAX),
+                            )
+                        {
+                            *x += value;
+                        }
+                    }
+                    assert_eq!(slots(points, from_s, slot, n), plain_slots);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 80, "{checked}");
     }
 
     // REQ: OBS-029 — nodes add up; an hour is covered only when every node had the key.

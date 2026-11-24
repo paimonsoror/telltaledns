@@ -270,7 +270,11 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             from_us,
             to_us,
             limit,
-        } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
+        } => {
+            // REQ: OBS-003 — at most the API's own page (the asking node sends the API's `limit`).
+            let limit = limit.min(telltale_api::MAX_QUERY_PAGE);
+            serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?)
+        }
         Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
         Read::ConfigEntries { kind } => serde_json::to_vec(&b.config_entries(kind.as_deref())),
         Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
@@ -1704,6 +1708,9 @@ impl Backend for Federated {
         to_us: u64,
         limit: usize,
     ) -> Result<QueryPage, Problem> {
+        // REQ: OBS-003 — a node answers at most the API's page, so that is what each is asked for,
+        // and what `asked` and the merge count: a full page is then never taken as a node's last.
+        let limit = limit.min(telltale_api::MAX_QUERY_PAGE);
         let prev: Bounds = match q.cursor.as_deref() {
             None => Bounds::new(),
             Some(c) => federation::decode_cursor(Some(c)).ok_or_else(|| {
@@ -2942,6 +2949,535 @@ mod identity_tests {
 }
 
 #[cfg(test)]
+mod heatmap_read_tests {
+    use std::sync::Arc;
+
+    use telltale_api::Backend as _;
+    use telltale_api::heatmap::{KeyPart, KeyQuery, MAX_SLOTS, NetworkQuery};
+    use telltale_store::rollup::{Rollups, TopRow};
+    use telltale_telemetry::agg::Counts;
+    use telltale_telemetry::event::{Name, Record};
+
+    use super::{Read, answer};
+
+    /// 2020-09-14T00:00:00Z, a day boundary: every window below starts at or after it.
+    const DAY0: u64 = 1_600_041_600;
+    /// The node's current hour (one query in it), after every stored hour.
+    const LIVE: u64 = DAY0 + 500 * 86_400;
+
+    fn query(ts_s: u64) -> Record {
+        Record::Query(
+            telltale_telemetry::QueryEvent {
+                ts_us: ts_s * 1_000_000,
+                client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)
+                    .to_ipv6_mapped()
+                    .octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: telltale_telemetry::Status::Forwarded,
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 0,
+                t_total_us: 100,
+                t_upstream_us: 0,
+                resp_size: 64,
+                answers: 1,
+            },
+            Name::from_wire(b"\x07example\x03com\x00"),
+        )
+    }
+
+    fn row(key: &str, count: u64) -> TopRow {
+        TopRow {
+            key: key.into(),
+            count,
+            error: 0,
+        }
+    }
+
+    /// The hour `k` after `DAY0` has top lists when `k % 5 == 0`; `10.0.0.1` and `example.com`
+    /// are on them with this count (at least 1), unless `k % 10 == 0` too (then the lists lack
+    /// them: 0).
+    fn listed(k: u64) -> Option<u64> {
+        k.is_multiple_of(5)
+            .then_some(if k.is_multiple_of(10) { 0 } else { k % 50 + 1 })
+    }
+
+    /// A node with two days of minutes, then a minute every three hours to day 401 (each with
+    /// blocked queries), the hours' top lists of [`listed`], and one live query at `LIVE`.
+    fn backend(dir: &std::path::Path) -> crate::api_backend::ApiBackend {
+        let mut s = crate::http::tests::sources_in(dir);
+        let db = Arc::new(Rollups::in_memory().unwrap());
+        let minute = |t: u64| {
+            let total = u32::try_from(t / 60 % 13 + 1).unwrap();
+            let mut c = Counts {
+                total,
+                ..Counts::default()
+            };
+            c.status.fill(total / 2 + 1);
+            (t, c)
+        };
+        let mut rows: Vec<(u64, Counts)> = (0..2 * 1440).map(|m| minute(DAY0 + m * 60)).collect();
+        rows.extend((16..401 * 8).map(|i| minute(DAY0 + i * 3 * 3600 + 420)));
+        db.put_minutes(&rows).unwrap();
+        for (k, count) in (0..9_700u64).filter_map(|k| listed(k).map(|c| (k, c))) {
+            let (clients, domains) = if count == 0 {
+                (vec![row("10.0.0.2", 1)], vec![row("other.example", 1)])
+            } else {
+                (
+                    vec![row("10.0.0.1", count), row("10.0.0.2", 1)],
+                    vec![row("example.com", count), row("other.example", 1)],
+                )
+            };
+            db.put_hour_extras(
+                DAY0 + k * 3600,
+                &[("clients", clients), ("domains", domains)],
+                &[],
+            )
+            .unwrap();
+        }
+        s.rollups = Some(db);
+        s.pipeline.telemetry.aggregates().record(&query(LIVE));
+        crate::api_backend::ApiBackend { src: Arc::new(s) }
+    }
+
+    fn network(b: &crate::api_backend::ApiBackend, q: NetworkQuery) -> Vec<u64> {
+        serde_json::from_slice(&answer(b, Read::HeatmapNetwork { q }).unwrap()).unwrap()
+    }
+
+    fn key_part(
+        b: &crate::api_backend::ApiBackend,
+        from_s: u64,
+        to_s: u64,
+        kind: &str,
+        key: &str,
+    ) -> KeyPart {
+        let q = KeyQuery {
+            from_s,
+            to_s,
+            kind: kind.into(),
+            key: key.into(),
+            blocked: false,
+        };
+        serde_json::from_slice(&answer(b, Read::HeatmapKey { q }).unwrap()).unwrap()
+    }
+
+    /// REQ: OBS-029 — whatever window and slot a peer's read names, the answering node's part
+    /// has at most `MAX_SLOTS` slots: a window that doesn't end after it starts has none, a
+    /// zero slot counts as a minute (the finest grain the API asks for), and a window longer
+    /// than `MAX_SLOTS` slots is answered for its first `MAX_SLOTS`.
+    #[test]
+    fn obs_029_peer_heatmap_reads_use_bounded_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = backend(dir.path());
+        let net = |from_s, to_s, slot| {
+            network(
+                &b,
+                NetworkQuery {
+                    from_s,
+                    to_s,
+                    slot,
+                    blocked: false,
+                },
+            )
+        };
+        for slot in [1, 0, 60, 3600] {
+            assert_eq!(net(0, u64::MAX, slot).len(), MAX_SLOTS, "slot {slot}");
+        }
+        // No slot: minute slots, with the minutes' counts in them.
+        let by_minute = net(DAY0, DAY0 + 7200, 60);
+        assert_eq!(by_minute.len(), 120);
+        assert!(by_minute.iter().all(|v| *v > 0), "{by_minute:?}");
+        assert_eq!(net(DAY0, DAY0 + 7200, 0), by_minute);
+        // A window that ends before it starts, or where it starts: no slots.
+        assert_eq!(net(DAY0 + 7200, DAY0, 60), Vec::<u64>::new());
+        assert_eq!(net(u64::MAX, 0, 0), Vec::<u64>::new());
+        assert_eq!(net(DAY0, DAY0, 60), Vec::<u64>::new());
+        // A slot longer than the window: one.
+        assert_eq!(net(DAY0, DAY0 + 7200, u64::MAX).len(), 1);
+        // A device's or a name's hours.
+        for (kind, k) in [
+            ("client", "10.0.0.1"),
+            ("name", "example.com"),
+            ("other", "x"),
+        ] {
+            for (from_s, to_s) in [(10, 0), (u64::MAX, 0), (DAY0, DAY0)] {
+                let part = key_part(&b, from_s, to_s, kind, k);
+                assert!(
+                    part.values.is_empty() && part.covered.is_empty(),
+                    "{kind} {from_s}..{to_s}"
+                );
+            }
+            for (from_s, to_s) in [(0, u64::MAX), (DAY0, u64::MAX)] {
+                let part = key_part(&b, from_s, to_s, kind, k);
+                assert_eq!(
+                    (part.values.len(), part.covered.len()),
+                    (MAX_SLOTS, MAX_SLOTS),
+                    "{kind} {from_s}..{to_s}"
+                );
+            }
+        }
+        // From DAY0 on, the first MAX_SLOTS hours are the stored ones.
+        let part = key_part(&b, DAY0, u64::MAX, "client", "10.0.0.1");
+        assert_eq!(Some(part.values[5]), listed(5));
+        assert!(!part.covered[10]);
+    }
+
+    /// REQ: OBS-029 — for every window the API itself sends (its slot sizes, its windows of up
+    /// to `MAX_SLOTS` slots, aligned starts, any end), the answering node's part is exactly
+    /// what it was before parts were bounded: the slot count and the sums computed here the way
+    /// the node computed them, without a bound.
+    #[test]
+    fn obs_029_peer_heatmap_reads_match_the_api_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = backend(dir.path());
+        let unbounded_count = |from_s: u64, to_s: u64, slot: u64| {
+            usize::try_from(to_s.saturating_sub(from_s).div_ceil(slot.max(1))).unwrap_or(0)
+        };
+        let unbounded_slots = |points: &[(u64, u64)], from_s: u64, slot: u64, n: usize| {
+            let mut v = vec![0u64; n];
+            for &(start, value) in points {
+                if start < from_s {
+                    continue;
+                }
+                let i = usize::try_from((start - from_s) / slot).unwrap_or(usize::MAX);
+                if let Some(x) = v.get_mut(i) {
+                    *x += value;
+                }
+            }
+            v
+        };
+        let counts = [
+            1, 2, 3, 59, 60, 61, 96, 97, 168, 672, 673, 676, 1440, 9600, 9601, 10_079, 10_080,
+        ];
+        for (slot, max_days) in [(3600u64, 400u64), (900, 7), (60, 7)] {
+            // The API's own limit for the grain (`stats_heatmap`).
+            let api_max = ((max_days * 86_400 + 3600) / slot).min(MAX_SLOTS as u64);
+            for n in counts
+                .into_iter()
+                .filter(|n| *n <= api_max)
+                .chain([api_max])
+            {
+                // Aligned starts; ends anywhere in the last slot.
+                for (start, rest, blocked) in [(0, slot, false), (3, 1, true), (7, slot - 1, false)]
+                {
+                    let from_s = DAY0 + start * slot;
+                    let to_s = from_s + (n - 1) * slot + rest;
+                    let q = NetworkQuery {
+                        from_s,
+                        to_s,
+                        slot,
+                        blocked,
+                    };
+                    let what =
+                        format!("slot {slot}, {n} slots, {from_s}..{to_s}, blocked {blocked}");
+                    let got = network(&b, q.clone());
+                    let points: Vec<(u64, u64)> = b
+                        .timeseries(q.step(), from_s, to_s)
+                        .iter()
+                        .map(|x| {
+                            let v = if blocked {
+                                x.by_status.get("blocked").copied().unwrap_or(0)
+                            } else {
+                                x.total
+                            };
+                            (x.start_unix_seconds, u64::from(v))
+                        })
+                        .collect();
+                    let want =
+                        unbounded_slots(&points, from_s, slot, unbounded_count(from_s, to_s, slot));
+                    assert_eq!(got.len(), usize::try_from(n).unwrap(), "{what}");
+                    assert!(got == want, "{what}");
+                    assert_eq!(q.slot_count(), want.len(), "{what}");
+                }
+            }
+        }
+        // A device's or a name's hours (hour slots only, up to the API's 9,601).
+        for n in [1u64, 2, 5, 24, 168, 1000, 9600, 9601] {
+            for rest in [1, 3600] {
+                let from_s = DAY0 + 3 * 3600;
+                let to_s = from_s + (n - 1) * 3600 + rest;
+                let hours = usize::try_from((to_s - from_s).div_ceil(3600)).unwrap();
+                for (kind, k) in [("client", "10.0.0.1"), ("name", "example.com")] {
+                    let what = format!("{kind}, {n} hours, {from_s}..{to_s}");
+                    let part = key_part(&b, from_s, to_s, kind, k);
+                    assert_eq!(part.values.len(), hours, "{what}");
+                    assert_eq!(part.covered.len(), hours, "{what}");
+                    for (i, (v, c)) in part.values.iter().zip(&part.covered).enumerate() {
+                        let hour = (from_s - DAY0) / 3600 + i as u64;
+                        // No list: covered, nothing; a list without the key: not covered.
+                        let expected = match listed(hour) {
+                            None => (0, true),
+                            Some(0) => (0, false),
+                            Some(count) => (count, true),
+                        };
+                        assert_eq!((*v, *c), expected, "{what}: hour {i}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod queries_read_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use telltale_api::Backend as _;
+    use telltale_api::model::{QueryPage, QueryParams};
+    use telltale_store::qlog::{Builder, Settings};
+
+    use super::{Read, answer};
+
+    /// The API's own page size (`GET /api/v1/queries` takes `limit` 1 to 1000).
+    const API_PAGE: usize = telltale_api::MAX_QUERY_PAGE;
+    /// Rows in the test log: more than one page.
+    pub(super) const ROWS: usize = 1_100;
+
+    fn wire(name: &str) -> Vec<u8> {
+        let mut w = Vec::new();
+        for l in name.split('.') {
+            w.push(u8::try_from(l.len()).unwrap());
+            w.extend_from_slice(l.as_bytes());
+        }
+        w.push(0);
+        w
+    }
+
+    /// A node whose query log holds `ROWS` queries (`n<i>.example.com`), one every 2 s from
+    /// midnight UTC two days ago (the writer keeps 30 days by the real clock), from four
+    /// devices, every fourth blocked. Returns the backend and the first row's time (µs).
+    pub(super) fn node(dir: &std::path::Path) -> (crate::api_backend::ApiBackend, u64) {
+        let mut src = crate::http::tests::sources_in(dir);
+        src.qlog = Some(Arc::new(telltale_store::qlog::Stats::default()));
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let start = (now_s / 86_400 - 2) * 86_400;
+        let mut w = Builder::spawn(Settings {
+            dir: dir.join("qlog"),
+            node: 1,
+            privacy: 0,
+            flush_interval: Duration::from_secs(3600),
+            fsync: false,
+            retention_days: 30,
+            retention_bytes: u64::MAX,
+            rotate_after: None,
+        })
+        .unwrap();
+        for i in 0..u64::try_from(ROWS).unwrap() {
+            let event = telltale_telemetry::QueryEvent {
+                ts_us: (start + 2 * i) * 1_000_000,
+                client_ip: std::net::Ipv4Addr::new(10, 0, 0, u8::try_from(1 + i % 4).unwrap())
+                    .to_ipv6_mapped()
+                    .octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: if i.is_multiple_of(4) {
+                    telltale_telemetry::Status::Blocked
+                } else {
+                    telltale_telemetry::Status::Forwarded
+                },
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 1,
+                t_total_us: 100,
+                t_upstream_us: 50,
+                resp_size: 64,
+                answers: 1,
+            };
+            w.push(&event, &wire(&format!("n{i}.example.com")));
+        }
+        drop(w);
+        (
+            crate::api_backend::ApiBackend { src: Arc::new(src) },
+            start * 1_000_000,
+        )
+    }
+
+    /// A peer's query-log read, as the asking node sends it (`QueriesNegated` for a negated
+    /// filter), answered by `b`.
+    fn ask(
+        b: &crate::api_backend::ApiBackend,
+        params: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> Result<Vec<u8>, String> {
+        let p = Box::new(params.clone());
+        let read = if params.negates() {
+            Read::QueriesNegated {
+                params: p,
+                from_us,
+                to_us,
+                limit,
+            }
+        } else {
+            Read::Queries {
+                params: p,
+                from_us,
+                to_us,
+                limit,
+            }
+        };
+        answer(b, read)
+    }
+
+    fn page(
+        b: &crate::api_backend::ApiBackend,
+        params: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> QueryPage {
+        serde_json::from_slice(&ask(b, params, from_us, to_us, limit).unwrap()).unwrap()
+    }
+
+    /// REQ: OBS-003 — a peer's query-log read is answered with at most the API's own page of rows,
+    /// whatever `limit` it names, and its cursor goes on from there; `limit` 0, a window that
+    /// ends before it starts or starts at the end of time give an empty page, a cursor that isn't
+    /// one an error.
+    #[test]
+    fn obs_003_peer_queries_read_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (b, start_us) = node(dir.path());
+        let all = QueryParams::default();
+        for limit in [usize::MAX, 1_000_000, API_PAGE + 1] {
+            let p = page(&b, &all, 0, 0, limit);
+            assert_eq!(p.items.len(), API_PAGE, "limit {limit}");
+            assert!(p.next_cursor.is_some(), "limit {limit}: more to read");
+        }
+        // The rest, from the cursor: every row once.
+        let first = page(&b, &all, 0, 0, usize::MAX);
+        let next = QueryParams {
+            cursor: first.next_cursor.clone(),
+            ..all.clone()
+        };
+        let rest = page(&b, &next, 0, 0, usize::MAX);
+        assert_eq!(rest.items.len(), ROWS - API_PAGE);
+        let mut seen: Vec<u64> = first
+            .items
+            .iter()
+            .chain(&rest.items)
+            .map(|r| r.ts_unix_micros)
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), ROWS, "every row once");
+        // A negated filter (every row matches it) and an open end: the same bound.
+        let negated = QueryParams {
+            name: Some("nothing.example".into()),
+            name_not: Some(true),
+            ..all.clone()
+        };
+        assert_eq!(page(&b, &negated, 0, 0, usize::MAX).items.len(), API_PAGE);
+        assert_eq!(
+            page(&b, &all, 0, u64::MAX, usize::MAX).items.len(),
+            API_PAGE
+        );
+        // Nothing to read.
+        let none = |from_us, to_us, limit| page(&b, &all, from_us, to_us, limit).items.len();
+        assert_eq!(none(0, 0, 0), 0, "limit 0");
+        assert_eq!(
+            none(start_us + 100_000_000, start_us, usize::MAX),
+            0,
+            "inverted"
+        );
+        assert_eq!(none(u64::MAX, 0, usize::MAX), 0, "from the end of time");
+        let bad = QueryParams {
+            cursor: Some("not a cursor".into()),
+            ..all.clone()
+        };
+        assert!(
+            ask(&b, &bad, 0, 0, usize::MAX).is_err(),
+            "a cursor that isn't one"
+        );
+    }
+
+    /// REQ: OBS-003 — for every page the API itself asks a peer for (it sends its own `limit`,
+    /// 1 to 1000, and the window, with no cursor; the next page's window ends where each node
+    /// stopped), the answer is exactly the backend's page for that `limit`, as a node always
+    /// answered: the same bytes, for plain and negated filters, windows, and every page of a walk.
+    #[test]
+    fn obs_003_peer_queries_read_matches_the_api_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (b, start_us) = node(dir.path());
+        let filters = [
+            QueryParams::default(),
+            QueryParams {
+                status: Some("blocked".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                client: Some("10.0.0.2".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                name: Some("n1".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                status: Some("blocked".into()),
+                status_not: Some(true),
+                ..QueryParams::default()
+            },
+        ];
+        let windows = [
+            (0, 0),
+            (start_us + 300_000_000, start_us + 1_500_000_000),
+            (start_us, u64::MAX),
+        ];
+        let mut compared = 0;
+        for limit in [1, 2, 50, 100, 999, API_PAGE] {
+            for params in &filters {
+                for (from_us, to_us) in windows {
+                    let want =
+                        serde_json::to_vec(&b.queries(params, from_us, to_us, limit).unwrap())
+                            .unwrap();
+                    let got = ask(&b, params, from_us, to_us, limit).unwrap();
+                    assert!(got == want, "limit {limit}, {params:?}, {from_us}..{to_us}");
+                    compared += 1;
+                }
+            }
+        }
+        // A walk the way the asking node pages: each next read ends where the last row was.
+        for limit in [50, 333, API_PAGE] {
+            let all = QueryParams::default();
+            let (mut to_us, mut rows) = (0, 0);
+            loop {
+                let want = b.queries(&all, 0, to_us, limit).unwrap();
+                let got: QueryPage = page(&b, &all, 0, to_us, limit);
+                assert_eq!(
+                    serde_json::to_vec(&got).unwrap(),
+                    serde_json::to_vec(&want).unwrap(),
+                    "limit {limit}, to {to_us}"
+                );
+                rows += got.items.len();
+                match got.items.last() {
+                    Some(r) if got.items.len() == limit => to_us = r.ts_unix_micros,
+                    _ => break,
+                }
+                compared += 1;
+            }
+            assert_eq!(rows, ROWS, "limit {limit}: the walk reads every row");
+        }
+        assert!(compared > 90, "{compared}");
+    }
+}
+
+#[cfg(test)]
 mod anomaly_tests {
     use super::*;
 
@@ -3606,6 +4142,153 @@ mod bridge_tests {
         let none = n.fed.gather(vec![(n.primary.clone(), Read::CacheStats)]);
         assert!(none.is_empty(), "an error is no answer");
         assert_eq!(n.fed.missing_nodes(), [n.fed.label_of(&n.primary)]);
+    }
+
+    /// The asking node's own backend for the query-log test: an empty page of its own, and every
+    /// `limit` it was asked for.
+    #[derive(Default)]
+    struct RecordingLocal {
+        limits: Mutex<Vec<usize>>,
+    }
+
+    impl Backend for RecordingLocal {
+        fn system_info(&self) -> SystemInfo {
+            unreachable!("not read here")
+        }
+        fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<TimeBucket> {
+            Vec::new()
+        }
+        fn top(&self, _: TopKind, _: Hour, _: usize, _: Option<IpAddr>) -> Vec<TopItem> {
+            Vec::new()
+        }
+        fn latency(&self, _: LatencyBy, _: Hour) -> Vec<LatencyRow> {
+            Vec::new()
+        }
+        fn queries(
+            &self,
+            _: &QueryParams,
+            _: u64,
+            _: u64,
+            limit: usize,
+        ) -> Result<QueryPage, Problem> {
+            self.limits
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(limit);
+            Ok(QueryPage {
+                items: Vec::new(),
+                next_cursor: None,
+                scanned: telltale_api::model::ScanStats::default(),
+                missing_nodes: Vec::new(),
+                client_truncated: false,
+            })
+        }
+        fn explain(&self, _: &ExplainParams) -> Result<Explanation, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            Vec::new()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            Vec::new()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            Vec::new()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            Vec::new()
+        }
+        fn config_version(&self) -> u64 {
+            7
+        }
+    }
+
+    // REQ: OBS-003 — the node that asks its peers for a page of the query log asks each for at
+    // most the API's own page, whatever its caller asked, and asks its own backend for the same:
+    // a peer that answers a full page isn't taken as finished, and the next page goes on to its
+    // other rows (every row once).
+    #[test]
+    fn obs_003_the_asking_node_asks_for_at_most_the_api_page() {
+        let api_page = telltale_api::MAX_QUERY_PAGE;
+        let rows = super::queries_read_tests::ROWS;
+        let dir = tempfile::tempdir().unwrap();
+        let peer_backend = Arc::new(super::queries_read_tests::node(dir.path()).0);
+        // The primary answers query-log reads as any node does (`answer`) and keeps each `limit`.
+        let asked: Arc<Mutex<Vec<usize>>> = Arc::default();
+        let (log, b) = (Arc::clone(&asked), Arc::clone(&peer_backend));
+        let handler: RpcHandler = Arc::new(move |_peer, _kind, body| {
+            let (log, b) = (Arc::clone(&log), Arc::clone(&b));
+            Box::pin(async move {
+                let r = serde_json::from_slice::<Read>(&body).map_err(|e| e.to_string())?;
+                match &r {
+                    Read::Queries { limit, .. } | Read::QueriesNegated { limit, .. } => log
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(*limit),
+                    _ => return Err("a read this test doesn't ask".to_owned()),
+                }
+                tokio::task::spawn_blocking(move || answer(b.as_ref(), r))
+                    .await
+                    .map_err(|e| e.to_string())?
+            })
+        });
+        let n = two_nodes_answering(handler);
+        let local = Arc::new(RecordingLocal::default());
+        let shared = Arc::clone(&local);
+        let fed = Federated::new(shared, Arc::clone(&n.fed.cluster));
+        let _in = n.rt.enter();
+        let negated = QueryParams {
+            name: Some("nothing.example".into()),
+            name_not: Some(true),
+            ..QueryParams::default()
+        };
+        for limit in [5_000, usize::MAX] {
+            for params in [QueryParams::default(), negated.clone()] {
+                let what = format!("limit {limit}, negated {}", params.negates());
+                asked.lock().unwrap_or_else(PoisonError::into_inner).clear();
+                local
+                    .limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                let first = fed.queries(&params, 0, 0, limit).unwrap();
+                let next = QueryParams {
+                    cursor: first.next_cursor.clone(),
+                    ..params.clone()
+                };
+                let rest = fed.queries(&next, 0, 0, limit).unwrap();
+                let to_peer = asked.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                let to_me = local
+                    .limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                assert!(
+                    !to_peer.is_empty() && to_peer.iter().all(|l| *l <= api_page),
+                    "{what}: the peer was asked for {to_peer:?}"
+                );
+                assert_eq!(
+                    to_me.first(),
+                    to_peer.first(),
+                    "{what}: the same for this node"
+                );
+                assert_eq!(first.items.len(), api_page, "{what}");
+                assert!(
+                    first.next_cursor.is_some(),
+                    "{what}: a full page from the peer isn't its last"
+                );
+                assert_eq!(rest.items.len(), rows - api_page, "{what}");
+                let mut seen: Vec<u64> = first
+                    .items
+                    .iter()
+                    .chain(&rest.items)
+                    .map(|r| r.ts_unix_micros)
+                    .collect();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), rows, "{what}: every row once");
+            }
+        }
     }
 
     /// A primary that answers the time-bucket reads (with no buckets) and the configuration
