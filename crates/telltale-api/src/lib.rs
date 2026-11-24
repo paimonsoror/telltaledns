@@ -1718,6 +1718,13 @@ async fn queries_stream(
         .unwrap_or_else(|_| Event::default().comment("encode error"));
         Some((Ok::<_, std::convert::Infallible>(event), rx))
     });
+    // Firefox fires `open` only once a byte arrives, and an idle log can stay silent until the
+    // 15 s keep-alive: say hello at once, so the Live view reads "streaming" in every browser.
+    use futures_util::StreamExt as _;
+    let hello = futures_util::stream::once(async {
+        Ok::<_, std::convert::Infallible>(Event::default().comment("connected"))
+    });
+    let stream = hello.chain(stream);
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
         .into_response())

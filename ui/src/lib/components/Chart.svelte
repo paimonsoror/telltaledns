@@ -286,6 +286,7 @@
   <div class="plot" bind:this={wrap} bind:clientWidth={width} hidden={showTable || times.length === 0}>
     <div bind:this={el}></div>
     {#if placed.length}
+      <!-- Two changes can share a second: key by position, not by time. -->
       <div
         class="mk-layer"
         data-testid="chart-markers"
@@ -294,7 +295,7 @@
         style:width={`${box.width}px`}
         style:height={`${box.height}px`}
       >
-        {#each placed as p (p.x)}
+        {#each placed as p, i (i)}
           <button
             type="button"
             class="mk"
