@@ -270,7 +270,11 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             from_us,
             to_us,
             limit,
-        } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
+        } => {
+            // REQ: OBS-003 — at most the API's own page (the asking node sends the API's `limit`).
+            let limit = limit.min(telltale_api::MAX_QUERY_PAGE);
+            serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?)
+        }
         Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
         Read::ConfigEntries { kind } => serde_json::to_vec(&b.config_entries(kind.as_deref())),
         Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
@@ -3197,6 +3201,259 @@ mod heatmap_read_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod queries_read_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use telltale_api::Backend as _;
+    use telltale_api::model::{QueryPage, QueryParams};
+    use telltale_store::qlog::{Builder, Settings};
+
+    use super::{Read, answer};
+
+    /// The API's own page size (`GET /api/v1/queries` takes `limit` 1 to 1000).
+    const API_PAGE: usize = telltale_api::MAX_QUERY_PAGE;
+    /// Rows in the test log: more than one page.
+    const ROWS: usize = 1_100;
+
+    fn wire(name: &str) -> Vec<u8> {
+        let mut w = Vec::new();
+        for l in name.split('.') {
+            w.push(u8::try_from(l.len()).unwrap());
+            w.extend_from_slice(l.as_bytes());
+        }
+        w.push(0);
+        w
+    }
+
+    /// A node whose query log holds `ROWS` queries (`n<i>.example.com`), one every 2 s from
+    /// midnight UTC two days ago (the writer keeps 30 days by the real clock), from four
+    /// devices, every fourth blocked. Returns the backend and the first row's time (µs).
+    fn node(dir: &std::path::Path) -> (crate::api_backend::ApiBackend, u64) {
+        let mut src = crate::http::tests::sources_in(dir);
+        src.qlog = Some(Arc::new(telltale_store::qlog::Stats::default()));
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let start = (now_s / 86_400 - 2) * 86_400;
+        let mut w = Builder::spawn(Settings {
+            dir: dir.join("qlog"),
+            node: 1,
+            privacy: 0,
+            flush_interval: Duration::from_secs(3600),
+            fsync: false,
+            retention_days: 30,
+            retention_bytes: u64::MAX,
+            rotate_after: None,
+        })
+        .unwrap();
+        for i in 0..u64::try_from(ROWS).unwrap() {
+            let event = telltale_telemetry::QueryEvent {
+                ts_us: (start + 2 * i) * 1_000_000,
+                client_ip: std::net::Ipv4Addr::new(10, 0, 0, u8::try_from(1 + i % 4).unwrap())
+                    .to_ipv6_mapped()
+                    .octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: if i.is_multiple_of(4) {
+                    telltale_telemetry::Status::Blocked
+                } else {
+                    telltale_telemetry::Status::Forwarded
+                },
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 1,
+                t_total_us: 100,
+                t_upstream_us: 50,
+                resp_size: 64,
+                answers: 1,
+            };
+            w.push(&event, &wire(&format!("n{i}.example.com")));
+        }
+        drop(w);
+        (
+            crate::api_backend::ApiBackend { src: Arc::new(src) },
+            start * 1_000_000,
+        )
+    }
+
+    /// A peer's query-log read, as the asking node sends it (`QueriesNegated` for a negated
+    /// filter), answered by `b`.
+    fn ask(
+        b: &crate::api_backend::ApiBackend,
+        params: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> Result<Vec<u8>, String> {
+        let p = Box::new(params.clone());
+        let read = if params.negates() {
+            Read::QueriesNegated {
+                params: p,
+                from_us,
+                to_us,
+                limit,
+            }
+        } else {
+            Read::Queries {
+                params: p,
+                from_us,
+                to_us,
+                limit,
+            }
+        };
+        answer(b, read)
+    }
+
+    fn page(
+        b: &crate::api_backend::ApiBackend,
+        params: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> QueryPage {
+        serde_json::from_slice(&ask(b, params, from_us, to_us, limit).unwrap()).unwrap()
+    }
+
+    /// REQ: OBS-003 — a peer's query-log read is answered with at most the API's own page of rows,
+    /// whatever `limit` it names, and its cursor goes on from there; `limit` 0, a window that
+    /// ends before it starts or starts at the end of time give an empty page, a cursor that isn't
+    /// one an error.
+    #[test]
+    fn obs_003_peer_queries_read_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (b, start_us) = node(dir.path());
+        let all = QueryParams::default();
+        for limit in [usize::MAX, 1_000_000, API_PAGE + 1] {
+            let p = page(&b, &all, 0, 0, limit);
+            assert_eq!(p.items.len(), API_PAGE, "limit {limit}");
+            assert!(p.next_cursor.is_some(), "limit {limit}: more to read");
+        }
+        // The rest, from the cursor: every row once.
+        let first = page(&b, &all, 0, 0, usize::MAX);
+        let next = QueryParams {
+            cursor: first.next_cursor.clone(),
+            ..all.clone()
+        };
+        let rest = page(&b, &next, 0, 0, usize::MAX);
+        assert_eq!(rest.items.len(), ROWS - API_PAGE);
+        let mut seen: Vec<u64> = first
+            .items
+            .iter()
+            .chain(&rest.items)
+            .map(|r| r.ts_unix_micros)
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), ROWS, "every row once");
+        // A negated filter (every row matches it) and an open end: the same bound.
+        let negated = QueryParams {
+            name: Some("nothing.example".into()),
+            name_not: Some(true),
+            ..all.clone()
+        };
+        assert_eq!(page(&b, &negated, 0, 0, usize::MAX).items.len(), API_PAGE);
+        assert_eq!(
+            page(&b, &all, 0, u64::MAX, usize::MAX).items.len(),
+            API_PAGE
+        );
+        // Nothing to read.
+        let none = |from_us, to_us, limit| page(&b, &all, from_us, to_us, limit).items.len();
+        assert_eq!(none(0, 0, 0), 0, "limit 0");
+        assert_eq!(
+            none(start_us + 100_000_000, start_us, usize::MAX),
+            0,
+            "inverted"
+        );
+        assert_eq!(none(u64::MAX, 0, usize::MAX), 0, "from the end of time");
+        let bad = QueryParams {
+            cursor: Some("not a cursor".into()),
+            ..all.clone()
+        };
+        assert!(
+            ask(&b, &bad, 0, 0, usize::MAX).is_err(),
+            "a cursor that isn't one"
+        );
+    }
+
+    /// REQ: OBS-003 — for every page the API itself asks a peer for (it sends its own `limit`,
+    /// 1 to 1000, and the window, with no cursor; the next page's window ends where each node
+    /// stopped), the answer is exactly the backend's page for that `limit`, as a node always
+    /// answered: the same bytes, for plain and negated filters, windows, and every page of a walk.
+    #[test]
+    fn obs_003_peer_queries_read_matches_the_api_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (b, start_us) = node(dir.path());
+        let filters = [
+            QueryParams::default(),
+            QueryParams {
+                status: Some("blocked".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                client: Some("10.0.0.2".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                name: Some("n1".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                status: Some("blocked".into()),
+                status_not: Some(true),
+                ..QueryParams::default()
+            },
+        ];
+        let windows = [
+            (0, 0),
+            (start_us + 300_000_000, start_us + 1_500_000_000),
+            (start_us, u64::MAX),
+        ];
+        let mut compared = 0;
+        for limit in [1, 2, 50, 100, 999, API_PAGE] {
+            for params in &filters {
+                for (from_us, to_us) in windows {
+                    let want =
+                        serde_json::to_vec(&b.queries(params, from_us, to_us, limit).unwrap())
+                            .unwrap();
+                    let got = ask(&b, params, from_us, to_us, limit).unwrap();
+                    assert!(got == want, "limit {limit}, {params:?}, {from_us}..{to_us}");
+                    compared += 1;
+                }
+            }
+        }
+        // A walk the way the asking node pages: each next read ends where the last row was.
+        for limit in [50, 333, API_PAGE] {
+            let all = QueryParams::default();
+            let (mut to_us, mut rows) = (0, 0);
+            loop {
+                let want = b.queries(&all, 0, to_us, limit).unwrap();
+                let got: QueryPage = page(&b, &all, 0, to_us, limit);
+                assert_eq!(
+                    serde_json::to_vec(&got).unwrap(),
+                    serde_json::to_vec(&want).unwrap(),
+                    "limit {limit}, to {to_us}"
+                );
+                rows += got.items.len();
+                match got.items.last() {
+                    Some(r) if got.items.len() == limit => to_us = r.ts_unix_micros,
+                    _ => break,
+                }
+                compared += 1;
+            }
+            assert_eq!(rows, ROWS, "limit {limit}: the walk reads every row");
+        }
+        assert!(compared > 90, "{compared}");
     }
 }
 

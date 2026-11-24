@@ -1847,6 +1847,10 @@ fn listed(v: Option<&String>) -> bool {
     v.is_some_and(|s| s.split(',').any(|x| !x.trim().is_empty()))
 }
 
+/// REQ: OBS-003 — the most rows one query-log page has (`GET /api/v1/queries`' `limit`). A node
+/// answers another node's query-log read with at most this many too: the API never asks for more.
+pub const MAX_QUERY_PAGE: usize = 1_000;
+
 /// Search the query log.
 ///
 /// Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
@@ -1868,7 +1872,7 @@ async fn queries(
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), 0, now, "from")?;
     let to = time_param(p.to.as_deref(), 0, now, "to")?;
-    let limit = p.limit.unwrap_or(100).clamp(1, 1000);
+    let limit = p.limit.unwrap_or(100).clamp(1, MAX_QUERY_PAGE);
     if p.name_match.is_some_and(|m| m != NameMatch::Substring) && p.name.is_none() {
         return Err(Problem::invalid("`match` needs `name`"));
     }
