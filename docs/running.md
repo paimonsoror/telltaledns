@@ -53,7 +53,7 @@ docker run -d --name telltale --restart unless-stopped \
   echo 'net.ipv4.ip_unprivileged_port_start=53' | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system
   ```
   Alternatively, run the container as root with only that one capability: `--user 0:0 --cap-drop ALL --cap-add NET_BIND_SERVICE`. Adding `NET_BIND_SERVICE` while running as `65532` doesn't work, because Docker doesn't pass added capabilities to non-root users.
-- Reload with `docker kill -s HUP telltale`; stop with `docker stop` (a graceful drain, see [Stop](#stop)).
+- Reload with `sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' telltale)"` (not `docker kill -s HUP`, see [Reload in Docker](#reload-in-docker)); stop with `docker stop` (a graceful drain, see [Stop](#stop)).
 
 Build it yourself with `docker buildx build -t telltale:dev .` (add `--platform linux/amd64,linux/arm64,linux/arm/v7` for all three). The build cross-compiles, so it doesn't need QEMU.
 
@@ -96,7 +96,7 @@ curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deplo
 docker compose up -d
 docker compose exec telltale telltale auth setup-token     # then open http://<host>:8053/
 ```
-The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: `docker compose kill -s HUP`.
+The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: see [Reload in Docker](#reload-in-docker).
 
 **Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` turns it off with the recommended settings of a new install in a terminal, asks in the walk-through (step 5), and asks `[Y/n]` on a re-run or with `--yes` in a terminal; without a terminal it leaves it as it is, unless `--interactive` feeds the answers of a new install; `--disable-resolved-stub` turns it off without asking (the walk-through still asks, and its answer wins). The machine then resolves through TelltaleDNS. After turning it off the installer waits up to 15 seconds for port 53 to be free before it starts the service; if something still holds it, the installer prints what (the `ss` line, with the process) and the next step; for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
 
@@ -881,7 +881,7 @@ allow_link_local_urls = false           # true: allow list URLs on 169.254.0.0/1
 - List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
 - Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.
 - Adding, removing, or editing lists applies on reload (`SIGHUP`). `[filter]` changes need a restart.
-- To refresh every list now instead of waiting for `refresh_secs` (like `pihole -g`), send `SIGUSR1` (`kill -USR1 <pid>`, or `docker kill -s USR1 telltale`). Unchanged lists cost one conditional request each, and the filter is recompiled only if something changed.
+- To refresh every list now instead of waiting for `refresh_secs` (like `pihole -g`), send `SIGUSR1` (`kill -USR1 <pid>`, in Docker the same way as a [reload](#reload-in-docker), with `-USR1`). Unchanged lists cost one conditional request each, and the filter is recompiled only if something changed.
 
 Fetch now, outside the server (same config and data directory):
 ```sh
@@ -3727,11 +3727,20 @@ curl -s -H "Authorization: Bearer $TOKEN" http://dns.lan:8053/api/v1/audit/verif
 Keep the `head` hash somewhere else from time to time: a later `verify` with a different head and fewer entries means entries were removed from the end.
 
 ## Reload without restarting
-Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`). A `SIGHUP` sent while the node is still starting is kept, and the reload runs once it is up:
+Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`; with Docker see [Reload in Docker](#reload-in-docker)). A `SIGHUP` sent while the node is still starting is kept, and the reload runs once it is up:
 - The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.
 - Applied immediately, with no dropped queries: upstreams, groups, routes, local records and hosts files, `[access]`, `[ratelimit]`, `[special]`, and `[[listen]]` (new listeners are bound before removed ones are closed).
 - Applied at the next restart (a warning names them): `[cache]`, `[telemetry]`, `[node]`. The cache is kept across reloads, so warm answers aren't lost.
 - Upstream health starts fresh after a reload and is re-learned within a few queries.
+
+### Reload in Docker
+Signal the process from the host (Linux):
+```sh
+sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' telltale)"
+# with Compose, in the folder of compose.yaml:
+sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' $(docker compose ps -q telltale))"
+```
+**Not `docker kill -s HUP` or `docker compose kill -s HUP`:** Docker marks a container signaled that way as manually stopped, whatever the signal. It keeps running, but with `restart: unless-stopped` Docker then doesn't start it after a reboot, a Docker restart, or a crash. To see whether that has happened (as root): `grep -o '"HasBeenManuallyStopped":[a-z]*' /var/lib/docker/containers/$(docker inspect -f '{{.Id}}' telltale)/config.v2.json`. `docker restart telltale` (or stopping and starting it) clears the mark. Where the host can't signal the process (Docker Desktop), use `docker restart telltale`.
 
 ## Stop
 `SIGTERM` or `SIGINT` (Ctrl-C) shuts down gracefully, also when it arrives while the node is still starting (it is kept, and the shutdown below runs once the node is up). A stop during a cluster join ends the join and stops the node at once (exit 0): it isn't ready yet, so there is nothing to drain. Otherwise:
