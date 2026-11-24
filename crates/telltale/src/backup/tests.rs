@@ -232,6 +232,97 @@ fn api_007_backup_default_name() {
     );
 }
 
+/// The header blocks the archive writes for an entry `name` of `size` bytes (a GNU long-name
+/// entry first when the name is longer than 99 bytes), made here field by field the way the
+/// format has always been written, for a size that fits.
+fn plain_head(name: &str, size: u64) -> Vec<u8> {
+    fn field(h: &mut [u8; 512], at: std::ops::Range<usize>, n: u64) {
+        let width = at.len() - 1;
+        let s = format!("{n:0width$o}");
+        h[at.start..at.start + s.len()].copy_from_slice(s.as_bytes());
+    }
+    fn block(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
+        let mut h = [0u8; 512];
+        let n = &name.as_bytes()[..name.len().min(100)];
+        h[..n.len()].copy_from_slice(n);
+        field(&mut h, 100..108, 0o600);
+        field(&mut h, 108..116, 0);
+        field(&mut h, 116..124, 0);
+        field(&mut h, 124..136, size);
+        field(&mut h, 136..148, 0);
+        h[156] = typeflag;
+        h[257..263].copy_from_slice(b"ustar\0");
+        h[263..265].copy_from_slice(b"00");
+        h[148..156].fill(b' ');
+        let sum: u64 = h.iter().map(|&b| u64::from(b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        h
+    }
+    let mut out = Vec::new();
+    if name.len() > 99 {
+        let mut long = name.as_bytes().to_vec();
+        long.push(0);
+        out.extend_from_slice(&block("././@LongLink", long.len() as u64, b'L'));
+        out.extend_from_slice(&long);
+        out.resize(out.len().next_multiple_of(512), 0);
+    }
+    out.extend_from_slice(&block(name, size, b'0'));
+    out
+}
+
+/// REQ: API-007 — an entry's size goes in the header's 12-byte field as octal digits: every
+/// size that fits (up to 8^12 - 1 bytes) is written as it always was, and a file too large
+/// for the field is refused with an error that names it, before anything of its entry is
+/// written.
+#[test]
+fn api_007_backup_header_size_field_never_overflows() {
+    let long = format!("data/qlog/{}/x.seg", "d".repeat(120));
+    let (d99, e100) = ("d".repeat(99), "e".repeat(100));
+    let names = [
+        "data/rollups.db",
+        d99.as_str(),
+        e100.as_str(),
+        long.as_str(),
+    ];
+    let writer = || TarWriter {
+        out: Vec::new(),
+        entries: Vec::new(),
+    };
+    for name in names {
+        for size in [
+            0,
+            1,
+            511,
+            512,
+            8u64.pow(11) - 1,
+            8u64.pow(11),
+            8u64.pow(12) - 1,
+        ] {
+            let mut tar = writer();
+            tar.head(name, size).unwrap();
+            assert_eq!(tar.out, plain_head(name, size), "{name}: {size}");
+        }
+    }
+    let size_field = |size| {
+        let mut tar = writer();
+        tar.head("data/rollups.db", size).unwrap();
+        tar.out[124..136].to_vec()
+    };
+    assert_eq!(size_field(8u64.pow(11) - 1), b"77777777777\0");
+    assert_eq!(size_field(8u64.pow(12) - 1), b"777777777777");
+    for name in names {
+        for size in [8u64.pow(12), 8u64.pow(12) + 1, u64::MAX] {
+            let mut tar = writer();
+            let e = tar.head(name, size).unwrap_err().to_string();
+            assert!(e.contains(name), "{name}: {e}");
+            assert!(
+                tar.out.is_empty(),
+                "{name}: nothing of the entry is written"
+            );
+        }
+    }
+}
+
 /// REQ: API-007 (T10.7) — where an archive says it came from is used only when it's a plain
 /// absolute directory: not relative, not the root, no `..`.
 #[test]

@@ -59,20 +59,41 @@ pub(crate) struct Manifest {
 
 // ------------------------------------------------------------------ tar (ustar + GNU names)
 
-fn octal(field: &mut [u8], n: u64) {
+/// The largest entry the header's 12-byte size field holds: twelve octal digits.
+const MAX_ENTRY_BYTES: u64 = 0o7777_7777_7777;
+
+/// Writes `n` into `field` as zero-padded octal digits, with a NUL after them when there's
+/// room; `false` (and the field untouched) when the digits don't fit.
+fn octal(field: &mut [u8], n: u64) -> bool {
     let s = format!("{n:0width$o}", width = field.len() - 1);
-    field[..s.len()].copy_from_slice(s.as_bytes());
+    match field.get_mut(..s.len()) {
+        Some(digits) => {
+            digits.copy_from_slice(s.as_bytes());
+            true
+        }
+        None => false,
+    }
 }
 
-fn header(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
+/// REQ: API-007 — an entry's header block; an error naming the entry when its size doesn't
+/// fit the size field (the archive never holds a size it can't read back).
+fn header(name: &str, size: u64, typeflag: u8) -> io::Result<[u8; 512]> {
     let mut h = [0u8; 512];
     let n = name.as_bytes();
     h[..n.len().min(100)].copy_from_slice(&n[..n.len().min(100)]);
-    octal(&mut h[100..108], 0o600);
-    octal(&mut h[108..116], 0);
-    octal(&mut h[116..124], 0);
-    octal(&mut h[124..136], size);
-    octal(&mut h[136..148], 0);
+    let fits = octal(&mut h[100..108], 0o600)
+        && octal(&mut h[108..116], 0)
+        && octal(&mut h[116..124], 0)
+        && octal(&mut h[124..136], size)
+        && octal(&mut h[136..148], 0);
+    if !fits {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            format!(
+                "{name} is {size} bytes, more than a backup archive entry holds ({MAX_ENTRY_BYTES} bytes)"
+            ),
+        ));
+    }
     h[156] = typeflag;
     h[257..263].copy_from_slice(b"ustar\0");
     h[263..265].copy_from_slice(b"00");
@@ -80,7 +101,7 @@ fn header(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
     let sum: u64 = h.iter().map(|&b| u64::from(b)).sum();
     let s = format!("{sum:06o}\0 ");
     h[148..156].copy_from_slice(s.as_bytes());
-    h
+    Ok(h)
 }
 
 struct TarWriter<W: Write> {
@@ -98,16 +119,18 @@ impl<W: Write> TarWriter<W> {
     }
 
     fn head(&mut self, name: &str, size: u64) -> io::Result<()> {
+        // REQ: API-007 — made first, so an entry whose size doesn't fit writes nothing.
+        let h = header(name, size, b'0')?;
         if name.len() > 99 {
             // GNU long name: a 'L' entry whose data is the name.
             let mut long = name.as_bytes().to_vec();
             long.push(0);
             self.out
-                .write_all(&header("././@LongLink", long.len() as u64, b'L'))?;
+                .write_all(&header("././@LongLink", long.len() as u64, b'L')?)?;
             self.out.write_all(&long)?;
             self.pad(long.len() as u64)?;
         }
-        self.out.write_all(&header(name, size, b'0'))
+        self.out.write_all(&h)
     }
 
     /// Streams `src` as `name`, hashing it. Exactly the size seen at open is copied: query
