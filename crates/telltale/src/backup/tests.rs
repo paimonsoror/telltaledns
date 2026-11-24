@@ -236,20 +236,21 @@ fn api_007_backup_default_name() {
 /// entry first when the name is longer than 99 bytes), made here field by field the way the
 /// format has always been written, for a size that fits.
 fn plain_head(name: &str, size: u64) -> Vec<u8> {
-    fn field(h: &mut [u8; 512], at: std::ops::Range<usize>, n: u64) {
-        let width = at.len() - 1;
+    // Octal digits, zero-padded to the field's length less one, from `start`.
+    fn field(h: &mut [u8; 512], start: usize, len: usize, n: u64) {
+        let width = len - 1;
         let s = format!("{n:0width$o}");
-        h[at.start..at.start + s.len()].copy_from_slice(s.as_bytes());
+        h[start..start + s.len()].copy_from_slice(s.as_bytes());
     }
     fn block(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
         let mut h = [0u8; 512];
         let n = &name.as_bytes()[..name.len().min(100)];
         h[..n.len()].copy_from_slice(n);
-        field(&mut h, 100..108, 0o600);
-        field(&mut h, 108..116, 0);
-        field(&mut h, 116..124, 0);
-        field(&mut h, 124..136, size);
-        field(&mut h, 136..148, 0);
+        field(&mut h, 100, 8, 0o600);
+        field(&mut h, 108, 8, 0);
+        field(&mut h, 116, 8, 0);
+        field(&mut h, 124, 12, size);
+        field(&mut h, 136, 12, 0);
         h[156] = typeflag;
         h[257..263].copy_from_slice(b"ustar\0");
         h[263..265].copy_from_slice(b"00");

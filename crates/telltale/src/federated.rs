@@ -2977,9 +2977,11 @@ mod heatmap_read_tests {
     }
 
     /// The hour `k` after `DAY0` has top lists when `k % 5 == 0`; `10.0.0.1` and `example.com`
-    /// are on them, with this count, unless `k % 10 == 0` too (then the lists lack them).
-    fn listed(k: u64) -> Option<Option<u64>> {
-        (k % 5 == 0).then(|| (k % 10 != 0).then_some(k % 50 + 1))
+    /// are on them with this count (at least 1), unless `k % 10 == 0` too (then the lists lack
+    /// them: 0).
+    fn listed(k: u64) -> Option<u64> {
+        k.is_multiple_of(5)
+            .then_some(if k.is_multiple_of(10) { 0 } else { k % 50 + 1 })
     }
 
     /// A node with two days of minutes, then a minute every three hours to day 401 (each with
@@ -2999,13 +3001,14 @@ mod heatmap_read_tests {
         let mut rows: Vec<(u64, Counts)> = (0..2 * 1440).map(|m| minute(DAY0 + m * 60)).collect();
         rows.extend((16..401 * 8).map(|i| minute(DAY0 + i * 3 * 3600 + 420)));
         db.put_minutes(&rows).unwrap();
-        for k in (0..9_700u64).filter(|k| listed(*k).is_some()) {
-            let (clients, domains) = match listed(k).flatten() {
-                Some(c) => (
-                    vec![row("10.0.0.1", c), row("10.0.0.2", 1)],
-                    vec![row("example.com", c), row("other.example", 1)],
-                ),
-                None => (vec![row("10.0.0.2", 1)], vec![row("other.example", 1)]),
+        for (k, count) in (0..9_700u64).filter_map(|k| listed(k).map(|c| (k, c))) {
+            let (clients, domains) = if count == 0 {
+                (vec![row("10.0.0.2", 1)], vec![row("other.example", 1)])
+            } else {
+                (
+                    vec![row("10.0.0.1", count), row("10.0.0.2", 1)],
+                    vec![row("example.com", count), row("other.example", 1)],
+                )
             };
             db.put_hour_extras(
                 DAY0 + k * 3600,
@@ -3068,9 +3071,9 @@ mod heatmap_read_tests {
         assert!(by_minute.iter().all(|v| *v > 0), "{by_minute:?}");
         assert_eq!(net(DAY0, DAY0 + 7200, 0), by_minute);
         // A window that ends before it starts, or where it starts: no slots.
-        assert!(net(DAY0 + 7200, DAY0, 60).is_empty());
-        assert!(net(u64::MAX, 0, 0).is_empty());
-        assert!(net(DAY0, DAY0, 60).is_empty());
+        assert_eq!(net(DAY0 + 7200, DAY0, 60), Vec::<u64>::new());
+        assert_eq!(net(u64::MAX, 0, 0), Vec::<u64>::new());
+        assert_eq!(net(DAY0, DAY0, 60), Vec::<u64>::new());
         // A slot longer than the window: one.
         assert_eq!(net(DAY0, DAY0 + 7200, u64::MAX).len(), 1);
         // A device's or a name's hours.
@@ -3097,7 +3100,7 @@ mod heatmap_read_tests {
         }
         // From DAY0 on, the first MAX_SLOTS hours are the stored ones.
         let part = key_part(&b, DAY0, u64::MAX, "client", "10.0.0.1");
-        assert_eq!(part.values[5], listed(5).flatten().unwrap());
+        assert_eq!(Some(part.values[5]), listed(5));
         assert!(!part.covered[10]);
     }
 
@@ -3175,20 +3178,21 @@ mod heatmap_read_tests {
             for rest in [1, 3600] {
                 let from_s = DAY0 + 3 * 3600;
                 let to_s = from_s + (n - 1) * 3600 + rest;
-                let want_n = usize::try_from((to_s - from_s).div_ceil(3600)).unwrap();
+                let hours = usize::try_from((to_s - from_s).div_ceil(3600)).unwrap();
                 for (kind, k) in [("client", "10.0.0.1"), ("name", "example.com")] {
                     let what = format!("{kind}, {n} hours, {from_s}..{to_s}");
                     let part = key_part(&b, from_s, to_s, kind, k);
-                    assert_eq!(part.values.len(), want_n, "{what}");
-                    assert_eq!(part.covered.len(), want_n, "{what}");
+                    assert_eq!(part.values.len(), hours, "{what}");
+                    assert_eq!(part.covered.len(), hours, "{what}");
                     for (i, (v, c)) in part.values.iter().zip(&part.covered).enumerate() {
                         let hour = (from_s - DAY0) / 3600 + i as u64;
-                        let (want_v, want_c) = match listed(hour) {
+                        // No list: covered, nothing; a list without the key: not covered.
+                        let expected = match listed(hour) {
                             None => (0, true),
-                            Some(None) => (0, false),
-                            Some(Some(count)) => (count, true),
+                            Some(0) => (0, false),
+                            Some(count) => (count, true),
                         };
-                        assert_eq!((*v, *c), (want_v, want_c), "{what}: hour {i}");
+                        assert_eq!((*v, *c), expected, "{what}: hour {i}");
                     }
                 }
             }
