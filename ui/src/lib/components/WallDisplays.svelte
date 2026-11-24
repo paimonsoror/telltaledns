@@ -4,6 +4,8 @@
   // once, when it's made.
   import { api, type S } from '../api';
   import { ago, dateTime } from '../format';
+  // REQ: API-011 — the card's own words; what the server sends stays as it is.
+  import { t } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -68,41 +70,39 @@
 </script>
 
 <section class="card" data-testid="wall-displays">
-  <h2>Wall displays<HelpButton id="wall-display" /></h2>
+  <h2>{t('settings.wall.title')}<HelpButton id="wall-display" /></h2>
   <p class="muted small">
-    A link for a screen on the wall: open it once on that screen's browser and it stays signed in, showing only the wall
-    (the traffic map, the flow, the service level, the heatmaps, and the live queries). It can't open any other page or change
-    anything. Limit it to the screen's address if you can; revoke it here to sign the screen out.
+    {t('settings.wall.about')}
   </p>
   <ErrorNote {error} />
   <form class="row" onsubmit={create}>
-    <label class="small">Name <input bind:value={name} placeholder="hallway" maxlength="64" required data-testid="display-name" /></label>
-    <label class="small">Only from <input bind:value={networks} placeholder="192.168.2.40, 10.0.0.0/24 (optional)" data-testid="display-networks" /></label>
-    <label class="small">Ends after <input bind:value={days} inputmode="numeric" placeholder="days (optional)" size="10" /></label>
-    <button class="primary" disabled={busy || !name.trim()} data-testid="display-create">Make a link</button>
+    <label class="small">{t('settings.wall.name')} <input bind:value={name} placeholder={t('settings.wall.namePlaceholder')} maxlength="64" required data-testid="display-name" /></label>
+    <label class="small">{t('settings.wall.onlyFrom')} <input bind:value={networks} placeholder={t('settings.wall.networksPlaceholder')} data-testid="display-networks" /></label>
+    <label class="small">{t('settings.wall.endsAfter')} <input bind:value={days} inputmode="numeric" placeholder={t('settings.wall.daysPlaceholder')} size="10" /></label>
+    <button class="primary" disabled={busy || !name.trim()} data-testid="display-create">{t('settings.wall.make')}</button>
   </form>
   {#if made}
     <div class="notice ok" data-testid="display-link">
-      <p><strong>{made.info.name}</strong>: open this on the wall's browser. It's shown only now.</p>
+      <p><strong>{made.info.name}</strong>{t('settings.wall.linkNote')}</p>
       <p class="mono small link">{link(made)}</p>
-      <button type="button" class="small" onclick={() => made && copy(made)}>{copied ? 'Copied' : 'Copy the link'}</button>
+      <button type="button" class="small" onclick={() => made && copy(made)}>{copied ? t('common.copied') : t('settings.wall.copyLink')}</button>
     </div>
   {/if}
   {#if items.length === 0}
-    <p class="empty">No wall displays.</p>
+    <p class="empty">{t('settings.wall.empty')}</p>
   {:else}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Only from</th><th>Made by</th><th>Last used</th><th>Ends</th><th></th></tr></thead>
+        <thead><tr><th>{t('settings.wall.colName')}</th><th>{t('settings.wall.colOnlyFrom')}</th><th>{t('settings.wall.colMadeBy')}</th><th>{t('settings.wall.colLastUsed')}</th><th>{t('settings.wall.colEnds')}</th><th></th></tr></thead>
         <tbody>
           {#each items as d (d.id)}
             <tr data-testid="display-row">
               <td><strong>{d.name}</strong></td>
-              <td class="mono small">{d.networks.length ? d.networks.join(', ') : 'anywhere'}</td>
+              <td class="mono small">{d.networks.length ? d.networks.join(', ') : t('settings.wall.anywhere')}</td>
               <td class="small">{d.owner}</td>
-              <td class="small">{d.lastUsedUnixSeconds ? ago(d.lastUsedUnixSeconds) : 'never'}</td>
-              <td class="small">{d.expiresUnixSeconds ? dateTime(d.expiresUnixSeconds) : 'when revoked'}</td>
-              <td class="num"><button class="link small danger" disabled={busy} onclick={() => revoke(d)} data-testid="display-revoke">Revoke</button></td>
+              <td class="small">{d.lastUsedUnixSeconds ? ago(d.lastUsedUnixSeconds) : t('common.never')}</td>
+              <td class="small">{d.expiresUnixSeconds ? dateTime(d.expiresUnixSeconds) : t('settings.wall.whenRevoked')}</td>
+              <td class="num"><button class="link small danger" disabled={busy} onclick={() => revoke(d)} data-testid="display-revoke">{t('settings.wall.revoke')}</button></td>
             </tr>
           {/each}
         </tbody>

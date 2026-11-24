@@ -4,6 +4,7 @@
   import { signedIn } from '../lib/session.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import AuthShell from './AuthShell.svelte';
+  import { t } from '../lib/i18n';
 
   let setupToken = $state('');
   let username = $state('admin');
@@ -15,7 +16,7 @@
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     if (password !== confirm) {
-      error = new Error('The passwords don’t match.');
+      error = new Error(t('auth.setup.mismatch'));
       return;
     }
     busy = true;
@@ -30,25 +31,24 @@
   }
 </script>
 
-<AuthShell title="Welcome to TelltaleDNS">
+<AuthShell title={t('auth.setup.title')}>
   <p class="muted">
-    Create the first admin. <code>telltale auth setup-token</code> prints the setup token (the server
-    log says which file holds it).
+    {t('auth.setup.introBefore')} <code>telltale auth setup-token</code> {t('auth.setup.introAfter')}
   </p>
   <form class="stack" onsubmit={submit}>
-    <label class="field">Setup token
+    <label class="field">{t('auth.setup.token')}
       <input name="setupToken" autocomplete="off" required bind:value={setupToken} />
     </label>
-    <label class="field">Admin username
+    <label class="field">{t('auth.setup.username')}
       <input name="username" autocomplete="username" required bind:value={username} />
     </label>
-    <label class="field">Password (at least 10 characters)
+    <label class="field">{t('auth.setup.password')}
       <input name="password" type="password" autocomplete="new-password" minlength="10" required bind:value={password} />
     </label>
-    <label class="field">Repeat password
+    <label class="field">{t('auth.setup.repeat')}
       <input name="confirm" type="password" autocomplete="new-password" minlength="10" required bind:value={confirm} />
     </label>
     <ErrorNote {error} />
-    <button class="primary" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create admin and sign in'}</button>
+    <button class="primary" type="submit" disabled={busy}>{busy ? t('auth.setup.creating') : t('auth.setup.create')}</button>
   </form>
 </AuthShell>

@@ -9,7 +9,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "types": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
     "check:help": "node scripts/check-help.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "check:i18n": "node scripts/check-i18n.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",

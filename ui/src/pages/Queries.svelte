@@ -15,15 +15,35 @@
   import { can } from '../lib/session.svelte';
   import { mayBeAt } from '../lib/deviceKeys';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
+  import { t, type MessageKey } from '../lib/i18n';
 
   const STATUSES = ['blocked', 'cached', 'refreshed', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
-  const RANGES = [
-    { v: '-15m', l: '15 min' },
-    { v: '-1h', l: '1 h' },
-    { v: '-24h', l: '24 h' },
-    { v: '-168h', l: '7 days' },
-    { v: '', l: 'All' },
-  ];
+  // A status the UI has words for reads in the language on screen; the value sent stays the
+  // identifier (in the URL and in the request).
+  const STATUS_KEY: Record<string, MessageKey> = {
+    blocked: 'queries.status.blocked',
+    cached: 'queries.status.cached',
+    forwarded: 'queries.status.forwarded',
+    local: 'queries.status.local',
+    stale: 'queries.status.stale',
+    refreshing: 'queries.status.refreshing',
+    refreshed: 'queries.status.refreshed',
+    special: 'queries.status.special',
+    refused: 'queries.status.refused',
+    servfail: 'queries.status.servfail',
+    rate_limited: 'queries.status.rate_limited',
+    paused: 'queries.status.paused',
+    allowed: 'queries.status.allowed',
+    malformed: 'queries.status.malformed',
+  };
+  const statusLabel = (s: string) => (STATUS_KEY[s] ? t(STATUS_KEY[s]) : s);
+  const RANGES = $derived([
+    { v: '-15m', l: t('queries.range.15m') },
+    { v: '-1h', l: t('queries.range.1h') },
+    { v: '-24h', l: t('queries.range.24h') },
+    { v: '-168h', l: t('queries.range.7d') },
+    { v: '', l: t('common.all') },
+  ]);
   const PAGE = 100;
 
   // The form mirrors the URL; "Search" writes it, and the URL drives loading.
@@ -127,6 +147,10 @@
   const MAX_LIVE = 500;
   let skipped = $state(0);
   let liveState = $state<'connecting' | 'open' | 'retrying'>('connecting');
+  // The words under the Live switch: what the stream is doing, in the language on screen.
+  const liveLabel = $derived(
+    liveState === 'open' ? t('queries.live.streaming') : liveState === 'connecting' ? t('queries.live.connecting') : t('queries.live.retrying'),
+  );
 
   function streamParams(): string {
     const q = query();
@@ -287,87 +311,87 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>Query log<HelpButton id="query-log" /></h1>
+    <h1>{t('queries.title')}<HelpButton id="query-log" /></h1>
     <span class="switch-track live-toggle">
-      <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />Live</label>
+      <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />{t('queries.live')}</label>
       <HelpButton id="live-view" />
-      {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveState === 'open' ? 'streaming' : liveState}</span>{/if}
+      {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveLabel}</span>{/if}
     </span>
   </div>
   {#if liveIgnores}
-    <div class="notice warn small">The live view ignores the Rcode, Since, and Group filters; it shows new queries as they happen.</div>
+    <div class="notice warn small">{t('queries.liveIgnores')}</div>
   {/if}
   {#if route.params.get('trace') && !live}
     <!-- REQ: OBS-017 — from a latency exemplar (Grafana) or an exported trace. -->
     <div class="notice small" data-testid="trace-filter">
-      The query with trace ID <code>{route.params.get('trace')}</code><HelpButton id="exemplars" />
-      <button type="button" class="link" onclick={clear}>Show all queries</button>
+      {t('queries.traceNotice')} <code>{route.params.get('trace')}</code><HelpButton id="exemplars" />
+      <button type="button" class="link" onclick={clear}>{t('queries.showAllQueries')}</button>
     </div>
   {/if}
 
   <form class="card filters" onsubmit={search}>
     <div class="fields">
-      <label class="field grow">Name
+      <label class="field grow">{t('queries.filter.name')}
         <input name="name" placeholder="ads.example.com" bind:value={name} />
       </label>
-      <label class="field">Match
+      <label class="field">{t('queries.filter.match')}
         <select name="match" bind:value={match}>
-          <option value="substring">contains</option>
-          <option value="exact">exactly</option>
-          <option value="suffix">and subdomains</option>
-          <option value="glob">wildcard (*)</option>
-          <option value="regex">regex</option>
+          <option value="substring">{t('queries.match.substring')}</option>
+          <option value="exact">{t('queries.match.exact')}</option>
+          <option value="suffix">{t('queries.match.suffix')}</option>
+          <option value="glob">{t('queries.match.glob')}</option>
+          <option value="regex">{t('queries.match.regex')}</option>
           <!-- REQ: OBS-003 (ADR-171) — the same five, negated: every query whose name does not match. -->
-          <option value="!substring">does not contain</option>
-          <option value="!exact">is not</option>
-          <option value="!suffix">is not, or under</option>
-          <option value="!glob">does not match wildcard</option>
-          <option value="!regex">does not match regex</option>
+          <option value="!substring">{t('queries.match.notSubstring')}</option>
+          <option value="!exact">{t('queries.match.notExact')}</option>
+          <option value="!suffix">{t('queries.match.notSuffix')}</option>
+          <option value="!glob">{t('queries.match.notGlob')}</option>
+          <option value="!regex">{t('queries.match.notRegex')}</option>
         </select>
       </label>
       <div class="pair">
-        <label class="field">Client
+        <label class="field">{t('queries.filter.client')}
           <input name="client" placeholder="192.168.1.20" bind:value={client} />
         </label>
-        <label class="not" title="Every client except this one"><input type="checkbox" name="clientNot" bind:checked={clientNot} />not</label>
+        <label class="not" title={t('queries.filter.clientNot')}><input type="checkbox" name="clientNot" bind:checked={clientNot} />{t('queries.not')}</label>
       </div>
       <div class="pair narrow">
-        <label class="field">Type
+        <label class="field">{t('queries.filter.type')}
           <input name="qtype" placeholder="A,AAAA" bind:value={qtype} />
         </label>
-        <label class="not" title="Every type except these"><input type="checkbox" name="qtypeNot" bind:checked={qtypeNot} />not</label>
+        <label class="not" title={t('queries.filter.qtypeNot')}><input type="checkbox" name="qtypeNot" bind:checked={qtypeNot} />{t('queries.not')}</label>
       </div>
       <div class="pair narrow">
-        <label class="field">Rcode
+        <label class="field">{t('queries.filter.rcode')}
           <input name="rcode" placeholder="NXDOMAIN" bind:value={rcode} />
         </label>
-        <label class="not" title="Every response code except these"><input type="checkbox" name="rcodeNot" bind:checked={rcodeNot} />not</label>
+        <label class="not" title={t('queries.filter.rcodeNot')}><input type="checkbox" name="rcodeNot" bind:checked={rcodeNot} />{t('queries.not')}</label>
       </div>
-      <label class="field narrow">Slower than (ms)
+      <label class="field narrow">{t('queries.filter.minLatency')}
         <input name="minLatency" type="number" min="0" bind:value={minLatency} />
       </label>
       {#if groups.length > 1}
-        <label class="field">Group
+        <label class="field">{t('queries.filter.group')}
           <select name="group" bind:value={group} onchange={() => search()}>
-            <option value="">any</option>
+            <option value="">{t('queries.filter.any')}</option>
             {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
           </select>
         </label>
       {/if}
-      <label class="field">Since
+      <label class="field">{t('queries.filter.since')}
         <select name="from" bind:value={from} onchange={() => search()}>
           {#each RANGES as r (r.v)}<option value={r.v}>{r.l}</option>{/each}
         </select>
       </label>
     </div>
     <div class="row">
-      <button type="button" class="chip" data-testid="status-not" aria-pressed={statusNot} title="Every status except the ones chosen" onclick={() => { statusNot = !statusNot; if (statuses.size) search(); }}>not</button>
+      <button type="button" class="chip" data-testid="status-not" aria-pressed={statusNot} title={t('queries.statusNot')} onclick={() => { statusNot = !statusNot; if (statuses.size) search(); }}>{t('queries.not')}</button>
       {#each STATUSES as s (s)}
-        <button type="button" class="chip" aria-pressed={statuses.has(s)} onclick={() => toggleStatus(s)}>{s}</button>
+        <button type="button" class="chip" aria-pressed={statuses.has(s)} onclick={() => toggleStatus(s)}>{statusLabel(s)}</button>
       {/each}
       <span class="spacer"></span>
-      <button type="button" onclick={clear}>Clear</button>
-      <button type="submit" class="primary">Search</button>
+      <button type="button" onclick={clear}>{t('queries.clear')}</button>
+      <button type="submit" class="primary">{t('common.search')}</button>
     </div>
   </form>
 
@@ -375,14 +399,14 @@
 
   <section class="card">
     {#if rows.length === 0 && !loading}
-      <p class="empty">No queries match.</p>
+      <p class="empty">{t('queries.empty')}</p>
     {:else}
       <div class="table-wrap">
         <table class="log">
           <thead>
             <tr>
-              <th>Time</th><th>Client</th><th>Name</th><th>Type</th><th>Status</th><th>Rule</th>
-              <th class="num">Time taken</th><th></th>
+              <th>{t('queries.col.time')}</th><th>{t('queries.col.client')}</th><th>{t('queries.col.name')}</th><th>{t('queries.col.type')}</th><th>{t('queries.col.status')}</th><th>{t('queries.col.rule')}</th>
+              <th class="num">{t('queries.col.took')}</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -390,7 +414,7 @@
               <tr>
                 <td class="nowrap" title={logDate(r.time)}>
                   {logTime(r.time)}
-                  {#if r.node}<div class="muted small" title="The cluster node that answered">{r.node}</div>{/if}
+                  {#if r.node}<div class="muted small" title={t('queries.nodeTitle')}>{r.node}</div>{/if}
                 </td>
                 <td class="nowrap">
                   <ClientChip ip={r.client} name={r.clientName} onchanged={(n) => renamed(r.client, n)} />
@@ -405,12 +429,12 @@
                 <td class="small">{#if r.list}{r.list}<div class="muted">{r.rule}</div>{:else}<span class="muted">–</span>{/if}</td>
                 <td class="num">
                   {ms(r.totalMs)}
-                  <div class="timing" title={`upstream ${ms(r.upstreamMs)} of ${ms(r.totalMs)}`}>
+                  <div class="timing" title={t('queries.timing', { upstream: ms(r.upstreamMs), total: ms(r.totalMs) })}>
                     <span class="own" style:width={`${((r.totalMs - r.upstreamMs) / maxMs) * 100}%`}></span>
                     <span class="up" style:width={`${(r.upstreamMs / maxMs) * 100}%`}></span>
                   </div>
                 </td>
-                <td><button class="link" onclick={() => explain(r)}>Why?</button></td>
+                <td><button class="link" onclick={() => explain(r)}>{t('queries.why')}</button></td>
               </tr>
             {/each}
           </tbody>
@@ -420,32 +444,32 @@
     <div class="row foot">
       <span class="muted small">
         {#if live}
-          {`${num(rows.length)} live rows (newest ${MAX_LIVE} kept)`}{#if skipped}{` · ${num(skipped)} matching queries skipped to keep up`}{/if}
+          {t('queries.foot.liveRows', { n: num(rows.length), max: MAX_LIVE })}{#if skipped}{t('queries.foot.skipped', { n: num(skipped) })}{/if}
         {:else}
-          {num(rows.length)} rows{#if missing.length}{` · not reached: ${missing.join(', ')}`}{/if}{#if scanned}{` · searched ${num(scanned.blocksRead)} of ${num(scanned.blocksTotal)} blocks in ${num(scanned.segments)} hourly files`}{/if}
+          {t('queries.foot.rows', { n: num(rows.length) })}{#if missing.length}{t('queries.foot.notReached', { names: missing.join(', ') })}{/if}{#if scanned}{t('queries.foot.searched', { read: num(scanned.blocksRead), total: num(scanned.blocksTotal), files: num(scanned.segments) })}{/if}
         {/if}
       </span>
       <span class="spacer"></span>
       {#if cursor && !live}
-        <button onclick={() => load(true)} disabled={loading}>{loading ? 'Loading…' : 'Older'}</button>
+        <button onclick={() => load(true)} disabled={loading}>{loading ? t('common.loading') : t('queries.older')}</button>
       {/if}
     </div>
   </section>
 </div>
 
 {#if why}
-  <Drawer title={`Why: ${why.name}`} onclose={() => (why = null)}>
+  <Drawer title={t('queries.whyTitle', { name: why.name })} onclose={() => (why = null)}>
     <ErrorNote error={whyError} />
     {#if explained}
       <p class="muted small">
-        Explains how this query would be handled now; lists or settings may have changed since {logTime(why.time)}.
-        Logged as <strong>{why.status}</strong>{why.list ? ` by ${why.list}` : ''}.
+        {t('queries.whyExplains', { time: logTime(why.time) })}
+        {t('queries.whyLoggedAs')} <strong>{statusLabel(why.status)}</strong>{why.list ? t('queries.whyLoggedBy', { list: why.list }) : ''}{t('queries.whyEnd')}
       </p>
       <ExplainView x={explained} />
       {#if can('operator')}
         <!-- REQ: FLT-005 (T6.12) — act on it: a quick rule for this device or its group. -->
         <section class="card quick-card">
-          <h2>Make a quick rule<HelpButton id="quick-rules" /></h2>
+          <h2>{t('queries.makeQuickRule')}<HelpButton id="quick-rules" /></h2>
           {#if configured}
             {@const pre = prefillOf(why, explained, configured)}
             <!-- REQ: FLT-005, FLT-017 (issue #73) — what a rule can name; see prefillOf. -->
@@ -460,14 +484,14 @@
               known={configured}
             />
           {:else}
-            <p class="muted small" role="status">Loading devices…</p>
+            <p class="muted small" role="status">{t('queries.loadingDevices')}</p>
           {/if}
         </section>
       {/if}
       <!-- REQ: DNS-006 (T6.13) — what the cache holds for this name, and flushing it. -->
       <div class="quick-card"><CacheCard name={why.name} compact /></div>
     {:else if !whyError}
-      <p class="muted">Loading…</p>
+      <p class="muted">{t('common.loading')}</p>
     {/if}
   </Drawer>
 {/if}

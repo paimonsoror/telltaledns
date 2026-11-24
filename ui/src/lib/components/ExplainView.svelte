@@ -2,35 +2,40 @@
   // FLT-013: why a name is or isn't blocked for a client, every matching rule, and the route.
   import type { S } from '../api';
   import { dateTime } from '../format';
+  import { t, type MessageKey } from '../i18n';
   import StatusBadge from './StatusBadge.svelte';
   import FlowDiagram from './FlowDiagram.svelte';
   import type { FlowPath } from '../help';
 
   let { x }: { x: S['Explanation'] } = $props();
 
-  const tierLabel: Record<string, string> = {
-    important_allow: 'allow (important)',
-    important_block: 'block (important)',
-    allow: 'allow',
-    block: 'block',
+  const TIER_LABEL: Record<string, MessageKey> = {
+    important_allow: 'qw.explain.tier.importantAllow',
+    important_block: 'qw.explain.tier.importantBlock',
+    allow: 'qw.explain.tier.allow',
+    block: 'qw.explain.tier.block',
   };
+  /** The words for a tier; a tier this build doesn't know yet is shown as the server said it. */
+  const tierLabel = (tier: string) => (TIER_LABEL[tier] ? t(TIER_LABEL[tier]) : tier);
 
   // REQ: FLT-013, FLT-006 (ADR-183) — how the device was recognized, when it was by its MAC address,
   // and where the MAC comes from: said as the server says it (`macFrom`), no more: "from your router"
   // only for this node's own router, "seen on this network" only for the neighbor table. Any other
   // `identifiedBy` is shown as the server says it. Without `macFrom` (a caller who may not read
   // MACs) a router's MAC is "from a router".
-  const macFromLabel: Record<string, string> = {
-    given: 'given with the question',
-    neighbor: 'seen on this network',
-    router: 'from your router',
-    peer: 'from another server in your cluster',
+  const MAC_FROM: Record<string, MessageKey> = {
+    given: 'qw.explain.macFrom.given',
+    neighbor: 'qw.explain.macFrom.neighbor',
+    router: 'qw.explain.macFrom.router',
+    peer: 'qw.explain.macFrom.peer',
   };
+  /** Where a MAC came from, in the words the server's `macFrom` means (a value we don't know stays as it is). */
+  const macFromLabel = (from: string) => (MAC_FROM[from] ? t(MAC_FROM[from]) : from);
   const by = $derived.by(() => {
     const b = x.client.identifiedBy;
     if (b !== 'router_mac' && b !== 'neighbor_mac') return b;
-    const from = x.client.macFrom ? (macFromLabel[x.client.macFrom] ?? x.client.macFrom) : b === 'router_mac' ? 'from a router' : '';
-    return from ? `its MAC address, ${from}` : 'its MAC address';
+    const from = x.client.macFrom ? macFromLabel(x.client.macFrom) : b === 'router_mac' ? t('qw.explain.macFrom.aRouter') : '';
+    return from ? t('qw.explain.by.mac', { from }) : t('qw.explain.by.macOnly');
   });
 
   // REQ: API-011 — the decision as a diagram: which way this query goes.
@@ -47,11 +52,11 @@
   );
   const detail = $derived(
     x.outcome === 'blocked' && x.block
-      ? `list ${x.block.list}`
+      ? t('qw.explain.detail.list', { list: x.block.list })
       : x.outcome === 'special'
-        ? 'a special-use name TelltaleDNS answers itself'
+        ? t('qw.explain.detail.special')
         : x.route
-          ? `upstream group ${x.route.group}`
+          ? t('qw.explain.detail.upstream', { group: x.route.group })
           : '',
   );
 </script>
@@ -63,7 +68,7 @@
       <strong>{x.summary}</strong>
     </div>
     {#if x.pausedUntilUnixSeconds}
-      <div class="muted small">Blocking is paused for this client until {dateTime(x.pausedUntilUnixSeconds)}.</div>
+      <div class="muted small">{t('qw.explain.paused', { time: dateTime(x.pausedUntilUnixSeconds) })}</div>
     {/if}
   </div>
 
@@ -72,51 +77,51 @@
   </section>
 
   <section class="card">
-    <h3>Client</h3>
+    <h3>{t('qw.explain.client')}</h3>
     <dl>
-      <dt>Address</dt>
+      <dt>{t('qw.explain.address')}</dt>
       <dd class="mono">{x.client.ip}</dd>
-      {#if x.client.mac}<dt>MAC</dt><dd><span class="mono">{x.client.mac}</span>{#if x.client.macFrom} <span class="muted small" data-testid="explain-mac-from">({macFromLabel[x.client.macFrom] ?? x.client.macFrom})</span>{/if}</dd>{/if}
-      <dt>Device</dt>
-      <dd>{x.client.device ?? 'not a configured device'} <span class="muted small" data-testid="explain-identified-by">(by {by})</span></dd>
-      <dt>Groups</dt>
+      {#if x.client.mac}<dt>MAC</dt><dd><span class="mono">{x.client.mac}</span>{#if x.client.macFrom} <span class="muted small" data-testid="explain-mac-from">{t('qw.explain.macFromSpan', { from: macFromLabel(x.client.macFrom) })}</span>{/if}</dd>{/if}
+      <dt>{t('qw.explain.device')}</dt>
+      <dd>{x.client.device ?? t('qw.explain.notConfigured')} <span class="muted small" data-testid="explain-identified-by">{t('qw.explain.identifiedBy', { by })}</span></dd>
+      <dt>{t('qw.explain.groups')}</dt>
       <dd>{x.client.groups.join(', ') || '–'}</dd>
-      <dt>Query</dt>
+      <dt>{t('qw.explain.query')}</dt>
       <dd><span class="mono">{x.name}</span> {x.qtype}</dd>
     </dl>
   </section>
 
   {#if x.block}
     <section class="card">
-      <h3>Block response</h3>
+      <h3>{t('qw.explain.blockResponse')}</h3>
       <dl>
-        <dt>List</dt>
+        <dt>{t('qw.explain.list')}</dt>
         <dd>{x.block.list}</dd>
-        <dt>Answer</dt>
+        <dt>{t('qw.explain.answer')}</dt>
         <dd>{x.block.mode} · TTL {x.block.ttlSeconds} s · EDE {x.block.edeCode}</dd>
       </dl>
     </section>
   {/if}
 
   <section class="card">
-    <h3>Matching rules</h3>
+    <h3>{t('qw.explain.matchingRules')}</h3>
     {#if !x.filter && ['local', 'special', 'refused'].includes(x.outcome)}
-      <p class="muted">Not checked: this query is answered before filtering.</p>
+      <p class="muted">{t('qw.explain.notChecked')}</p>
     {:else if !x.filter}
-      <p class="muted">No filter snapshot is loaded yet.</p>
+      <p class="muted">{t('qw.explain.noSnapshot')}</p>
     {:else if x.filter.rules.length === 0}
-      <p class="muted">No list has a rule for this name (snapshot {x.filter.snapshot ?? '–'}).</p>
+      <p class="muted">{t('qw.explain.noRule', { snapshot: x.filter.snapshot ?? '–' })}</p>
     {:else}
-      <p class="muted small">Snapshot {x.filter.snapshot ?? '–'}, in precedence order. ★ decides; dimmed lists aren't used by this client.</p>
+      <p class="muted small">{t('qw.explain.snapshot', { snapshot: x.filter.snapshot ?? '–' })}</p>
       <ul class="rules">
         {#each x.filter.rules as r, i (i)}
           <li class:winner={r.winner} class:off={!r.enabled}>
             <div class="row">
               <span class="mark">{r.winner ? '★' : ''}</span>
-              <span class="badge {r.tier.includes('allow') ? 'ok' : 'bad'}">{tierLabel[r.tier] ?? r.tier}</span>
+              <span class="badge {r.tier.includes('allow') ? 'ok' : 'bad'}">{tierLabel(r.tier)}</span>
               <strong>{r.list}</strong>
               <!-- REQ: OBS-018 — a shadow list's rule is counted, never enforced. -->
-              {#if r.shadow}<span class="badge info" title="This list is in shadow mode: it never blocks">shadow</span>{/if}
+              {#if r.shadow}<span class="badge info" title={t('qw.explain.shadowTitle')}>{t('qw.explain.shadow')}</span>{/if}
               {#if r.name}<span class="mono">{r.name}</span>{/if}
               <span class="muted small">{r.kind}{r.scope ? ` · ${r.scope}` : ''}</span>
             </div>
@@ -132,8 +137,8 @@
 
   {#if x.route}
     <section class="card">
-      <h3>Route</h3>
-      <p>Upstream group <strong>{x.route.group}</strong> {x.route.routed ? '(matched a route)' : '(default)'}</p>
+      <h3>{t('qw.explain.route')}</h3>
+      <p>{t('qw.explain.upstreamGroup')} <strong>{x.route.group}</strong> {x.route.routed ? t('qw.explain.matchedRoute') : t('qw.explain.defaultRoute')}</p>
     </section>
   {/if}
 

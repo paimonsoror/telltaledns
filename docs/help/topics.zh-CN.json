@@ -1,0 +1,845 @@
+{
+  "$comment": "REQ: API-011, ADR-036 — 每一个“？”背后的术语表（docs/help/topics.json）的简体中文版。字段与英文一一对应：id、title、term、summary、when、example、caution、diagram、docs、general；id、diagram、docs、general 必须与英文完全相同（由 check:help 校验）。",
+  "topics": [
+    {
+      "id": "how-it-works",
+      "title": "TelltaleDNS 怎样回答一个查询",
+      "term": "域名解析 (DNS resolution)",
+      "summary": "每台设备都来问 TelltaleDNS 一个名字（比如 youtube.com）在哪里；它可以从缓存回答、用你自己的名字回答、给出拦截，或者去问一台公共 DNS 服务器。",
+      "when": "先读这一条：其他每一个设置都只改变这条路径上的一步。",
+      "example": "你的电视查询 ads.example.com：它在一个拦截列表里，于是 TelltaleDNS 回答“不存在”，广告根本不会加载。",
+      "caution": "只有当你的路由器把它的地址作为 DNS 服务器下发时，设备才会用 TelltaleDNS。",
+      "diagram": "upstream",
+      "docs": "how-a-query-is-answered",
+      "general": true
+    },
+    {
+      "id": "query-log",
+      "title": "看清设备问出的每一个查询",
+      "term": "查询日志 (query log)",
+      "summary": "每一次查询的可搜索历史：哪台设备问的、问的是什么、结果如何（已应答、已拦截、来自缓存）。",
+      "when": "某个网站或应用出了毛病，或者你想知道一台设备在跟谁通信。",
+      "example": "按智能插座的地址筛选，就能看到它每小时联系十几台服务器。",
+      "caution": "日志只显示名字，不显示网页内容。保留多久由 [telemetry.qlog] retention_days 决定。",
+      "docs": "query-log"
+    },
+    {
+      "id": "traffic-map",
+      "title": "看清你的网络在访问什么",
+      "term": "流量地图 (traffic map)",
+      "summary": "每个服务、网站或名字一块方块，大小按这一小时被查询的次数决定：蓝色方块是已应答，红色是被拦截。",
+      "when": "你想一眼看到网络上的人此刻在用什么，比如挂在墙上的屏幕上。",
+      "example": "一块很大的蓝色 YouTube 方块外带脉动圈，说明流媒体是网络上最忙的事，而且还在增长。",
+      "caution": "它只显示最忙的 100 个名字和 100 个被拦截的名字，数字是近似的。手机和应用会在后台查询很多名字，所以“忙”不一定等于有人在用。",
+      "docs": "traffic-map"
+    },
+    {
+      "id": "latency-heatmap",
+      "title": "应答时间随时间的变化",
+      "term": "带样例点的延迟热力图 (latency heatmap with exemplars)",
+      "summary": "每一列是一分钟（或一小时），每一行是从 50 µs 到 5 s 以上的应答时间区间，颜色表示有多少应答落在那里。圆点是这些区间里真实查询的样例：选中一个就能在查询日志里打开它。虚线是延迟目标。",
+      "when": "某个百分位说应答变慢了；热力图能看出是少数慢查询（一条长尾）、全都变慢，还是从某一刻开始出现一条条纹（一次变更、一台上游服务器）。",
+      "example": "重启后 07:00 到 07:05 出现一条 250–500 ms 的上游服务器应答条纹，而缓存一直贴在最底部：加密连接正在预热。",
+      "caution": "区间就是 Prometheus 直方图的分桶，所以一格是一个范围，不是精确时间。圆点是抽样（每条路径每个区间每秒最多一个，每个节点保留最近 512 个），只存在内存里。",
+      "docs": "where-does-time-go"
+    },
+    {
+      "id": "heatmap",
+      "title": "事情发生在什么时候",
+      "term": "节律热力图 (rhythm heatmap)",
+      "summary": "一张按天（或典型一周）和一天中时间排布的网格，每个格子按当时被查询的数量着色：可以看整个网络、一台设备或一个名字。",
+      "when": "你想看一段时间里的模式：早晨的一阵高峰、一台从不休眠的设备、平板的睡觉时间，或者某个名字什么时候被查询。",
+      "example": "只有周四 10:00 到 14:00 有一条亮带，来自一台每两秒查询一次 pool.ntp.org 的设备。",
+      "caution": "设备和名字只按每小时的前 100 名计数：带斜线的小时表示它排在榜单之外（未知，不是零）。15 分钟和 1 分钟的格子回溯 7 天，小时的格子回溯 400 天。",
+      "docs": "heatmap"
+    },
+    {
+      "id": "flow",
+      "title": "查询都去了哪里",
+      "term": "查询流向（桑基图）(query flow, Sankey diagram)",
+      "summary": "一张图从分组经过判定（缓存、转发、拦截……）和上游服务器一直到响应码，每条带的宽度都和它的应答数量成正比。",
+      "when": "你想一眼看清比例：孩子的流量有多少被拦截、哪台上游服务器给出 SERVFAIL，或者一台设备的查询是怎么被应答的。",
+      "example": "一条从 quad9-1 到 SERVFAIL 的细红带：这一小时 1,000 个应答里有 40 个，全都来自那台上游服务器。",
+      "caution": "每条带只精确统计它自己那一对，从不按比例拆分。设备的流向来自查询日志（最多最近 24 小时）。0.5 之前的分钟没有流向统计。",
+      "docs": "flow"
+    },
+    {
+      "id": "slo-attribution",
+      "title": "是谁花掉了错误预算？",
+      "term": "错误预算归因 (error-budget attribution)",
+      "summary": "对每个服务等级目标，把窗口里的坏应答层层拆开：哪些设备和名字遇到了它们、来自哪台上游服务器、状态和响应码是什么、在哪个节点上、发生在什么时候，并把它画成剩余预算的消耗曲线。",
+      "when": "服务等级卡片说预算快用完了，你想在动手改动之前先知道为什么。",
+      "example": "15 个坏应答里有 10 个来自同一台笔记本的一个反向查询名字，由缓存以 SERVFAIL 应答；其余发生在两周前一次修复之前。",
+      "caution": "设备和名字只是近似的前 N 名（每个计数可能上下浮动）；其他列表是精确的。链接会打开查询日志，而日志保留的天数比预算窗口少。已经离开的旧节点和解析器 Pod 仍计入总数，但没有设备和名字列表。",
+      "docs": "who-spent-it"
+    },
+    {
+      "id": "change-markers",
+      "title": "每张图上都标出改了什么",
+      "term": "变更标记（注释）(change markers, annotations)",
+      "summary": "时间图上的细竖线，标出对某个节点做了什么，或者它自己做了什么：配置变更（以及它来自网页界面、API、智能体、Git 还是配置文件）、新构建、重启、改变了规则的列表刷新、滚动发布、维护模式、暂停、清空缓存、上游服务器被停用或恢复。把鼠标停在上面就能看到改了什么、是谁改的；“添加注释…”可以加上你自己的。",
+      "when": "图变了，你想知道为什么：把变更和它发生的时刻对上，而不用去翻日志。网络自己看不到的事（比如新加了一个接入点、运营商断了网）也留一条注释。",
+      "example": "在一个写着“配置 313 已应用（gitops，1 个段落改变）”的菱形之后 SERVFAIL 立刻停止：那次提交修好了它。10:05 的圆点写着“把 AP 挪到走廊（admin）”。",
+      "caution": "每个节点保留最近 20,000 条标记和 90 天。副本知道一次变更的版本以及它是否由 Git 做出，但不知道是谁：主节点的标记才写着是谁。注释不能编辑或删除；补一条更正的即可。",
+      "docs": "change-markers"
+    },
+    {
+      "id": "live-view",
+      "title": "实时看着查询发生",
+      "term": "实时流 (live tail)",
+      "summary": "新查询在被应答的那一刻就出现在这里，筛选条件和日志一样。",
+      "when": "复现问题：在设备上打开应用，看着它到底问了什么。",
+      "example": "打开只显示你手机的实时视图，打开一个应用，就能看到它查询的每一个名字。",
+      "caution": "很忙的网络只显示抽样（页面会说明跳过了多少），这样页面才跟得上。",
+      "docs": "query-log"
+    },
+    {
+      "id": "explain",
+      "title": "这个为什么被拦截（或者没被拦截）？",
+      "term": "解释 (explain)",
+      "summary": "显示一个查询对某台设备会走的精确路径：它在哪个分组、每一条匹配的规则及其列表与行号，以及应答从哪里来。",
+      "when": "不该被拦的东西被拦了，或者反过来。",
+      "example": "为 192.168.1.20 解释 ads.example.com：被 hagezi-pro 第 7102 行拦截，因为这台设备在 kids 分组里。",
+      "caution": "它解释的是现在会怎么处理这个查询；从某条日志记录之后，列表可能已经变了。",
+      "diagram": "blocked",
+      "docs": "why-was-it-blocked-explain"
+    },
+    {
+      "id": "device-timeline",
+      "title": "设备的一天",
+      "term": "设备时间线（泳道）(device timeline, swimlanes)",
+      "summary": "把一台设备在一个时间窗口里的活动画成泳道，每个它通信的域名一条，每几分钟一格：查询越多颜色越深，被拦截的带红色下划线，慢的带琥珀色刻度；下方是它的应答时间，上方是发生了什么（首次接触、异常、拦截爆发、变更）。",
+      "when": "你想知道设备上的某件事是什么时候开始的，以及当时它还在做些什么。",
+      "example": "ntp.org 那条泳道在 14:00 之前是空的，之后每 5 分钟深一格直到 18:30，14:00 处有一个空心圆点：这是它对 ntp.org 的第一次查询。",
+      "caution": "它读的是查询日志，所以只能回溯到日志保留的范围（其余是灰色），而且只有到达你所在节点的那些记录。",
+      "docs": "a-devices-day"
+    },
+    {
+      "id": "wall-display",
+      "title": "一直挂在墙上的那块屏幕",
+      "term": "墙面展示 (wall display)",
+      "summary": "给无人看管的屏幕用的链接：在它的浏览器上打开一次，就一直保持登录，只显示墙面内容（流量地图、查询流向、服务等级、热力图和实时查询）。它不能打开别的页面，也不能改任何东西。",
+      "when": "你想在走廊的显示器或架子上的平板上放这块墙面，又不想在那里留下一个登录着的账号。",
+      "example": "hallway，只允许来自 192.168.2.40：在走廊显示器上打开这个链接；在这里撤销它，显示器就回到登录页。",
+      "caution": "它会显示实时查询（设备和名字），和只读用户看到的一样。把它限制在屏幕自己的地址上，屏幕撤走时就撤销它。",
+      "docs": "wall-display"
+    },
+    {
+      "id": "rhythm",
+      "title": "它多久问一次？",
+      "term": "节律条（到达间隔直方图）(rhythm strip, inter-arrival histogram)",
+      "summary": "对一台设备通信最多的每个域名，看它的查询间隔是怎么分布的：两次查询之间的每个间隔一列，从不到一秒到两小时用对数刻度，间隔越集中颜色越深。",
+      "when": "一台设备比它该有的样子话更多，你想知道它是定时器（一个深格子）还是人（一片模糊）。",
+      "example": "一个恒温器每 2.5 s 查询一次 ntp.org：在 2.2–3.3 s 那一列有一个深格子，每小时约 1,400 次，全部由缓存应答。",
+      "caution": "它只展示节律，不做判断。只有 30 s 到 1 小时之间、持续 4 小时的新的规律节律才会成为信标发现。它需要异常检测引擎（隐私级别 0）。",
+      "docs": "a-devices-rhythm"
+    },
+    {
+      "id": "kubernetes-workloads",
+      "title": "按运行的内容给 Pod 命名",
+      "term": "把 Kubernetes 工作负载当作设备 (Kubernetes workloads as devices)",
+      "summary": "TelltaleDNS 会观察集群里的 Pod，按 Pod 所属的工作负载给每个 Pod 地址命名（media/deploy/jellyfin）：一个 Deployment 的所有副本算一台设备，所以它的查询、异常、节律和时间线在每次发布之后都还在。",
+      "when": "你在 Kubernetes 里跑应用，想看到哪个工作负载查了哪个域名，或者想给一个命名空间自己的列表。",
+      "example": "media/deploy/jellyfin 每 15 分钟访问 api.themoviedb.org；给 media 命名空间打上 telltaledns.io/group=media 标签，里面的每个 Pod 就都得到 media 分组的列表。",
+      "caution": "只有当 Pod 直接查询 TelltaleDNS 时才会显示成自己（集群的 DNS 指向它，或者工作负载配了 dnsConfig）；走 CoreDNS 的话，它们看起来都像 CoreDNS。",
+      "docs": "kubernetes-workloads-as-devices"
+    },
+    {
+      "id": "workload",
+      "title": "你的 Pod 是靠什么在跑",
+      "term": "工作负载 (workload)",
+      "summary": "运行一组 Pod 的那个 Kubernetes 对象：Deployment、StatefulSet、DaemonSet、Job 或 CronJob。TelltaleDNS 把它叫作 namespace/kind/name，并把它当作一台设备，不管它跑的是哪些 Pod。",
+      "when": "你看到一个像 kube-system/ds/cilium 的名字，而你本来以为那里会是个地址。",
+      "example": "db/sts/postgres 是 db 命名空间里的 StatefulSet postgres；它的 Pod postgres-0 从 10.42.0.21 发出查询。",
+      "caution": "Pod 来来去去时地址会被复用：TelltaleDNS 按当时占用这个地址的工作负载给每条日志记录命名。",
+      "docs": "kubernetes-workloads-as-devices",
+      "general": true
+    },
+    {
+      "id": "failover-drill",
+      "title": "第二台 DNS 服务器能用吗？",
+      "term": "故障切换演练 (failover drill)",
+      "summary": "一个节点在 15 秒到 5 分钟里停止应答选定的设备（或一个分组，或所有人），其他节点照常服务。配了可用第二台 DNS 服务器的设备会在几秒内切换过去；随后有报告按设备说明谁跟上了、多快跟上、谁卡住了、谁后来又回来了。",
+      "when": "你下发了两个 DNS 服务器地址（比如树莓派和另一台机器），想在其中一个坏掉的那天之前确认它们对每台设备都能用。在健康的网络里，设备从不会碰它的第二台服务器，所以没有别的办法能告诉你。",
+      "example": "对着树莓派给你的笔记本做 30 秒演练：笔记本大约一秒后就去问另一个节点，报告里记下它 1.1 s 内跟上；接着演练电视，它卡住了：它只把树莓派配成了 DNS 服务器。",
+      "caution": "没有可用第二台服务器的设备会在演练期间失去 DNS。先用一台设备演 30 秒，再换一个分组，最后再对所有人。演练也算一段维护时间：节点会报告未就绪，它的告警会暂停直到演练结束；重启会取消演练。",
+      "docs": "failover-drills"
+    },
+    {
+      "id": "drill",
+      "title": "一个节点上计划好的短时中断",
+      "term": "演练 (drill)",
+      "summary": "一次故障切换演练：一个节点故意在一小段时间里不回应某些设备，看它们会不会切换到另一个节点。",
+      "when": "你在查询日志里看到 drilled 状态，或者在图上看到演练标记。",
+      "example": "drilled：这个节点没有应答这次查询，因为有一次演练针对了这台设备。",
+      "caution": "标了 drilled 的查询没有从这个节点得到应答；如果设备还有别的 DNS 服务器，那它问的是那一台。",
+      "docs": "failover-drills",
+      "general": true
+    },
+    {
+      "id": "affinity",
+      "title": "每台设备在用哪台服务器",
+      "term": "服务器亲和性 (server affinity)",
+      "summary": "按设备看它最近一周在每个节点上的查询数，以及它用得最多的那个节点所占的比例：mostly pi、both 或 several。",
+      "when": "你想看清哪些设备偏重某一台服务器，比如在那台服务器下线之前。",
+      "example": "电视：mostly pi（100 %）；笔记本：both。这不代表电视没有第二台服务器。",
+      "caution": "只用过一台服务器的设备，可能仍然配了第二台；多数系统会一直用第一台，直到它不再应答。想确认就跑一次演练。",
+      "docs": "failover-drills"
+    },
+    {
+      "id": "anomalies",
+      "title": "一台设备行为变得不一样",
+      "term": "异常检测 (anomaly detection)",
+      "summary": "TelltaleDNS 在第一周里学习每台设备的日常行为，之后指出查询量的尖峰、对单个域名的重度访问、一批全新域名的爆发，或者规律的回连，并给出每一项背后的数字。话多的循环（某个域名每隔几秒就被查一次）只作为信息展示，不计入。",
+      "when": "智能插座、电视或摄像头开始行为古怪，或者你想知道网络上改了什么。",
+      "example": "客厅电视 → vendor.example：一小时内 4,100 次查询；平时是 119 ± 30。",
+      "caution": "发现永远不会拦截任何东西。有些是无害的（一次应用更新、一个新上的流媒体服务）；动手之前先打开这台设备的查询看看。",
+      "docs": "device-anomalies"
+    },
+    {
+      "id": "anomaly-mutes",
+      "title": "把无害的发现静音",
+      "term": "异常静音 (anomaly mute)",
+      "summary": "静音会让某一类发现在一台设备或一个分组上不再计数：发现仍会被记录和列出（打开“显示已静音”），但侧栏徽标、异常告警、健康等级和总数都会跳过它。其他设备仍然照常检查。给它一个结束日期或一条备注，免得它活得比理由还久。",
+      "when": "一台设备一遍又一遍地做无害的事：电视每小时查一次你网络里的每个地址，备份任务每天夜里很忙。",
+      "example": "客厅电视、“失败查询爆发”、一周：它每小时的反向 DNS 扫描不再触发告警，而发现仍以已静音状态列出。",
+      "caution": "静音在持续期间也可能掩盖这台设备上真正的问题。静音最窄的那一类，时长选你能接受的最短，并写明原因。",
+      "docs": "muting-a-kind-of-finding-for-a-device"
+    },
+    {
+      "id": "devices",
+      "title": "给你的设备起名字",
+      "term": "客户端 (clients)",
+      "summary": "给一个地址（或一个 MAC、或一个客户端 ID）一个名字，这样每个界面都显示“客厅电视”而不是 192.168.1.42，还能把它放进分组。",
+      "when": "你看到一个不认识的地址，或者想对一台设备用不同的规则。",
+      "example": "把 192.168.1.42 命名为“客厅电视”并加入 kids 分组：它的历史记录会立刻改用这个新名字。",
+      "caution": "设备重新连上时地址可能会变。用 MAC 地址给设备命名，只要你的路由器或本服务器的邻居表报告了这个 MAC，它就会被跟随到新地址（在路由器里做 DHCP 保留也一样有效）。",
+      "docs": "naming-devices-in-the-ui"
+    },
+    {
+      "id": "device-name",
+      "title": "设备的名字",
+      "term": "客户端名称 (client name)",
+      "summary": "在所有地方代替地址显示，过去的查询也一样，并且可以用在规则里（$client='Kids tablet'）。",
+      "when": "任何时候：起一个你一个月后还认得的名字。",
+      "example": "“Kids tablet”、“Office printer”、“Ring doorbell”。",
+      "caution": "名字必须唯一；改名会保留设备所属的分组。",
+      "docs": "naming-devices-in-the-ui"
+    },
+    {
+      "id": "device-mac",
+      "title": "用 MAC 地址识别一台设备",
+      "term": "MAC 地址 (MAC address)",
+      "summary": "MAC 地址是设备网卡的身份编号。用它给设备命名后，只要你的路由器（或本服务器自己的邻居表）一直把这个 MAC 报告在同一个地址上，设备换了地址时名字、分组和指名它的规则都会跟着走；用地址命名就做不到。路由器的 MAC 只对 IPv4 地址跟随，而且只有在最近 15 分钟内读过路由器时才会在这里提供（如果已经有设备按 MAC 命名、读取间隔又很长，第一次命名可能要等到一次新的读取）。",
+      "when": "设备的地址会变（它没有在你的路由器里做保留），而你希望它的名字和规则跟着它走。",
+      "example": "孩子的平板按 02:00:00:00:00:41 命名；它从 192.168.1.20 换到 192.168.1.35，仍然是那块平板，还在 kids 分组里。",
+      "caution": "手机或笔记本的“私有”Wi-Fi 地址由设备自己编造，可能变化（按网络区分，或者网络被忘记时）：变了就重新命名。信号扩展器或网桥可能为好几台设备显示同一个 MAC 地址，设备也可以冒用别人的 MAC 地址，所以别用 MAC 地址去命名一台你要保护额度的设备：用客户端 ID（DoT 或 DoH），MAC 地址不是客户端 ID。按 MAC 命名的设备上的拦截，一旦 MAC 无法被证实就会失效（地址变化了的私有地址、扩展器、路由器 15 分钟不响应、一次重启）：必须强制执行的限制应该放在它所在网络的分组上，而不是单靠一个 MAC。",
+      "docs": "naming-devices-in-the-ui"
+    },
+    {
+      "id": "device-groups",
+      "title": "这台设备得到哪些规则",
+      "term": "分组成员关系 (group membership)",
+      "summary": "设备会得到它所在的每个分组的全部拦截列表；其他设置（比如拦截怎么应答）来自它的第一个分组。",
+      "when": "有些设备需要比别的设备更严格或更宽松的规则。",
+      "example": "孩子的平板放进 kids 分组，再加一个成人内容列表；工作笔记本放进一个以放行为主的分组。",
+      "caution": "不在任何分组里的设备使用 default 分组。",
+      "diagram": "blocked",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "groups",
+      "title": "一组设备用一套规则",
+      "term": "分组 (groups)",
+      "summary": "一个分组决定哪些拦截和放行列表生效，还能把它的设备送到自己的 DNS 服务器。",
+      "when": "家里不同的人需要不同的过滤。",
+      "example": "default：广告和跟踪器；kids：再加上成人内容和赌博，并开启安全搜索。",
+      "caution": "当一台设备在多个分组里时，优先级最高的分组的设置胜出。",
+      "diagram": "blocked",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "lists",
+      "title": "拦截或放行整类网站",
+      "term": "过滤列表（拦截列表和放行列表）(filter lists, blocklists and allowlists)",
+      "summary": "由别人或你自己维护的名字清单，TelltaleDNS 用它来拦截（或始终放行），并自动刷新。",
+      "when": "你想一次性为所有设备拦掉广告、跟踪器、恶意软件或成人网站。",
+      "example": "HaGeZi Pro 拦截约 150,000 个广告和跟踪器名字；放行列表能让你的银行的分析服务继续工作。",
+      "caution": "越大不一定越好：非常激进的列表会把网站弄坏。先从一份平衡的列表开始。",
+      "diagram": "blocked",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-kind",
+      "title": "拦截列表还是放行列表",
+      "term": "列表类型 (list kind)",
+      "summary": "拦截列表让名字无法解析；放行列表让名字始终可用，即使某个拦截列表里有它。",
+      "when": "用放行列表修好被拦截列表弄坏的网站。",
+      "example": "当拦截列表关于 example.com 的规则弄坏了你的流媒体应用时，放行 cdn.example.com。",
+      "caution": "放行列表优先于拦截列表，所以过于宽泛的放行规则会把广告放回来。",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-refresh",
+      "title": "列表怎么保持最新",
+      "term": "列表刷新 (list refresh)",
+      "summary": "列表会按计划重新下载（默认每天一次）；下载失败就继续用上一份好的副本。",
+      "when": "某个列表显示错误，或者更新时间太旧。",
+      "example": "某个列表维护者的网站挂了：TelltaleDNS 继续用昨天的副本拦截，之后再重试。",
+      "caution": "每个列表都以压缩形式存放在数据目录里；非常大的列表在编译时会占用内存。",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "upstreams",
+      "title": "应答是从哪里来的",
+      "term": "上游服务器（转发器）(upstreams, forwarders)",
+      "summary": "TelltaleDNS 为还不认识的名字去问的那些公共 DNS 服务器，最好加密，这样你的运营商读不到。",
+      "when": "在源头选择隐私（Quad9、Cloudflare）或过滤（家庭版解析器）。",
+      "example": "用 DNS over TLS 连 Cloudflare 和 Quad9，谁的应答快就用谁。",
+      "caution": "你加的每台上游服务器都能看到你查询的名字。出故障的服务器会被自动停用。",
+      "diagram": "upstream",
+      "docs": "upstream-presets"
+    },
+    {
+      "id": "upstream-health",
+      "title": "每台服务器都健康吗？",
+      "term": "上游服务器健康（熔断器）(upstream health, circuit breaker)",
+      "summary": "健康表示服务器在应答。已停用表示 TelltaleDNS 在几次失败后不再问它，并且很快会再测一次；探测中就是那次测试。（用熔断器的话说：closed、open、half-open。）",
+      "when": "查询变慢或者失败。",
+      "example": "运营商断网停用了一台服务器；其他服务器继续应答。",
+      "caution": "如果每台服务器都被停用，就只有缓存和本地的应答能用。",
+      "diagram": "upstream",
+      "docs": "encrypted-upstreams"
+    },
+    {
+      "id": "routes",
+      "title": "把一个域名送到另一台服务器",
+      "term": "条件转发 (conditional forwarding)",
+      "summary": "某个域名的查询会被送到指定的服务器，而不是公共服务器，比如你公司网络的或你路由器的服务器。",
+      "when": "nas.home 或 corp.example 这样的名字只存在于另一台服务器上。",
+      "example": "把 corp.example 下的所有查询送到 10.0.0.53，这样在家通过 VPN 也能解析公司的名字。",
+      "caution": "那台服务器会看到这些查询；私有反向查询默认永远不会离开你的网络。如果那台服务器只知道这一个域名（它会拒绝其他查询，并把子域名交给别的服务器），就勾上 stub 区域那个选项。",
+      "diagram": "route",
+      "docs": "routing-conditional-forwarding"
+    },
+    {
+      "id": "config-sources",
+      "title": "在这里改上游服务器、列表和分组",
+      "term": "配置覆盖 (configuration overrides)",
+      "summary": "在这里做的条目保存在服务器上，并和整个集群共享；配置文件永远不会被改写，所以文件里的条目可以被覆盖、隐藏或者恢复。",
+      "when": "你想不编辑文件、也不重新部署就加一个列表或换一台上游服务器。",
+      "example": "把文件里的上游服务器 'quad9' 改成用 DNS over TLS：在你还原之前，那一行会显示“覆盖了文件”。",
+      "caution": "在由 Git 配置的节点上，也要把改动加到 Git 里（界面会告诉你加什么），否则重新构建后它就不在。",
+      "docs": "changing-the-configuration-in-the-ui"
+    },
+    {
+      "id": "local-dns",
+      "title": "我自己网络里的名字",
+      "term": "本地记录（区域）(local records, zone)",
+      "summary": "TelltaleDNS 自己就能回答的名字，比如 nas.home.arpa → 192.168.1.10，这样你打名字而不是打地址。",
+      "when": "你家里跑着 NAS、打印机或服务器，想给它一个名字。",
+      "example": "nas.home.arpa → 192.168.1.10，以及一个通配符 *.dev.home.arpa → 192.168.1.20。",
+      "caution": "用 home.arpa（就是为此而设的）或你自己拥有的域名，别用在可能冲突的自造 .local 或 .lan 名字上。",
+      "diagram": "local",
+      "docs": "local-records"
+    },
+    {
+      "id": "cache",
+      "title": "从记忆里给出的应答",
+      "term": "缓存 (cache)",
+      "summary": "最近的应答会按名字的主人允许的时长（它的 TTL）保留，所以重复的查询在几微秒内就能回答。",
+      "when": "始终开启；这就是大多数查询从不离开你的网络的原因。",
+      "example": "第十台查询 youtube.com 的设备直接从记忆里得到应答。",
+      "caution": "在别处改了某个名字的地址后，要等它最多一个 TTL 才会在这里显示（想让改动立刻生效就清空缓存）。",
+      "diagram": "cache",
+      "docs": "how-a-query-is-answered"
+    },
+    {
+      "id": "access",
+      "title": "谁可以来问",
+      "term": "访问控制 (access control)",
+      "summary": "默认只有私有网络可以查询 TelltaleDNS；其他所有人都会被拒绝。",
+      "when": "把 TelltaleDNS 暴露到你的家庭网络之外时。",
+      "example": "加上你 VPN 的网段，让 VPN 上的手机也能用它。",
+      "caution": "绝对不要对整个互联网开放：开放的解析器会被滥用去做攻击。",
+      "diagram": "refused",
+      "docs": "who-can-query-and-how-often",
+      "general": true
+    },
+    {
+      "id": "account",
+      "title": "你的登录",
+      "term": "账号和密码 (account and password)",
+      "summary": "修改你的密码；至少 10 个字符，用口令短语最简单。",
+      "when": "第一次登录，或者密码可能泄露了。",
+      "example": "correct-horse-battery-staple 这样的口令短语又长又好记。",
+      "caution": "修改它会把你其他的会话登出。",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "domain-icons",
+      "title": "域名旁边的小图标",
+      "term": "域名图标 (domain icons)",
+      "summary": "仪表盘的列表和查询日志里名字左边的小标记：TelltaleDNS 认识这个品牌时显示品牌的颜色和字形，否则显示一个字母，颜色对同一个所有者始终不变。图标是在本地绘制的，不会去网上抓任何东西。",
+      "when": "只有当你不想看到品牌标记时选 Monogram，列表很密时选 Small，只想看朴素的名字就选 Off。",
+      "example": "netflix.com 显示 Netflix 的红色方块，cdn.example.org 显示字母 C，而 nas.home.arpa（你自己网络里的名字）显示一座房子。",
+      "caution": "这个选择按用户保存在这个浏览器里，不在服务器上。当隐私级别隐藏名字时，就没有图标。"
+    },
+    {
+      "id": "two-factor",
+      "title": "登录时的第二步",
+      "term": "双因素认证（TOTP）(two-factor authentication, TOTP)",
+      "summary": "密码之后，再输入一个来自验证器应用的 6 位验证码；手机丢了就用恢复码进去。",
+      "when": "任何能改设置的人都应该打开它。",
+      "example": "用任意验证器应用扫二维码，输入验证码，并把恢复码放在安全的地方。",
+      "caution": "手机和恢复码都丢了，就得让管理员帮你重置。",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "api-tokens",
+      "title": "给脚本和仪表盘用的钥匙",
+      "term": "API 令牌 (API tokens)",
+      "summary": "一个秘密，让 Homepage、Grafana、脚本或 AI 智能体不用你的密码就能用 API；你随时可以撤销。",
+      "when": "把别的工具连接到 TelltaleDNS。",
+      "example": "给 Homepage 小部件一个只读令牌，有效期一年。",
+      "caution": "每个工具都用它自己的、权限最小的令牌；令牌只显示一次。",
+      "docs": "api"
+    },
+    {
+      "id": "token-scope",
+      "title": "令牌能做什么",
+      "term": "令牌权限范围 (token scope)",
+      "summary": "read 只能看，write 还能改设备名之类的设置，admin 能管理用户；权限永远不会超过它主人的角色。",
+      "when": "创建令牌的时候。",
+      "example": "仪表盘需要 read；一个给设备命名的脚本需要 write。",
+      "caution": "admin 令牌能创建用户：这种令牌要少见、短命。",
+      "docs": "api"
+    },
+    {
+      "id": "agent-tokens",
+      "title": "让 AI 助手帮忙，但安全地帮",
+      "term": "智能体令牌 (agent tokens)",
+      "summary": "给 AI 智能体或自动化用的令牌，只能做你勾选的事，改动任何东西都必须说明原因，还能对整个集群一次性全部关掉。",
+      "when": "你想让助手回答“电视为什么慢？”或者整理设备名，又不想把你的账号给它。",
+      "example": "给助手一个只读令牌，可以看统计和设备名；再给一个限制在 kids 分组的令牌，用来给那些设备改名。",
+      "caution": "查询日志能让人看出谁查了什么：只给你信任的智能体勾选它。在这里撤销令牌，或者用 [agents] enabled = false 停掉所有智能体。",
+      "docs": "ai-agents-and-automation"
+    },
+    {
+      "id": "users",
+      "title": "谁能登录",
+      "term": "用户和角色 (users and roles)",
+      "summary": "viewer 只能看，operator 还能改日常设置（设备、暂停），admin 能管理用户和安全。",
+      "when": "给家人或同事访问权限时。",
+      "example": "一个青少年给 viewer，看看被拦了什么；伴侣给 operator，用来给新设备命名。",
+      "caution": "至少保留两个 admin，或者设好应急访问，免得把自己锁在外面。",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "http-basic",
+      "title": "给工具用的用户名和密码",
+      "term": "HTTP 基本认证 (HTTP Basic authentication)",
+      "summary": "让 Prometheus 这样的工具在每个请求里带上用户名和密码，而不是令牌。",
+      "when": "某个工具没法发送 bearer 令牌。",
+      "example": "一个带 basic_auth 的 Prometheus 抓取任务。",
+      "caution": "只在 HTTPS 上用：在明文 HTTP 上，网络路径上的任何人都能读到密码。",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "audit-log",
+      "title": "谁在什么时候改了什么",
+      "term": "审计日志 (audit log)",
+      "summary": "每一次变更（用户、令牌、登录、设备名、重载）以及是谁做的、从哪里做的、为什么；条目逐条链接，动过手脚就能看出来。",
+      "when": "有东西变了，你想知道是谁干的。",
+      "example": "client.put Living room TV by alex from 192.168.1.20。",
+      "caution": "“校验链”能证明自写入以来没有任何条目被编辑或删除。",
+      "docs": "audit-log"
+    },
+    {
+      "id": "backup",
+      "title": "给你的配置留一份副本",
+      "term": "备份与恢复 (backup and restore)",
+      "summary": "一个文件里装着你的设置、用户、API 令牌、你添加的设备和名字、审计日志以及统计数据历史。",
+      "when": "升级之前、换新硬件之前，或者只是想留一份副本。",
+      "example": "在旧树莓派上下载备份，然后在新机器上运行 telltale backup restore。",
+      "caution": "文件里有密码哈希：要妥善保管。查询日志只能从命令行包含进去（--include-qlog）。",
+      "docs": "backups-and-moving-to-a-new-machine"
+    },
+    {
+      "id": "support-package",
+      "title": "分享出问题的地方，而不分享你自己",
+      "term": "支持包 (support package)",
+      "summary": "用来写缺陷报告的一个文件：构建信息、不含秘密的设置、集群与健康状态、上游服务器、一份指标快照，以及这个节点最近的日志。在默认级别下，地址和名字会变成化名（device-1、10.4.7.9），在文件内部保持一致，而且不会上传任何东西：你自己过一遍再附上。",
+      "when": "出了故障，维护者要日志和设置。",
+      "example": "一个节点连不上它的上游服务器：支持包里有那台上游服务器的状态、日志里的警告和设置，你的地址都被替换掉了。",
+      "caution": "日志行按模式打码，这只是尽力而为：附上之前先自己读一遍。化名映射表里有你真实的名字；只留给自己。",
+      "docs": "support-package"
+    },
+    {
+      "id": "system",
+      "title": "这台服务器",
+      "term": "系统信息 (system information)",
+      "summary": "版本、运行时长、TelltaleDNS 在哪些地址上监听，以及拦截列表是否已经加载。",
+      "when": "检查升级情况，或者查某个东西为什么没在监听。",
+      "example": "udp://0.0.0.0:53 和 dot://0.0.0.0:853 两个监听器，过滤器快照 12，共 270 万个名字。",
+      "caution": "监听器的改动在重载后生效，而且不会丢掉查询。",
+      "docs": "web-ui"
+    },
+    {
+      "id": "masked-clients",
+      "title": "看清真实的设备",
+      "term": "客户端 IP 保留 (client IP preservation)",
+      "summary": "TelltaleDNS 需要每个查询真实的发送者才能区分设备；路由器、Docker 网桥或 Kubernetes 的设置可能把它们藏在一个地址后面。",
+      "when": "横幅说客户端 IP 看起来被遮盖了，或者每个查询都显示同一个地址。",
+      "example": "在 DHCP 里下发 TelltaleDNS 的地址而不是路由器的，或者让 Docker 用 host 网络。",
+      "caution": "在修好之前，按设备的规则和统计只能看到那一个地址。",
+      "docs": "seeing-real-client-ips",
+      "general": true
+    },
+    {
+      "id": "simple-advanced",
+      "title": "简单视图还是高级视图",
+      "term": "详细程度 (detail level)",
+      "summary": "简单视图显示大多数家庭需要的东西；高级视图再加上技术细节（原始规则、记录类型、协议细节；在仪表盘上是服务等级、按分组的流量、时间花在哪里和上游服务器）。你的选择会被记住。",
+      "when": "排障的时候，或者你对 DNS 很熟的时候，切到高级视图。",
+      "example": "简单视图显示每个列表的名字和大小；高级视图再加上它的 URL、格式和规则数量。",
+      "caution": "简单视图只是隐藏细节；它从不隐藏会改变查询应答方式的东西。",
+      "general": true
+    },
+    {
+      "id": "cluster",
+      "title": "多个节点，一份配置",
+      "term": "集群 (cluster)",
+      "summary": "集群让多个 TelltaleDNS 节点保持同一份配置。主节点的设置和拦截列表会在几秒内到达每个节点，其他节点挂掉时每个节点还能用自己最后一份副本继续应答。这个页面显示每个节点的连接情况、配置版本，以及它是否在提供 DNS 服务。",
+      "when": "你在不止一台机器上跑 TelltaleDNS（比如一个树莓派和一套 Kubernetes），并把两个都作为 DNS 服务器下发。",
+      "example": "两个节点：k8s Pod 是主节点（配置来自 GitOps），树莓派跟随它；两个都显示版本 12、已同步、就绪。",
+      "caution": "在主节点上改配置。每个节点保留自己的监听器、登录、查询日志保留期和缓存大小。",
+      "docs": "clusters"
+    },
+    {
+      "id": "cache-page",
+      "title": "缓存页面",
+      "term": "DNS 缓存 (DNS cache)",
+      "summary": "每个节点（每个 Kubernetes Pod）都保有自己的上游应答缓存。这里按节点显示：最近一小时的命中率、有多满、里面装着什么（应答、不存在的名字、无数据、SERVFAIL、为应急保留的过期应答）、它最忙的、最大的或最快到期的条目、当前生效的设置，以及它是否从保存的缓存热启动。",
+      "when": "用来确认缓存在干它该干的活：家庭网络通常有一半以上的查询由缓存应答。某个 Pod 命中率低，通常只是因为它刚启动。大小那一行会说明更大的缓存是否真的有用（按被淘汰之后又被问到的名字估算），还是小一点就够。",
+      "example": "pi：最近一小时 72% 命中，4,210 个应答，32 MiB 里用了 2.1 MiB，热启动时带了 3,900 个应答。最常命中的条目：connectivity-check.ubuntu.com，1,204 次命中。",
+      "caution": "前几条要遍历整个缓存，所以它们是在你打开页面或按“刷新”时才加载的，不是每隔几秒。修改设置要在配置文件的 [cache] 里做。",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "cache-tools",
+      "title": "缓存里有什么，怎么清掉",
+      "term": "DNS 缓存 (DNS cache)",
+      "summary": "TelltaleDNS 会保留上游应答，直到它们的生存时间用完，所以重复的查询在几微秒内就能回答。这里你可以看到每个节点的命中率、查某个名字缓存了什么（以及还能新鲜多久），并在所有节点或某一个节点上清掉一个名字、它下面的所有名字，或者整个缓存。",
+      "when": "一个网站换了新地址，你不想等旧应答过期，或者你在确认某个应答是不是来自缓存。",
+      "example": "查 www.example.com：A、NOERROR、1 个应答、已校验、还剩 212 s，两个节点上都是如此。清掉它，下一次查询就重新去问上游服务器。",
+      "caution": "清空不会清掉设备自己的缓存（手机或浏览器可能还留着旧应答几分钟）。被拦截的应答从不缓存，所以取消拦截不需要清空。想改一个名字解析成什么，请用“我自己网络里的名字”。集群里每个节点都有自己的缓存。",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "quick-rules",
+      "title": "为一台设备或一个分组放行或拦截一个网站",
+      "term": "快速规则 (quick rules)",
+      "summary": "一条快速规则会为一台设备、一个分组或所有人在一段时间内（或直到你删掉它）放行或拦截一个网站（以及它下面的所有名字）。它在任何列表之前判定：设备的规则胜过它分组的规则，分组规则又胜过所有人的。下一个查询就会生效。在快速规则页面上按“编辑”可以修改一条规则；它会保留是谁做的、什么时候做的。规则可以针对你命名过的设备、一个 IP 地址、一个网络或一个分组。查询日志给未命名设备显示的名字（来自你的路由器或设备自己）不算在内：表单会改填地址，除非 TelltaleDNS 在那里认得这台设备，或者日志里的名字属于你命名过、而它自己的 IP、网络或 MAC 地址可能就是这一个的设备。只有当运维人员把某个 Kubernetes 工作负载放进一个分组时，它才会一开始就有该分组的规则。",
+      "when": "某个晚上在一台手机上放行一个游戏的服务器；把孩子们的平板上的某个网站拦到明天；临时放行某个被列表误拦的东西，再去上报。",
+      "example": "在 Mom's phone 上放行 game.example.com 2 小时。为 kids 分组拦截 videos.example.com 直到午夜。",
+      "caution": "DNS 只能看到整个网站，看不到页面，而一个应用往往用到好几个网站。针对地址的规则在地址变化时就失效了：在路由器里给地址做保留，或者给设备命名，这样你只改一个地方，而不是每条规则。规则能跟上设备的程度，取决于 TelltaleDNS 认得它多少（私有 Wi-Fi 地址会变；为你的网络关掉它）。设备可能还留着旧应答几分钟，而移动数据、VPN 或写死的 DNS 服务器能绕过它。",
+      "docs": "quick-rules"
+    },
+    {
+      "id": "cluster-compare",
+      "title": "那个节点是不是有点怪？",
+      "term": "节点对比 (node comparison)",
+      "summary": "每个节点在同一个窗口里并排看：每秒查询数、SERVFAIL、慢查询、缓存命中和上游失败的占比、p50 和 p99，每一项都配一条共享刻度的迷你折线。偏离其他节点的会被框出来，并注明它是从什么时候开始的。",
+      "when": "某个节点在仪表盘上看起来更差，你想知道它是不是真的差，还是只是流量更少。",
+      "example": "树莓派有 15 个 SERVFAIL，Pod 有 14 个，但树莓派的应答量只有十分之一：一条灰色注解说它是基数更小，不是失败更多。",
+      "caution": "在很少的应答上算占比会摇摆得厉害；表里的 95% 区间会显示摆动有多大。这只是一面镜子，不是告警：没有任何东西会因为它报警。",
+      "docs": "compare-nodes"
+    },
+    {
+      "id": "cluster-topology",
+      "title": "一眼看清集群",
+      "term": "拓扑 (topology)",
+      "summary": "每个站点一个方框。框里是它的节点，以及在 Kubernetes 里按所在 Kubernetes 节点分组的解析器 Pod（超过六个会折叠成 +N）。一条线从主节点连到其他每个节点或 Pod 组：粗细和它承担的查询占比相当，如果这个节点测量过往返时间，还会标出来。",
+      "when": "用来看看查询去了哪里、哪里不健康：绿色是正在服务且已同步，琥珀色是未就绪或配置落后，红色加虚线是挂了。选中一个节点或 Pod 可以跳到它的那一行和它的机器。",
+      "example": "home：树莓派（副本，30% 的查询，4 ms）。k8s：控制器（主节点）和节点 k3s-1 上的 3 个 Pod，其中一个琥珀色，因为它还在加载配置。",
+      "caution": "每个 Pod 有自己的缓存和速率限制，所以新 Pod 是冷启动。同一站点里 Pod 之间的线粗细不均，说明负载均衡器没有把查询摊开；负载均衡检查会说明该怎么办。",
+      "docs": "scaling-in-kubernetes"
+    },
+    {
+      "id": "host-resources",
+      "title": "节点跑在哪些机器上",
+      "term": "主机资源 (host resources)",
+      "summary": "每个节点每 15 秒汇报一次自己的机器情况：内存（以及它所在容器的限额）、CPU 和负载、数据所在磁盘的可用空间、温度，以及它的进程限制。资源变紧时进度条会先变成琥珀色，再变成红色，每根条下面的一条线显示最近一小时。",
+      "when": "某个节点变慢、重启或者不再应答：先在这里查是不是磁盘满了、内存吃紧、CPU 限额在拖它后腿，或者树莓派太烫。",
+      "example": "pi：数据盘 93% 满（查询日志 6.1 GB），58 °C。办法：缩短查询日志的 retention_days，或者把数据挪到更大的磁盘上。",
+      "caution": "容器看到的是自己的限额：“容器限额”才是可能杀掉 TelltaleDNS 的那个值，不是主机的总量。节点读不到的值（精简镜像没有系统名；很多机器没有温度传感器）会被略去，而不是显示成零。",
+      "docs": "host-resources"
+    },
+    {
+      "id": "updates",
+      "title": "我跑的是哪个版本？",
+      "term": "版本与更新状态 (version and update status)",
+      "summary": "确切的构建（版本、提交、通道），以及你的通道上有没有更新的版本，每天对照一份签名的发布列表检查一次。",
+      "when": "上报问题之前，或者想知道什么时候该更新。",
+      "example": "0.1.0-edge.60 · commit abc1234 · edge：有可用更新 0.1.0-edge.64。",
+      "caution": "TelltaleDNS 从不会从界面里给自己更新：按你的安装方式照做（自更新、换新镜像或升级 chart），集群里先做副本。用 [updates] check = false 可以关掉这项检查。",
+      "docs": "versions-and-updates"
+    },
+    {
+      "id": "agent-changes",
+      "title": "审阅 AI 智能体想做的改动",
+      "term": "计划与批准（MCP）(plans and approval, MCP)",
+      "summary": "通过 MCP 连上的 AI 智能体会把一次改动提成计划：它做什么、为什么、是谁要求的。在智能体应用它之前它不会改变任何东西，而打开批准之后，只有运维人员在这里批准了才会改变。",
+      "when": "你让助手管理你的 DNS，但想对改动有最终决定权。",
+      "example": "一个智能体计划为 kids 分组拦截 ads.example；你看到这个计划，批准它，然后智能体才应用它。",
+      "caution": "用 [agents] require_approval = true 打开批准。计划在 10 分钟后过期，如果应用之前配置改了，它也会失效。",
+      "docs": "plans-and-approval"
+    },
+    {
+      "id": "blocked-services",
+      "title": "拦截一整个服务",
+      "term": "被封禁的服务 (blocked services)",
+      "summary": "一个开关就能为一个分组拦掉某个服务（TikTok、Roblox、Netflix……）的所有域名，不用去逐个找它的域名。",
+      "when": "某个分组（kids、guest）完全不该访问某个应用或游戏。",
+      "example": "kids 分组拦掉 TikTok 和 Fortnite；家里其他地方不受影响。",
+      "caution": "应用会随着时间换域名；这份目录会跟 TelltaleDNS 一起更新。它漏掉的，加一条快速规则就好。",
+      "docs": "blocked-services"
+    },
+    {
+      "id": "schedules",
+      "title": "按一天中的时间过滤",
+      "term": "时间表 (schedules)",
+      "summary": "时间表在每周的窗口里改变一个分组的过滤：全部拦截（就寝时间），或者只在特定时段加上某些列表或被封禁的服务。",
+      "when": "设备夜里该下线，或者上学时间该拦掉一个游戏。",
+      "example": "kids 分组在上学日的 21:00 到 07:00 全部拦截；一条快速放行让做作业的网站还能打开。",
+      "caution": "窗口用时间表自己的时区（tz），否则用服务器的。改动会在窗口时间之后 15 秒内生效。",
+      "docs": "schedules"
+    },
+    {
+      "id": "safe-search",
+      "title": "为一个分组开启安全搜索",
+      "term": "强制安全搜索 (safe search enforcement)",
+      "summary": "这个分组的设备在 Google、Bing、DuckDuckGo、Yandex 和 Pixabay 上只看到安全结果，YouTube 使用受限模式，不管设备自己怎么设置。",
+      "when": "孩子的设备，或者一间教室的网络。",
+      "example": "kids 分组在 Google 上搜索得到的是安全结果；同一个网络上的成年人不会。",
+      "caution": "使用自己加密 DNS 的浏览器会绕过它，和所有过滤一样。YouTube 的严格模式会隐藏很多视频；中等模式更温和。",
+      "docs": "safe-search"
+    },
+    {
+      "id": "alerts",
+      "title": "告警",
+      "term": "告警规则和接收目标 (alert rules and destinations)",
+      "summary": "当上游服务器挂了、节点掉线、列表下载失败、SERVFAIL 上升、设备行为异常或者有新版本时，向 ntfy、Gotify、兼容 Slack 的频道或 webhook 发消息。",
+      "when": "你想知道出问题了，又不想一直盯着仪表盘。",
+      "example": "Quad9 一分钟连不上时给你手机推一条 ntfy，恢复时再推一条。",
+      "caution": "for_secs 要设得足够长，短时间的抖动才不会吵你。令牌放在 token_file 里，不要写在配置里；在界面里由管理员决定每个接收目标读哪个文件，范围是 /run/secrets、/etc/telltale-secrets 或数据目录下的 secrets 文件夹。",
+      "docs": "alerts",
+      "general": true
+    },
+    {
+      "id": "shadow-lists",
+      "title": "本来会拦截的东西",
+      "term": "影子列表 (shadow lists)",
+      "summary": "影子模式下的列表和其他列表一样会被下载和检查，但永远不拦截。你的设备问出的、它本来会拦掉的每个查询都在这里计数：有多少、来自多少台设备，以及哪些名字最常出现。",
+      "when": "在打开一份新的或激进的列表之前：让它在影子模式下跑一周，看看它本来会拦什么，再决定改成执行（或者不改）。",
+      "example": "hagezi-ultimate 在影子模式下：这一周 9 台设备发出了 4,210 个查询；最多的名字是遥测和广告主机，另外还有一个银行应用的登录服务器。把那一个加进放行列表，然后开始执行。",
+      "caution": "TelltaleDNS 重启后计数会从头开始。影子列表在查询路径之外检查，所以很忙的服务器可能跳过一些（记为丢弃的事件），但永远不会变慢。",
+      "docs": "trying-a-list-first-shadow-mode"
+    },
+    {
+      "id": "overblocking",
+      "title": "可能拦多了",
+      "term": "疑似过度拦截 (over-blocking suspects)",
+      "summary": "似乎有人想要的被拦截名字：设备在被拦截后 10 分钟内得到了这个名字的应答（你暂停了拦截或放行了它），或者某个应用在一分钟里重试了 10 次以上。",
+      "when": "某台设备上有东西坏了，你怀疑是某个拦截列表；或者你想找放进放行列表的候选。",
+      "example": "login.bank.example：被 oisd 拦截，3 分钟后在暂停之后由同一台手机得到应答，这一周出现了两次。很适合放进放行列表。",
+      "caution": "广告库也会重试被拦的名字，所以光靠重试爆发证据很弱；“很快被放行”才是更强的信号。",
+      "docs": "trying-a-list-first-shadow-mode"
+    },
+    {
+      "id": "filter-aaaa",
+      "title": "不要 IPv6 地址",
+      "term": "AAAA 过滤 (AAAA filtering)",
+      "summary": "这个分组的设备得不到 IPv6（AAAA）应答，于是它们用 IPv4 连接。你自己的名字（本地记录和区域）仍然会应答，被拦截的名字依旧被拦。",
+      "when": "一个 IPv6 坏了或者只配了一半的网络：页面会先卡上一会儿，才回退到 IPv4。",
+      "example": "访客 Wi-Fi 从运营商那里拿到 IPv6，但防火墙把它丢了：给访客分组打开这个选项，页面马上就能加载。",
+      "caution": "HTTPS 记录仍可能带着一些浏览器会用到的 IPv6 提示。不要和 DNS64 一起用，DNS64 是故意造出 IPv6 应答的。",
+      "docs": "no-ipv6-addresses-for-a-group"
+    },
+    {
+      "id": "exclusions",
+      "title": "不进日志",
+      "term": "排除项 (exclusions)",
+      "summary": "这些名字和设备的查询仍然照常被应答，但不会出现在查询日志、实时视图、仪表盘和热门列表、异常和导出里。Prometheus 指标仍然会计入它们。",
+      "when": "噪声盖过了重要的东西：手机的连通性检查、时间服务器、每隔几秒就查一次的监控探针，或者一台你并不想看的设备。",
+      "example": "加上 connectivitycheck.gstatic.com 和 ntp.org，还有监控主机 192.168.1.10：热门域名显示的就是大家真正在用的东西，探针的查询也不再塞满日志。",
+      "caution": "被排除的查询以后搜不到，仪表盘的总数也不含它们（Prometheus 含）。之前记录的查询仍然在。在由 Git 管理的配置下，要在 Git 里改 [exclusions]。",
+      "docs": "keeping-names-and-devices-out-of-the-log"
+    },
+    {
+      "id": "exemplars",
+      "title": "追踪 ID",
+      "term": "样例与追踪 (exemplars and traces)",
+      "summary": "/metrics 上每个延迟分桶都带一个样例：落在这个桶里的一次最近查询，用追踪 ID 标出。导出追踪时，同一个 ID 也在那次查询的追踪上。用 ?trace=<ID> 打开查询日志就能看到那一次查询。",
+      "when": "延迟图出现尖峰，你想要它背后一次具体的慢查询：在 Grafana 里点那个样例点，然后在这里打开它的追踪 ID。",
+      "example": "上游应答的 p99 跳到 800 ms；那个桶里的样例是 00065d61……，它原来是一次等在某台上游服务器上的 TXT 查询。",
+      "caution": "样例每秒最多替换一次，所以它只是最近的例子，不是最慢的那次查询。Prometheus 只有在 --enable-feature=exemplar-storage 时才会保留样例。",
+      "docs": "exemplars-and-traces"
+    },
+    {
+      "id": "upstream-checks",
+      "title": "应答质量",
+      "term": "上游真实情况检查（第二意见、DNSSEC、EDE）(upstream truth checks, second opinions, DNSSEC, EDE)",
+      "summary": "每台上游服务器的应答能不能信：它们上面的 DNSSEC 结论、它附带的错误码（EDE 15 Blocked、16 Censored、17 Filtered 表示它自己在过滤名字），以及在你打开时做的第二意见：抽一小部分问题去问另一台上游服务器，再比较两个应答。",
+      "when": "某个网站能在一个网络上打开，在你的网络上不行；某台上游服务器似乎在拦你并没有要求拦的东西；或者你想知道某台上游服务器会不会改写应答（运营商的解析器、某个“家庭版”过滤）。",
+      "example": "family-dns 对 casino.example.org 回答 NXDOMAIN，而 quad9 有地址：这是一次“被过滤”的分歧，而且 family-dns 的应答带着 EDE 17（Filtered）。",
+      "caution": "对大型网站来说地址不同很正常（CDN 会按解析器分别应答）。第二意见默认关闭，因为第二台上游服务器会看到抽到的名字；一千次抽一次是个不错的起点。",
+      "docs": "upstream-truth-checks"
+    },
+    {
+      "id": "probes",
+      "title": "监听器检查",
+      "term": "合成探测 (synthetic probes)",
+      "summary": "每 30 秒，每个节点都会像设备一样问自己的每个 DNS 监听器一个问题：走 UDP、TCP、DNS over TLS、DNS over HTTPS（HTTP/2 或 HTTP/3），或者 DNS over QUIC。它还会读取每个加密监听器证书的到期时间，并且在网页界面开启 HTTPS（[api] tls）时也检查网页界面和它的证书，显示 SHA-256 指纹供你与浏览器的对比。",
+      "when": "设备说 DNS 坏了，但仪表盘看起来正常：监听器可能绑上了端口却不应答（卡住的 TLS 握手、防火墙、前面还有负载均衡器）。把负载均衡器的地址加进 [probe] targets，就能检查设备真正走的那条路。",
+      "example": "tls://127.0.0.1:853 在 1.8 ms 内应答，证书 9 天后到期：健康图标变成琥珀色，这样你能在 Android 的 Private DNS 失效之前续上。",
+      "caution": "探针是按 IP 连接的，所以它们不检查证书里的名字；到期时间是从证书文件读的。开着 PROXY protocol 的监听器会被跳过（探针不发那个头）。",
+      "docs": "listener-checks"
+    },
+    {
+      "id": "maintenance",
+      "title": "维护模式",
+      "term": "节点维护 (node maintenance)",
+      "summary": "一台节点上的限时标记（默认一小时，最多一天），用于计划内的工作：它会报告未就绪，于是负载均衡器和 Kubernetes 不再给它发新查询，但每个监听器仍然继续应答还能到的东西。告警和健康等级会跳过它，它也不会被选为主节点，直到窗口结束或者有人结束它。窗口能挺过一次重启。",
+      "when": "在换树莓派的 SD 卡、搬动机器或者手工升级节点之前：写明原因开始维护，干完活，然后结束它（或者让它自己到期）。",
+      "example": "对树莓派做 30 分钟维护，原因“更换 SD 卡”：路由器的第二 DNS 条目仍然能得到应答，它关掉的期间不会触发 node_down 告警，健康图标保持绿色并显示“1 个节点处于维护模式”。",
+      "caution": "在 Kubernetes 里，一个就绪探针服务于所有选中这个 Pod 的 Service，所以处于维护模式的控制器 Pod 也会离开 API Service（用别的节点上的界面或者端口转发），而 StatefulSet 的滚动发布还会等它。在开启自动故障切换的主节点上，维护模式会先把主节点角色交给另一个节点（大约 30 秒，不需要改配置）；在手动模式下它仍然是主节点，所以如果你要下线它，请先把别的节点提升为主节点。维护窗口里真的在出故障的节点会一直安静到窗口结束。",
+      "docs": "taking-a-node-down-for-maintenance"
+    },
+    {
+      "id": "simulate",
+      "title": "这个改动本来会怎么样？",
+      "term": "变更模拟 (change simulation)",
+      "summary": "保存改动之前，先把查询日志重放一遍：最近一天（或你选的窗口）里记录下来的每个查询，都在带这次改动和不带这次改动的情况下重新判定一遍，只显示有差异的部分。新被拦截的、新被放行的、走不同上游服务器组的，或者应答不同的（一条本地记录、一条重写、没有 IPv6 地址），连同名字、做出判定的列表或规则、设备和分组。在集群里每个节点重放自己的日志，再把这些计数加起来。",
+      "when": "在给孩子们拦掉一个域名、加一份大列表或者把一台设备挪到别的分组之前：用昨天真实的流量看看它本来会不会拦到你需要的东西，而不是靠猜。",
+      "example": "为 kids 分组拦截 tiktok.com，然后问“这个改动本来会怎么样？”：412 个查询新被拦截，来自 2 台设备，大多发往 tiktokcdn.com，由那条快速规则判定。其他什么都没有变。",
+      "caution": "它只谈过去，也只谈判定：它数不了没人问过的名字，也不预测延迟、缓存或上游服务器会怎么应答。它要花几秒（树莓派上更久），每个节点一次只跑一个，用后台优先级；超过时间或行数上限时结果会标注为部分。在查询日志隐私级别 1 时名字会被哈希，所以只能检查列表相同的分组之间的设备移动；级别 2 及以上什么都查不了。拦截的暂停不会被重放。",
+      "docs": "trying-a-change-against-yesterdays-traffic"
+    },
+    {
+      "id": "identify",
+      "title": "这台设备是什么？",
+      "term": "设备识别 (device identification)",
+      "summary": "对每个地址是什么的猜测，来自 TelltaleDNS 本来就能看到的三个东西：网卡的制造商（MAC 地址注册的厂商）、它自己宣告的名字（告诉你的路由器或通过 mDNS），以及它通信的域名。它们会跟随 TelltaleDNS 一起提供的一份常见家用设备目录比对打分：“看起来像 Roku 播放器（很可能）”。很可能和也许说明有多确定；未知就只显示制造商。",
+      "when": "出现一个新地址，你想给它命名，或者把它放进正确的分组：这个猜测会填好命名表单，并推荐一个需要这类设备的分组（device_classes）。",
+      "example": "192.168.2.77 访问 ring.com，而且 MAC 地址是 Ring 的：“看起来像 Ring 摄像头或门铃（很可能）”，并推荐需要摄像头的 IOT 分组。在你添加之前，什么都不会动。",
+      "caution": "这只是猜测：它永不给设备命名、不会移动设备、也不会改变它的查询怎么被应答。手机用私有 Wi-Fi 地址，所以它们的制造商是未知的；在隐藏地址的路由器或代理后面，很多设备看起来像同一台。猜错了？给设备命名并设置“它是什么”（[[client]] kind），那个会胜出。查询日志隐私级别 1 及以上时关闭。",
+      "docs": "what-is-this-device"
+    },
+    {
+      "id": "slo",
+      "title": "服务等级",
+      "term": "服务等级目标和错误预算 (service-level objectives, SLOs, error budgets)",
+      "summary": "对你网络上 DNS 的两个承诺：能用的应答（不是 SERVFAIL）和快的应答（250 ms 以内）。每个承诺每个月允许一些坏应答，这就是它的错误预算；卡片显示还剩多少，以及此时此刻它被烧掉的速度。",
+      "when": "你想要一个诚实的数字来回答“这里的 DNS 好不好”，看一个月的表现，并在问题快速吃掉这个月的额度时得到警告，而不是每次一次查询失败就报警。",
+      "example": "目标 99.9%：这个月 1,000,000 个应答里，可以有 1,000 个 SERVFAIL。如果一次上游故障一小时内造成 300 个，燃烧率会远高于 1，卡片显示“正在快速燃烧”，健康图标变琥珀色，并发出 slo_burn 告警。",
+      "caution": "100% 的目标不留下任何预算，所以不允许。在安静的网络上，几个坏应答可能看起来占比很大：告警会等到短窗口里至少 50 个应答、长窗口里至少 10 个坏应答。",
+      "docs": "service-level-objectives"
+    },
+    {
+      "id": "new-domains",
+      "title": "新出现的域名",
+      "term": "首次出现的域名与 DGA 评分 (first-seen domains and DGA scores)",
+      "summary": "一台设备第一次联系的域名，每个都带一个评分，表示它的名字看起来有多像机器生成（0 到 1）。",
+      "when": "查一个新应用或一台新设备开始跟谁通信，或者找那种自己生成域名的恶意软件（DGA）。",
+      "example": "一台笔记本突然查询 xjwqkzpvb.com 和 a8f3k2j9x1.org（评分 1.00 和 0.80），值得看一眼。",
+      "caution": "由真实单词组成的名字即使是被生成的，评分也低；有些厂商的 ID 评分反而高：把评分当成提示。设备的第一天不列出，那时它还在学习常用域名。",
+      "docs": "device-anomalies"
+    },
+    {
+      "id": "vqlog",
+      "title": "vqlog",
+      "term": "一次查询搞定分析 (analytics in one query)",
+      "summary": "一种跑在查询日志上的小型查询语言：筛选、分组、前 N 名、百分位和时间序列，并显示代价。绝不是 SQL。",
+      "when": "问一个没有仪表盘能回答的问题，你自己问，或者通过 AI 智能体问（MCP 工具 vqlog）。",
+      "example": "from -7d | where group = kids and status = blocked | top 10 domain",
+      "caution": "在很忙的网络上查长窗口要读很多东西：先用 dryRun=true 试运行一下。智能体需要 querylog:read 权限范围。",
+      "docs": "analytics-in-one-query-vqlog",
+      "general": true
+    },
+    {
+      "id": "list-overlap",
+      "title": "独有的名字和重叠",
+      "term": "列表重叠 (list overlap)",
+      "summary": "独有的名字是别的列表里都没有的那些。当一份列表里几乎所有东西另一份也有时，这份列表就没什么增益。",
+      "when": "决定删掉哪些列表来省内存和编译时间。",
+      "example": "“97% 也在 hagezi-pro 里”：删掉这份列表只会失去它独有的名字。",
+      "caution": "命中数是从每个节点启动时开始计的（所有节点加起来），所以重启后没有命中的列表可能只是刚加上。",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "rewrites",
+      "title": "重写",
+      "term": "DNS 重写 (DNS rewrite)",
+      "summary": "用一个你自己的地址、或者另一个名字，为某个分组的设备回答一个名字。",
+      "when": "内外分离（split-horizon）的名字、测试服务器、把一台设备指向别的后端。",
+      "example": "nas.example.com 在家里回答 192.168.1.10，而其他人拿到的是公网地址。",
+      "caution": "拦截仍然优先。想让所有人都拿到的名字，用本地记录。",
+      "docs": "rewrites",
+      "general": true
+    },
+    {
+      "id": "rebinding",
+      "title": "重绑定保护",
+      "term": "DNS 重绑定 (DNS rebinding)",
+      "summary": "拒绝公共名字的应答里出现的私有网络地址，这样网站就没法借 DNS 去访问你网络里的设备。",
+      "when": "网络里有浏览器，以及带网页管理界面的设备（路由器、摄像头、打印机）。",
+      "example": "attacker.example 回答 192.168.1.1 会被拦截；nas.home.example（在允许之列）仍然会应答。",
+      "caution": "故意下发私有地址的服务（plex.direct）需要 rebinding_allow。你的本地记录和转发的域名始终允许。",
+      "docs": "rebinding-protection",
+      "general": true
+    },
+    {
+      "id": "dns64",
+      "title": "DNS64",
+      "term": "DNS64（RFC 6147）(DNS64, RFC 6147)",
+      "summary": "只有 IPv6 的设备能拿到只有 IPv4 的名字的 IPv6 地址，这些地址是用 NAT64 前缀里的 IPv4 地址造出来的。",
+      "when": "一个（或一个分组的）只有 IPv6 的设备待在 NAT64 网关后面。",
+      "example": "github.com 没有 IPv6 地址；DNS64 回答 64:ff9b::8c52:7004，NAT64 网关再连到 140.82.112.4。",
+      "caution": "只有路径上有 NAT64 网关时才有用；没有的话，造出来的地址哪儿也去不了。",
+      "docs": "dns64",
+      "general": true
+    },
+    {
+      "id": "rollouts",
+      "title": "分阶段发布",
+      "term": "分阶段发布（金丝雀）(staged rollout, canary)",
+      "summary": "一次配置改动先到达少数金丝雀节点（以及主节点）。经过一段烘焙时间（默认 5 分钟）之后，其他每个节点才会拿到它；除非守卫看到了问题：某个金丝雀无法应用这次改动、没有就绪、监听器检查失败、消失了，或者回答 SERVFAIL 的次数明显比以前多。那就把集群固定到改动之前的版本，并告诉你原因。在你指定金丝雀之前它是关闭的：可以是节点、一个站点，或者 Kubernetes 的解析器 Pod。",
+      "when": "当一次坏改动会让整栋房子失去 DNS 时：让 Kubernetes 的 Pod（或者一个树莓派）先承受每次改动，其他的继续跑能用的版本。",
+      "example": "金丝雀：解析器 Pod，烘焙 5 分钟。一个新的上游服务器组马上到达 Pod 和主节点；车库里的树莓派保留旧的。Pod 的 SERVFAIL 占比从 1% 跳到 30%，于是烘焙之后守卫把集群固定到改动之前的版本，那个树莓派从没见过坏的那一版。",
+      "caution": "主节点总是立刻跑一次改动（改动就是在那里做的），所以它和金丝雀一起被判定。流量太少时（烘焙期间不到 50 个应答）守卫只能检查健康，检查不了应答，除非你要求必须有流量。烘焙期间来了更新的改动，就会替换正在烘焙的那一个。跑旧版本 TelltaleDNS 的节点永远不会是金丝雀；它们在烘焙之后才拿到每次改动。",
+      "docs": "rolling-a-change-out-in-stages"
+    },
+    {
+      "id": "pins",
+      "title": "把集群固定到一个版本",
+      "term": "固定版本（回滚）(pin, roll back)",
+      "summary": "每个节点重新提供某个保留下来的旧版本（它的配置和过滤器快照），并作为一个新的版本号发布出去，直到有人取消固定。分阶段发布失败时守卫会自己固定；管理员可以在集群页面上固定任何保留下来的版本。固定期间配置改动会被拒绝，并列出固定挡回了什么。",
+      "when": "一次改动发出去了，然后有东西坏了：固定到它之前的版本，从容地修好这次改动，然后取消固定。",
+      "example": "固定到版本 3.124，原因“新列表拦了银行”：所有节点在几秒内开始提供 3.124，横幅显示“自此之后被挡回：list：已改动”，而 cluster_pinned 告警会一直提醒你，直到你取消固定。",
+      "caution": "固定不会改写你的文件、在界面里做的条目或 Git：取消固定会把它们原样发布出去，所以先在那里撤掉坏的改动（或者在取消固定之后马上撤，趁它还在金丝雀上烘焙）。主节点保留最近 20 个版本；更旧的不能被固定。被提升为主节点的节点会保留这个固定。",
+      "docs": "pinning-the-cluster-to-a-version"
+    },
+    {
+      "id": "internal-names",
+      "title": "互联网名字和内部名字",
+      "term": "内部名字 (internal names)",
+      "summary": "内部名字是你的网络在跟自己说话：私有地址的反向查询，以及在 Kubernetes 里集群自己的名字（cluster.local）。它们有自己的热门列表，所以热门域名显示的是你的设备和工作负载在外面访问了什么。",
+      "when": "热门域名里全是 cluster.local 或 in-addr.arpa 名字时：切到内部，看看你的工作负载最常调用哪些 Service，或者哪些私有地址被查询。",
+      "example": "一个 Pod 查 api.github.com 时会先试 api.github.com.argocd.svc.cluster.local 和另外两个集群名字（它的搜索列表）；这些失败落在内部，不在热门域名或 NXDOMAIN 列表里。",
+      "caution": "什么都没有被藏起来：内部名字仍然留在查询日志、实时视图、设备自己的热门域名和拦截列表里。你自己想要的名字（比如 lan）可以在每个节点上用 [telemetry] internal_names 加上。",
+      "docs": "internal-names"
+    }
+  ]
+}

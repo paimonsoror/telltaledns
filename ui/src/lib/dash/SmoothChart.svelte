@@ -10,6 +10,8 @@
   import type { Marker } from '../annotations.svelte';
   import { visibleMarkers } from '../markers';
   import { bucketLabel, bucketStart, rebucket, type RawSeries, type Shown } from './smooth';
+  // `tr` rather than `t`: the table below walks its times as `t`.
+  import { t as tr, localeTag } from '../i18n';
 
   let {
     title,
@@ -198,7 +200,7 @@
           values: (_u, vals) =>
             vals.map((v) =>
               multiDay
-                ? new Date(v * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                ? new Date(v * 1000).toLocaleDateString(localeTag(), { month: 'short', day: 'numeric' })
                 : clock(v, view.span < 60 && view.times[view.times.length - 1] - view.times[0] < 180),
             ),
         },
@@ -278,19 +280,19 @@
       {/if}
       <span class="spacer"></span>
       {#if tableToggle}
-        <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? 'Chart' : 'Table'}</button>
+        <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? tr('dashboard.chart') : tr('dashboard.table')}</button>
       {/if}
     </div>
   {/if}
   {#if times.length === 0}
-    <p class="empty">No data yet.</p>
+    <p class="empty">{tr('dashboard.noData')}</p>
   {/if}
   {#if showTable}
     <div class="table-wrap table-view" class:below={!legend}>
       <table class="compact">
         <thead>
           <tr>
-            <th>Time</th>
+            <th>{tr('dashboard.time')}</th>
             {#each view.series as s (s.label)}<th class="num">{s.label}</th>{/each}
           </tr>
         </thead>
@@ -306,7 +308,7 @@
       {#if inRange.length}
         <!-- REQ: OBS-033 — the markers in this range, as rows. -->
         <table class="compact changes-table">
-          <thead><tr><th>Changed</th><th>What</th></tr></thead>
+          <thead><tr><th>{tr('dashboard.changed')}</th><th>{tr('dashboard.what')}</th></tr></thead>
           <tbody>
             {#each inRange as m, i (i)}
               <tr><td>{clock(m.time)}</td><td>{m.summary}{#if m.actor} · {m.actor}{/if}{#if m.nodes.length} · {m.nodes.join(', ')}{/if}</td></tr>
@@ -354,7 +356,7 @@
                 {#if m.nodes.length}<span class="muted"> · {m.nodes.join(', ')}</span>{/if}
               </div>
             {/each}
-            {#if mtip.marks.length > 5}<div class="muted">and {mtip.marks.length - 5} more</div>{/if}
+            {#if mtip.marks.length > 5}<div class="muted">{tr('dashboard.andMore', { n: mtip.marks.length - 5 })}</div>{/if}
           </div>
         {/if}
       </div>
@@ -366,7 +368,7 @@
           <div class="line"><i style:background={css(s.color)}></i><span>{s.label}</span><b>{fmt(s, s.shown[hover.i] ?? 0)}</b></div>
         {/each}
         {#if hoverTotal != null}
-          <div class="line sum"><span>Total</span><b>{format(hoverTotal)}</b></div>
+          <div class="line sum"><span>{tr('dashboard.total')}</span><b>{format(hoverTotal)}</b></div>
         {/if}
       </div>
     {/if}

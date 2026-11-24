@@ -13,8 +13,3 @@ export function breakerLabel(state: string | null | undefined): string {
   if (!state) return '–';
   return LABELS[state] ?? state;
 }
-
-/** The tooltip: the raw state, for anyone who knows the circuit-breaker pattern. */
-export function breakerTitle(state: string | null | undefined): string | undefined {
-  return state ? `circuit breaker: ${state}` : undefined;
-}

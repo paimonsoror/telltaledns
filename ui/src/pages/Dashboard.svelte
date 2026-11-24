@@ -4,6 +4,7 @@
   // only); `#/?view=new` goes back. Nothing in the UI points at it: it is the way out for someone
   // who really prefers the old page, and it is meant to go away once nobody uses it.
   import { href, route } from '../lib/router.svelte';
+  import { t } from '../lib/i18n';
   import DashboardCalm from './DashboardCalm.svelte';
   import DashboardLegacy from './DashboardLegacy.svelte';
 
@@ -31,7 +32,7 @@
 
 {#if legacy}
   <DashboardLegacy />
-  <p class="muted small switch-back"><a href={href('/', { view: 'new' })} data-testid="dashboard-new-link">Switch to the new dashboard</a></p>
+  <p class="muted small switch-back"><a href={href('/', { view: 'new' })} data-testid="dashboard-new-link">{t('dashboard.switchBack')}</a></p>
 {:else}
   <DashboardCalm />
 {/if}

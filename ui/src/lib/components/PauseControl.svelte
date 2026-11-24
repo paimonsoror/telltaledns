@@ -7,6 +7,7 @@
   import { poll } from '../poll';
   import { href } from '../router.svelte';
   import Icon from './Icon.svelte';
+  import { t, tn } from '../i18n';
 
   let nodes = $state<S['BlockingNode'][]>([]);
   let open = $state(false);
@@ -36,7 +37,8 @@
     Math.max(0, ...nodes.flatMap((n) => n.pauses.filter((p) => !p.group).map((p) => p.secondsLeft))),
   );
   const groups = $derived(new Set(nodes.flatMap((n) => n.pauses.filter((p) => p.group).map((p) => p.group))).size);
-  const left = (s: number) => (s >= 3600 ? `${Math.round(s / 360) / 10} h` : `${Math.max(1, Math.round(s / 60))} min`);
+  const left = (s: number) =>
+    s >= 3600 ? t('nav.pause.hoursLeft', { h: Math.round(s / 360) / 10 }) : t('nav.pause.minutesLeft', { n: Math.max(1, Math.round(s / 60)) });
 
   async function act(fn: () => Promise<unknown>) {
     busy = true;
@@ -56,25 +58,25 @@
 {#if everyone > 0}
   <span class="paused" data-testid="blocking-paused" role="status">
     <Icon name="pause" size={14} />
-    <span>Blocking paused · {left(everyone)} left</span>
+    <span>{t('nav.pause.paused', { time: left(everyone) })}</span>
     {#if writable}
-      <button class="link small" disabled={busy} onclick={() => act(() => api.blockingResume({}))}>Resume</button>
+      <button class="link small" disabled={busy} onclick={() => act(() => api.blockingResume({}))}>{t('nav.pause.resume')}</button>
     {/if}
   </span>
 {:else}
   {#if groups > 0}
     <a class="group-paused small" href={href('/groups')} data-testid="groups-paused"
-      >{groups} group{groups === 1 ? '' : 's'} paused</a
+      >{tn('nav.pause.groups', groups)}</a
     >
   {/if}
   {#if writable}
     <span class="pause-menu" bind:this={wrap}>
-      <button class="icon-btn" title="Pause blocking" aria-label="Pause blocking" aria-expanded={open} aria-haspopup="menu" onclick={() => (open = !open)}
+      <button class="icon-btn" title={t('nav.pause.title')} aria-label={t('nav.pause.title')} aria-expanded={open} aria-haspopup="menu" onclick={() => (open = !open)}
         ><Icon name="pause" /></button
       >
       {#if open}
       <div class="menu" role="menu">
-        <p class="small muted">Turn blocking off for everyone for:</p>
+        <p class="small muted">{t('nav.pause.for')}</p>
         {#each [5, 15, 60] as m (m)}
           <button role="menuitem" disabled={busy} onclick={() => act(() => api.blockingPause({ minutes: m }))}
             >{m < 60 ? `${m} minutes` : '1 hour'}</button

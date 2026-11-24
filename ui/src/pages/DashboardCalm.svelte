@@ -18,6 +18,7 @@
   import Tip from '../lib/components/Tip.svelte';
   import { href } from '../lib/router.svelte';
   import { ms, num, pct, short } from '../lib/format';
+  import { t } from '../lib/i18n';
 
   const d = new DashData();
   $effect(() => d.attach());
@@ -25,26 +26,26 @@
   const s = $derived(d.summary);
   const scopeLabel = $derived(
     d.scope.startsWith('node:')
-      ? (d.nodes.find((n) => `node:${n.nodeId}` === d.scope)?.site ?? 'one node')
+      ? (d.nodes.find((n) => `node:${n.nodeId}` === d.scope)?.site ?? t('dashboard.oneNode'))
       : d.scope.startsWith('site:')
-        ? `site ${d.scope.slice(5)}`
-        : 'every node',
+        ? t('dashboard.siteLabel', { site: d.scope.slice(5) })
+        : t('dashboard.everyNode'),
   );
 
   const lists = $derived([
     {
-      title: 'Top domains',
+      title: t('dashboard.topDomains'),
       items: d.topDomains,
       kind: 'domains' as const,
       link: (k: string, merged: boolean) => href('/queries', { name: k, match: merged ? 'substring' : 'exact' }),
     },
     {
-      title: 'Top blocked',
+      title: t('dashboard.topBlocked'),
       items: d.topBlocked,
       kind: 'blocked' as const,
       link: (k: string, merged: boolean) => href('/queries', { name: k, match: merged ? 'substring' : 'exact', status: 'blocked' }),
     },
-    { title: 'Top clients', items: d.topClients, kind: 'clients' as const, link: (k: string) => href('/queries', { client: k }) },
+    { title: t('dashboard.topClients'), items: d.topClients, kind: 'clients' as const, link: (k: string) => href('/queries', { client: k }) },
   ]);
 
   // The chart's view: Totals (queries and the blocked part) and Status (stacked) for everyone;
@@ -53,82 +54,84 @@
   let view = $state<View>('totals');
   const hasGroups = $derived(d.groupSeries.length > 1 || (d.groupSeries.length === 1 && d.groupSeries[0].label !== 'default'));
   const views = $derived([
-    { id: 'totals' as View, name: 'Totals' },
-    { id: 'status' as View, name: 'Status' },
-    ...(d.advanced ? [...(hasGroups ? [{ id: 'group' as View, name: 'Groups' }] : []), { id: 'upstream' as View, name: 'Upstream' }] : []),
+    { id: 'totals' as View, name: t('dashboard.view.totals') },
+    { id: 'status' as View, name: t('dashboard.view.status') },
+    ...(d.advanced ? [...(hasGroups ? [{ id: 'group' as View, name: t('dashboard.view.groups') }] : []), { id: 'upstream' as View, name: t('dashboard.view.upstream') }] : []),
   ]);
   const shown = $derived(views.some((v) => v.id === view) ? view : 'totals');
   const chart = $derived(
     shown === 'status'
-      ? { title: 'Queries by status', series: d.statusSeries, mode: 'stack' as const }
+      ? { title: t('dashboard.chart.queriesByStatus'), series: d.statusSeries, mode: 'stack' as const }
       : shown === 'group'
-        ? { title: 'Traffic by group', series: d.groupSeries, mode: 'stack' as const }
+        ? { title: t('dashboard.chart.trafficByGroup'), series: d.groupSeries, mode: 'stack' as const }
         : shown === 'upstream'
-          ? { title: 'Upstream exchanges', series: d.upstreamSeries, mode: 'area' as const }
-          : { title: 'Queries', series: [d.totalSeries, d.blockedSeries], mode: 'area' as const },
+          ? { title: t('dashboard.chart.upstreamExchanges'), series: d.upstreamSeries, mode: 'area' as const }
+          : { title: t('dashboard.queries'), series: [d.totalSeries, d.blockedSeries], mode: 'area' as const },
   );
 
   // The cache number, split the way the Advanced view splits it (DNS-007).
   const cacheSub = $derived(
     d.advanced && d.refreshedPercent != null && (s?.refreshed ?? 0) > 0
-      ? `${pct((s?.cacheHitPercent ?? 0) - d.refreshedPercent)} fresh · ${pct(d.refreshedPercent)} refreshed`
-      : `${short(s?.cached)} answers`,
+      ? t('dashboard.cacheFreshRefreshed', {
+          fresh: pct((s?.cacheHitPercent ?? 0) - d.refreshedPercent),
+          refreshed: pct(d.refreshedPercent),
+        })
+      : t('dashboard.cacheAnswers', { answers: short(s?.cached) }),
   );
 
-  // Service level (OBS-016).
-  const sloTitles: Record<string, string> = { availability: 'Answers that work', latency: 'Answers that are quick' };
-  const sloAlerts: Record<string, { text: string; tone: string; tip: string }> = {
-    fast: {
-      text: 'burning fast',
-      tone: 'bad',
-      tip: 'Over the last hour (and the last 5 minutes) the budget is going more than 14 times faster than it can last: at this rate a month’s budget is gone in about two days.',
-    },
-    slow: {
-      text: 'burning',
-      tone: 'bad',
-      tip: 'Over the last 6 hours (and the last 30 minutes) the budget is going more than 6 times faster than it can last.',
-    },
-    ticket: {
-      text: 'on course to run out',
-      tone: 'warn',
-      tip: 'Over the last 3 days the budget has been going faster than it can last: worth a look this week.',
-    },
-  };
+  // Service level (OBS-016). Read through functions, not module-level tables: the words follow the
+  // language on screen. `last 30 days`: the count picks its own English plural.
+  const sloWindow = (days: number) =>
+    days === 1 ? t('dashboard.slo.window.one', { n: 1 }) : t('dashboard.slo.window.other', { n: days });
+  const sloTitle = (name: string) =>
+    name === 'availability' ? t('dashboard.slo.availability') : name === 'latency' ? t('dashboard.slo.latency') : name;
+  const sloAlert = (name: string | null | undefined): { text: string; tone: string; tip: string } | null =>
+    name === 'fast'
+      ? { text: t('dashboard.slo.alert.fast'), tone: 'bad', tip: t('dashboard.slo.alert.fastTip') }
+      : name === 'slow'
+        ? { text: t('dashboard.slo.alert.slow'), tone: 'bad', tip: t('dashboard.slo.alert.slowTip') }
+        : name === 'ticket'
+          ? { text: t('dashboard.slo.alert.ticket'), tone: 'warn', tip: t('dashboard.slo.alert.ticketTip') }
+          : null;
   const sloPct = (v: number | null | undefined, digits = 2) => (v == null ? '–' : `${v.toFixed(v >= 99.995 || v === 0 ? 0 : digits)}%`);
   const budgetTone = (v: number | null | undefined) => (v == null ? '' : v >= 50 ? 'ok' : v >= 25 ? 'warn' : 'bad');
   const burnText = (b: S['SloBurn']) => (b.rate == null ? '–' : `${b.rate >= 10 ? b.rate.toFixed(0) : b.rate.toFixed(1)}×`);
   const burnTip = (b: S['SloBurn']) =>
     b.rate == null
-      ? `No answers to judge in the last ${b.window}.`
-      : `Last ${b.window}: ${short(b.bad)} bad of ${short(b.total)} answers. 1× spends exactly the budget over the window.`;
+      ? t('dashboard.slo.burn.none', { window: b.window })
+      : t('dashboard.slo.burn.some', { window: b.window, bad: short(b.bad), total: short(b.total) });
 
   // Where time goes (OBS-030): what each row means (path/transport, or a wait stage).
   let timeView = $state<'table' | 'heatmap'>('table');
-  const paths: Record<string, string> = {
-    cache:
-      'Answered from the cache: a repeat question, no upstream asked. Includes answers whose cached copy had just expired and was given at once while it was refreshed in the background. Usually well under a millisecond.',
-    upstream:
-      'Not in the cache: asked an upstream resolver and waited for it. Also counts stale answers served because the upstream was slow or failing, and SERVFAIL. Usually the slowest path.',
-    local: 'Answered from names on your network (local records), without asking anyone.',
-    synthesized:
-      "Answered without looking anything up: blocked names, refused or rate-limited queries, malformed ones, and special names (like Firefox's DNS-over-HTTPS canary).",
-  };
-  const protos: Record<string, string> = {
-    udp: 'plain DNS over UDP, what most devices use',
-    tcp: 'plain DNS over TCP, for large answers and some tools',
-    dot: 'DNS over TLS (port 853), e.g. Android Private DNS',
-    doh: 'DNS over HTTPS, e.g. browsers or Apple devices with a profile',
-  };
+  const pathOf = (path: string) =>
+    path === 'cache'
+      ? t('dashboard.path.cache')
+      : path === 'upstream'
+        ? t('dashboard.path.upstream')
+        : path === 'local'
+          ? t('dashboard.path.local')
+          : path === 'synthesized'
+            ? t('dashboard.path.synthesized')
+            : t('dashboard.path.fallback');
+  const protoOf = (proto: string) =>
+    proto === 'udp'
+      ? t('dashboard.proto.udp')
+      : proto === 'tcp'
+        ? t('dashboard.proto.tcp')
+        : proto === 'dot'
+          ? t('dashboard.proto.dot')
+          : proto === 'doh'
+            ? t('dashboard.proto.doh')
+            : '';
   const pathTip = (key: string) => {
     if (key.startsWith('wait: ')) {
       const what = key.slice(6);
-      return what === 'upstream'
-        ? "Of the upstream path above: the time spent waiting for upstream resolvers (the rest is this node's own work)."
-        : `Time spent waiting for ${what} when it answered.`;
+      return what === 'upstream' ? t('dashboard.path.waitUpstream') : t('dashboard.path.wait', { what });
     }
     const [path, proto] = key.split('/');
-    const p = paths[path] ?? 'Answers that took this path.';
-    return proto && protos[proto] ? `${p} Over ${protos[proto]}.` : p;
+    const p = pathOf(path);
+    const pr = proto ? protoOf(proto) : '';
+    return pr ? t('dashboard.path.over', { path: p, proto: pr }) : p;
   };
   const timeRows = $derived([...d.byPath, ...d.stages.map((x) => ({ ...x, key: `wait: ${x.key}` }))]);
 
@@ -156,48 +159,49 @@
   <DashHead {d} />
 
   <div class="stats">
-    <div class="cell" data-testid="stat-queries"><Stat label="Queries" value={short(s?.queries)} delta={change(s?.queries, d.previous?.queries)} sub={`last ${d.range.label}${d.scope ? ` · ${scopeLabel}` : ''}`} /></div>
-    <div class="cell" data-testid="stat-blocked"><Stat label="Blocked" value={pct(s?.blockedPercent)} delta={change(s?.blockedPercent, d.previous?.blockedPercent)} sub={`${short(s?.blocked)} queries`} /></div>
-    <div class="cell" data-testid="stat-cache"><Stat label="Cache hits" value={pct(s?.cacheHitPercent)} delta={change(s?.cacheHitPercent, d.previous?.cacheHitPercent)} good="up" sub={cacheSub} /></div>
-    <div class="cell" data-testid="stat-upstream"><Stat label="Upstream p90" value={ms(d.upstreamP90?.p90Ms)} sub={d.cacheP50 ? `cache p50 ${ms(d.cacheP50.p50Ms)}` : 'this hour'} delta={change(d.upstreamP90?.p90Ms, d.prevP90?.p90Ms)} good="down" /></div>
-    <div class="cell" data-testid="stat-clients"><Stat label="Active clients" value={num(s?.activeClients)} sub={d.rangeLabel} /></div>
+    <div class="cell" data-testid="stat-queries"><Stat label={t('dashboard.queries')} value={short(s?.queries)} delta={change(s?.queries, d.previous?.queries)} sub={`${t('dashboard.lastRange', { range: d.range.label })}${d.scope ? ` · ${scopeLabel}` : ''}`} /></div>
+    <div class="cell" data-testid="stat-blocked"><Stat label={t('dashboard.blocked')} value={pct(s?.blockedPercent)} delta={change(s?.blockedPercent, d.previous?.blockedPercent)} sub={t('dashboard.blockedQueries', { queries: short(s?.blocked) })} /></div>
+    <div class="cell" data-testid="stat-cache"><Stat label={t('dashboard.cacheHits')} value={pct(s?.cacheHitPercent)} delta={change(s?.cacheHitPercent, d.previous?.cacheHitPercent)} good="up" sub={cacheSub} /></div>
+    <div class="cell" data-testid="stat-upstream"><Stat label={t('dashboard.upstreamP90')} value={ms(d.upstreamP90?.p90Ms)} sub={d.cacheP50 ? t('dashboard.cacheP50', { value: ms(d.cacheP50.p50Ms) }) : t('dashboard.thisHour')} delta={change(d.upstreamP90?.p90Ms, d.prevP90?.p90Ms)} good="down" /></div>
+    <div class="cell" data-testid="stat-clients"><Stat label={t('dashboard.activeClients')} value={num(s?.activeClients)} sub={d.rangeLabel} /></div>
   </div>
-  <p class="fine muted small">{short(s?.nxdomain)} NXDOMAIN · {short(s?.servfail)} SERVFAIL in the last {d.range.label}</p>
+  <p class="fine muted small">{t('dashboard.nxdomainLine', { nxdomain: short(s?.nxdomain), servfail: short(s?.servfail), range: d.range.label })}</p>
 
   {#if d.advanced}
-    <section class="slo sec" data-testid="slo-card" aria-label="Service level">
+    <section class="slo sec" data-testid="slo-card" aria-label={t('dashboard.slo.heading')}>
       <div class="sh">
-        <h2>Service level {#if d.slo?.enabled}<span class="muted small">last {d.slo.windowDays} days</span>{/if}<HelpButton id="slo" /></h2>
+        <h2>{t('dashboard.slo.heading')} {#if d.slo?.enabled}<span class="muted small">{sloWindow(d.slo.windowDays)}</span>{/if}<HelpButton id="slo" /></h2>
       </div>
       {#if !d.slo}
-        <p class="muted small">Loading…</p>
+        <p class="muted small">{t('common.loading')}</p>
       {:else if !d.slo.enabled}
-        <p class="muted small">Objectives are off (<code>[slo] enabled = false</code>).</p>
+        <p class="muted small">{t('dashboard.slo.off')}<code>[slo] enabled = false</code>{t('dashboard.slo.offEnd')}</p>
       {:else}
         {#if d.slo.missingNodes?.length}
-          <p class="small muted">Without {d.slo.missingNodes.join(', ')}: they didn’t answer.</p>
+          <p class="small muted">{t('dashboard.slo.missing', { nodes: d.slo.missingNodes.join(', ') })}</p>
         {/if}
         <div class="objs">
           {#each d.slo.objectives as o (o.name)}
             {@const left = o.budgetRemainingPercent}
+            {@const alert = sloAlert(o.alert)}
             <div class="obj" data-testid={`slo-${o.name}`}>
               <div class="oh">
-                <strong>{sloTitles[o.name] ?? o.name}</strong>
-                {#if o.alert && sloAlerts[o.alert]}
-                  <Tip text={sloAlerts[o.alert].tip}><span class="badge {sloAlerts[o.alert].tone}">{sloAlerts[o.alert].text}</span></Tip>
+                <strong>{sloTitle(o.name)}</strong>
+                {#if alert}
+                  <Tip text={alert.tip}><span class="badge {alert.tone}">{alert.text}</span></Tip>
                 {:else if o.total > 0}
-                  <span class="badge ok">on track</span>
+                  <span class="badge ok">{t('dashboard.slo.onTrack')}</span>
                 {/if}
               </div>
-              <div class="muted small">{o.goodMeans} · target {o.targetPercent}%</div>
-              <div class="fig"><b>{sloPct(o.sliPercent, 3)}</b> <span class="muted small">of {short(o.total)} answers</span></div>
-              <div class="track {budgetTone(left)}" title="Error budget left: the bad answers the target still allows over the window"><span style:width={`${Math.max(0, Math.min(100, left ?? 0))}%`}></span></div>
+              <div class="muted small">{t('dashboard.slo.target', { means: o.goodMeans, target: o.targetPercent })}</div>
+              <div class="fig"><b>{sloPct(o.sliPercent, 3)}</b> <span class="muted small">{t('dashboard.slo.ofAnswers', { answers: short(o.total) })}</span></div>
+              <div class="track {budgetTone(left)}" title={t('dashboard.slo.budgetTitle')}><span style:width={`${Math.max(0, Math.min(100, left ?? 0))}%`}></span></div>
               <div class="small">
-                {#if left == null}no answers yet{:else if left < 0}budget overspent{:else}{left.toFixed(0)}% of the error budget left{/if}
-                · <a href={href('/analyze', { tab: 'budget', objective: o.name })} data-testid={`slo-who-${o.name}`}>Who spent it?</a>
+                {#if left == null}{t('dashboard.slo.noAnswers')}{:else if left < 0}{t('dashboard.slo.overspent')}{:else}{t('dashboard.slo.budgetLeft', { pct: left.toFixed(0) })}{/if}
+                · <a href={href('/analyze', { tab: 'budget', objective: o.name })} data-testid={`slo-who-${o.name}`}>{t('dashboard.slo.who')}</a>
               </div>
               <div class="small muted">
-                Burn rate
+                {t('dashboard.slo.burnRate')}
                 {#each o.burnRates as b, i (b.window)}{i ? ' · ' : ' '}<Tip text={burnTip(b)}><span class="burn" class:hot={(b.rate ?? 0) >= 6}>{b.window} {burnText(b)}</span></Tip>{/each}
               </div>
             </div>
@@ -208,7 +212,7 @@
   {/if}
 
   <section class="card plot" data-testid="dashboard-chart">
-    <div class="views seg" role="group" aria-label="Chart view">
+    <div class="views seg" role="group" aria-label={t('dashboard.chartView')}>
       {#each views as v (v.id)}
         <button aria-pressed={shown === v.id} onclick={() => (view = v.id)}>{v.name}</button>
       {/each}
@@ -220,20 +224,20 @@
     <div class="pair">
       <section class="sec" class:wide={timeView === 'heatmap'}>
         <div class="sh">
-          <h2>Where time goes {#if timeView === 'table'}<span class="muted small">this hour</span>{/if}{#if timeView === 'heatmap'}<HelpButton id="latency-heatmap" />{:else}<HelpButton id="cache" />{/if}</h2>
-          <div class="seg" role="group" aria-label="Where time goes as">
-            <button type="button" aria-pressed={timeView === 'table'} onclick={() => (timeView = 'table')}>Percentiles</button>
-            <button type="button" aria-pressed={timeView === 'heatmap'} onclick={() => (timeView = 'heatmap')} data-testid="time-heatmap-tab">Heatmap</button>
+          <h2>{t('dashboard.whereTimeGoes')} {#if timeView === 'table'}<span class="muted small">{t('dashboard.thisHour')}</span>{/if}{#if timeView === 'heatmap'}<HelpButton id="latency-heatmap" />{:else}<HelpButton id="cache" />{/if}</h2>
+          <div class="seg" role="group" aria-label={t('dashboard.whereTimeGoesAs')}>
+            <button type="button" aria-pressed={timeView === 'table'} onclick={() => (timeView = 'table')}>{t('dashboard.percentiles')}</button>
+            <button type="button" aria-pressed={timeView === 'heatmap'} onclick={() => (timeView = 'heatmap')} data-testid="time-heatmap-tab">{t('dashboard.heatmap')}</button>
           </div>
         </div>
         {#if timeView === 'heatmap'}
           <LatencyHeatmap />
         {:else if timeRows.length === 0}
-          <p class="empty">No answers yet this hour.</p>
+          <p class="empty">{t('dashboard.noAnswersHour')}</p>
         {:else}
           <div class="table-wrap">
             <table class="compact times">
-              <thead><tr><th>Path</th><th class="num hide-sm">Answers</th><th class="num">p50</th><th class="num">p90</th><th class="num">p99</th><th class="num hide-sm">max</th></tr></thead>
+              <thead><tr><th>{t('dashboard.table.path')}</th><th class="num hide-sm">{t('dashboard.table.answers')}</th><th class="num">p50</th><th class="num">p90</th><th class="num">p99</th><th class="num hide-sm">{t('dashboard.table.max')}</th></tr></thead>
               <tbody>
                 {#each timeRows as r (r.key)}
                   <tr>
@@ -253,11 +257,11 @@
 
       <section class="sec">
         <div class="sh">
-          <h2>Upstreams{#if otherNode} <span class="muted small">as this node sees them</span>{/if}</h2>
-          <a href={href('/upstreams')} class="small">Details</a>
+          <h2>{t('dashboard.upstreams')}{#if otherNode} <span class="muted small">{t('dashboard.asThisNode')}</span>{/if}</h2>
+          <a href={href('/upstreams')} class="small">{t('dashboard.details')}</a>
         </div>
         {#if d.upstreams.length === 0}
-          <p class="empty">No upstreams configured.</p>
+          <p class="empty">{t('dashboard.noUpstreams')}</p>
         {:else}
           <ul class="ups">
             {#each d.upstreams as u (u.id)}
@@ -278,14 +282,14 @@
   {/if}
 
   <div class="lists">
-    {#each lists as l (l.title)}
+    {#each lists as l (l.kind)}
       <section>
-        {#if l.title === 'Top domains'}
+        {#if l.kind === 'domains'}
           <div class="sh">
             <h2>{l.title} <span class="muted small">{d.topLabel}</span><HelpButton id="internal-names" /></h2>
-            <div class="seg" role="group" aria-label="Top domains on the internet or internal">
-              <button type="button" aria-pressed={d.domainsView === 'internet'} onclick={() => (d.domainsView = 'internet')}>Internet</button>
-              <button type="button" aria-pressed={d.domainsView === 'internal'} onclick={() => (d.domainsView = 'internal')} data-testid="domains-internal-tab">Internal</button>
+            <div class="seg" role="group" aria-label={t('dashboard.domainsScope')}>
+              <button type="button" aria-pressed={d.domainsView === 'internet'} onclick={() => (d.domainsView = 'internet')}>{t('dashboard.internet')}</button>
+              <button type="button" aria-pressed={d.domainsView === 'internal'} onclick={() => (d.domainsView = 'internal')} data-testid="domains-internal-tab">{t('dashboard.internal')}</button>
             </div>
           </div>
         {:else}
@@ -299,9 +303,9 @@
         <TopList items={l.items} kind={l.kind} link={l.link} groupColor={d.groupColor} onchanged={() => void d.load()} />
         {#if d.advanced && l.kind === 'clients' && types.length}
           <p class="types small muted" data-testid="devices-by-type">
-            By type
+            {t('dashboard.byType')}
             {#each types as [cls, n] (cls)}<span class="ty">{cls} <b>{n}</b></span>{/each}
-            <a href={href('/clients')}>Clients</a>
+            <a href={href('/clients')}>{t('dashboard.clients')}</a>
           </p>
         {/if}
       </section>

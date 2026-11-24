@@ -4,6 +4,7 @@
   import { can } from '../session.svelte';
   import { poll } from '../poll';
   import { href } from '../router.svelte';
+  import { tn } from '../i18n';
 
   let waiting = $state(0);
   $effect(() => {
@@ -20,7 +21,7 @@
 
 {#if waiting > 0}
   <a class="pill" href={href('/agent-changes')} data-testid="agent-inbox">
-    {waiting} agent change{waiting === 1 ? '' : 's'} to review
+    {tn('nav.agentChanges.waiting', waiting)}
   </a>
 {/if}
 
