@@ -11,6 +11,7 @@
   import { href } from '../lib/router.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
+  import { t, tn, type MessageKey } from '../lib/i18n';
 
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let latency = $state<S['LatencyRow'][]>([]);
@@ -40,49 +41,52 @@
   const advanced = $derived(currentMode() === 'advanced');
   const totalRequests = $derived(upstreams.reduce((a, u) => a + u.requests, 0));
 
+  // A plural group's base key: `tn()` adds `.one` or `.other`, so `t()` has no string for it.
+  type CountKey<T = MessageKey> = T extends `${infer Base}.one` ? Base : never;
+
   // REQ: UPS-006, OBS-011 — what the failures were, which says what to fix: timeouts point at
   // the path, network errors at the connection, SERVFAIL at the domain asked about.
-  const failureKinds: [keyof S['FailureKinds'], string][] = [
-    ['timeout', 'timeouts'],
-    ['network', 'connection errors'],
-    ['badResponse', 'bad replies'],
-    ['unresolved', 'name not resolved'],
-    ['servfail', 'SERVFAIL'],
-    ['refused', 'REFUSED'],
-    ['otherRcode', 'other errors'],
+  const failureKinds: [keyof S['FailureKinds'], CountKey][] = [
+    ['timeout', 'upstreams.failure.timeout'],
+    ['network', 'upstreams.failure.network'],
+    ['badResponse', 'upstreams.failure.badResponse'],
+    ['unresolved', 'upstreams.failure.unresolved'],
+    ['servfail', 'upstreams.failure.servfail'],
+    ['refused', 'upstreams.failure.refused'],
+    ['otherRcode', 'upstreams.failure.otherRcode'],
   ];
   const breakdown = (u: S['UpstreamInfo']) =>
     failureKinds
       .filter(([k]) => u.failuresByKind[k] > 0)
-      .map(([k, label]) => `${num(u.failuresByKind[k])} ${label}`)
+      .map(([k, key]) => tn(key, u.failuresByKind[k], { n: num(u.failuresByKind[k]) }))
       .join(' · ');
 
   // REQ: API-002 (T7.5) — add and change upstreams and upstream groups here.
-  const upstreamFields: Field[] = [
-    { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
+  const upstreamFields = $derived<Field[]>([
+    { key: 'url', label: t('qw.explain.address'), type: 'text', placeholder: t('upstreams.field.addressPlaceholder'),
       // REQ: UPS-011 (ADR-180) — plugin upstreams are the config file's.
-      help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://. Plugin upstreams (exec://, unix://) are defined in the config file.' },
-    { key: 'tls_server_name', label: 'TLS server name', type: 'text', placeholder: 'dns.quad9.net', advanced: true,
-      help: 'The name on the server certificate, for tls:// and quic:// addresses given by IP.' },
-    { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', placeholder: '2000', advanced: true },
-  ];
+      help: t('upstreams.field.addressHelp') },
+    { key: 'tls_server_name', label: t('upstreams.field.tlsName'), type: 'text', placeholder: t('upstreams.field.tlsNamePlaceholder'), advanced: true,
+      help: t('upstreams.field.tlsNameHelp') },
+    { key: 'timeout_ms', label: t('upstreams.field.timeout'), type: 'number', placeholder: '2000', advanced: true },
+  ]);
   const names = $derived(upstreams.map((u) => u.name).filter((n) => !n.startsWith('forward:')));
   const groupFields = $derived<Field[]>([
-    { key: 'members', label: 'Upstreams', type: 'multi', options: names },
-    { key: 'strategy', label: 'Strategy', type: 'select', options: ['failover', 'round_robin', 'weighted', 'fastest', 'parallel'],
-      help: 'failover: in order, the next on failure. fastest: the quickest lately. parallel: ask several, take the first answer.' },
+    { key: 'members', label: t('upstreams.field.members'), type: 'multi', options: names },
+    { key: 'strategy', label: t('upstreams.field.strategy'), type: 'select', options: ['failover', 'round_robin', 'weighted', 'fastest', 'parallel'],
+      help: t('upstreams.field.strategyHelp') },
   ]);
-  const results: [keyof S['UpstreamQuality'], string, string][] = [
-    ['same', 'same', ''],
-    ['differentAddresses', 'other addresses', 'Both had addresses, none in common: CDNs and geo-DNS answer per resolver, usually harmless.'],
-    ['differentRcode', 'other response', 'A different response code (SERVFAIL, REFUSED, ...).'],
-    ['filtered', 'filtered', 'One had addresses, the other none or only 0.0.0.0/loopback: one of them filters this name.'],
-    ['unanswered', 'no second answer', 'The second upstream didn’t answer.'],
+  const results: [keyof S['UpstreamQuality'], CountKey, MessageKey | ''][] = [
+    ['same', 'upstreams.opinion.same', ''],
+    ['differentAddresses', 'upstreams.opinion.otherAddresses', 'upstreams.opinion.otherAddressesTip'],
+    ['differentRcode', 'upstreams.opinion.otherResponse', 'upstreams.opinion.otherResponseTip'],
+    ['filtered', 'upstreams.opinion.filtered', 'upstreams.opinion.filteredTip'],
+    ['unanswered', 'upstreams.opinion.unanswered', 'upstreams.opinion.unansweredTip'],
   ];
-  const resultLabel: Record<string, string> = {
-    different_addresses: 'other addresses',
-    different_rcode: 'other response',
-    filtered: 'filtered',
+  const resultLabel: Record<string, MessageKey> = {
+    different_addresses: 'upstreams.disagreement.otherAddresses',
+    different_rcode: 'upstreams.disagreement.otherResponse',
+    filtered: 'upstreams.disagreement.filtered',
   };
   const opinions = (q: S['UpstreamQuality']) => results.reduce((n, [k]) => n + (q[k] as number), 0);
   const multiNode = $derived(checks.length > 1);
@@ -91,29 +95,29 @@
     upstreams = (await api.upstreams()).items;
   };
   // REQ: API-002 (T9.12) — ask the draft upstream before saving it.
-  const tryUpstream = {
-    label: 'Test it',
+  const tryUpstream = $derived({
+    label: t('lists.test.label'),
     run: async (b: Record<string, unknown>) => {
       const r = await api.checkUpstream(b);
       return r.ok
-        ? { ok: true, text: `Works: ${r.detail} in ${r.elapsedMs} ms.` }
-        : { ok: false, text: `Doesn't work: ${r.error ?? r.detail}` };
+        ? { ok: true, text: t('upstreams.test.works', { detail: r.detail, ms: r.elapsedMs }) }
+        : { ok: false, text: t('upstreams.test.fails', { error: r.error ?? r.detail }) };
     },
-  };
+  });
   // REQ: OBS-030 — the upstream whose answer times the heatmap shows.
   let latencyOf = $state('');
 </script>
 
 <div class="page">
-  <h1>Upstreams<HelpButton id="upstreams" /></h1>
+  <h1>{t('nav.upstreams')}<HelpButton id="upstreams" /></h1>
   <ErrorNote {error} />
   <section class="card">
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Upstream</th><th>Groups</th><th>Health<HelpButton id="upstream-health" /></th><th class="num">Requests</th><th class="num">Failures</th>
-            {#if advanced}<th class="num">Smoothed</th>{/if}<th class="num">p50</th>{#if advanced}<th class="num">p99</th>{/if}
+            <th>{t('flow.stage.upstream')}</th><th>{t('nav.groups')}</th><th>{t('cluster.health.title')}<HelpButton id="upstream-health" /></th><th class="num">{t('upstreams.col.requests')}</th><th class="num">{t('upstreams.col.failures')}</th>
+            {#if advanced}<th class="num">{t('upstreams.col.smoothed')}</th>{/if}<th class="num">p50</th>{#if advanced}<th class="num">p99</th>{/if}
           </tr>
         </thead>
         <tbody>
@@ -123,8 +127,8 @@
               <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
               <td><BreakerBadge value={u.breaker} /></td>
-              <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label="share of all upstream requests" /></td>
-              <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label="failure rate" />
+              <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label={t('upstreams.share.requests')} /></td>
+              <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label={t('upstreams.share.failures')} />
                 {#if u.failures > 0}<div class="muted small">{breakdown(u)}</div>{/if}</td>
               {#if advanced}<td class="num">{ms(u.latencyEwmaMs)}</td>{/if}
               <td class="num">{ms(l?.p50Ms)}</td>
@@ -136,17 +140,15 @@
     </div>
   </section>
   <p class="muted small">
-    Health: <strong>Healthy</strong> = answering, <strong>Benched</strong> = stopped asking it after
-    failures, <strong>Probing</strong> = a trial query is checking whether it has recovered.
-    Percentiles cover this hour. Hover a badge for the circuit breaker's own word.
+    {t('upstreams.health.intro')}<strong>{t('cluster.healthy')}</strong>{t('upstreams.health.answering')}<strong>{t('dashw.breaker.open')}</strong>{t('upstreams.health.stopped')}<strong>{t('dashw.breaker.halfOpen')}</strong>{t('upstreams.health.trial')}
   </p>
   <!-- REQ: OBS-030 (ADR-130) — one upstream's answer times as a shape over time. -->
   {#if upstreams.length}
     <section class="card" data-testid="upstream-latency">
       <div class="card-head">
-        <h2>Answer time over time<HelpButton id="latency-heatmap" /></h2>
+        <h2>{t('upstreams.latency.title')}<HelpButton id="latency-heatmap" /></h2>
         <span class="pill-field bare">
-          <select bind:value={latencyOf} aria-label="Upstream">
+          <select bind:value={latencyOf} aria-label={t('flow.stage.upstream')}>
             {#each upstreams as u (u.id)}<option value={u.name}>{u.name}</option>{/each}
           </select>
         </span>
@@ -156,15 +158,15 @@
   {/if}
   <!-- REQ: OBS-019 (ADR-108) — are the upstreams telling the truth? -->
   <section class="card" data-testid="upstream-quality">
-    <h2>Answer quality<HelpButton id="upstream-checks" /></h2>
+    <h2>{t('upstreams.quality.title')}<HelpButton id="upstream-checks" /></h2>
     {#if !anyQuality}
-      <p class="empty">Nothing to show yet: DNSSEC verdicts and error codes appear as upstreams answer.</p>
+      <p class="empty">{t('upstreams.quality.empty')}</p>
     {:else}
       <div class="table-wrap">
         <table class="compact">
           <thead>
             <tr>
-              {#if multiNode}<th>Node</th>{/if}<th>Upstream</th><th>Second opinions</th><th>DNSSEC</th><th>Error codes (EDE)</th>
+              {#if multiNode}<th>{t('qw.cache.node')}</th>{/if}<th>{t('flow.stage.upstream')}</th><th>{t('upstreams.col.secondOpinions')}</th><th>{t('upstreams.col.dnssec')}</th><th>{t('upstreams.col.ede')}</th>
             </tr>
           </thead>
           <tbody>
@@ -176,15 +178,15 @@
                   <td class="small">
                     {#if opinions(q) === 0}<span class="muted">–</span>{/if}
                     {#each results as [k, label, tip] (k)}
-                      {#if (q[k] as number) > 0}<span class="chip" class:bad={k === 'filtered'} title={tip}>{num(q[k] as number)} {label}</span>{/if}
+                      {#if (q[k] as number) > 0}<span class="chip" class:bad={k === 'filtered'} title={tip ? t(tip) : ''}>{tn(label, q[k] as number, { n: num(q[k] as number) })}</span>{/if}
                     {/each}
                   </td>
                   <td class="small">
                     {#if q.dnssecSecure + q.dnssecInsecure + q.dnssecBogus + q.dnssecIndeterminate === 0}<span class="muted">–</span>
-                    {:else}{num(q.dnssecSecure)} secure · {num(q.dnssecInsecure)} unsigned{#if q.dnssecBogus} · <span class="bad-text">{num(q.dnssecBogus)} bogus</span>{/if}{#if q.dnssecIndeterminate} · {num(q.dnssecIndeterminate)} undecided{/if}{/if}
+                    {:else}{tn('upstreams.dnssec.secure', q.dnssecSecure, { n: num(q.dnssecSecure) })} · {tn('upstreams.dnssec.unsigned', q.dnssecInsecure, { n: num(q.dnssecInsecure) })}{#if q.dnssecBogus} · <span class="bad-text">{tn('upstreams.dnssec.bogus', q.dnssecBogus, { n: num(q.dnssecBogus) })}</span>{/if}{#if q.dnssecIndeterminate} · {tn('upstreams.dnssec.undecided', q.dnssecIndeterminate, { n: num(q.dnssecIndeterminate) })}{/if}{/if}
                   </td>
                   <td class="small">
-                    {#if q.ede.length === 0}<span class="muted">none</span>{/if}
+                    {#if q.ede.length === 0}<span class="muted">{t('groups.lists.none')}</span>{/if}
                     {#each q.ede as e (e.code)}<span class="chip" class:bad={e.code >= 15 && e.code <= 17}>{e.code} {e.name}: {num(e.count)}</span>{/each}
                   </td>
                 </tr>
@@ -196,29 +198,27 @@
     {/if}
     {#if checks.length && !checks.some((c) => c.enabled)}
       <p class="muted small">
-        Second opinions are off. With <code>[upstream_check] sample_every = 1000</code>, one forwarded question in 1,000 is
-        asked again of another upstream and the answers compared (that upstream sees those names).
+        {t('upstreams.secondOpinionsOff.before')}<code>[upstream_check] sample_every = 1000</code>{t('upstreams.secondOpinionsOff.after')}
       </p>
     {/if}
     {#each checks.filter((c) => c.recent.length) as c (c.node ?? '')}
-      <h3 class="small">Latest disagreements{#if multiNode} on {c.node}{/if}</h3>
+      <h3 class="small">{t('upstreams.disagreements')}{#if multiNode}{t('upstreams.disagreements.on', { node: c.node ?? '' })}{/if}</h3>
       <ul class="disagreements small">
         {#each c.recent.slice(0, 10) as d (`${d.at}|${d.name}`)}
           <li>
             <span class="mono">{d.name}</span> {d.qtype} · <strong>{d.upstream}</strong>: {d.answer} · <strong>{d.reference}</strong>: {d.referenceAnswer}
-            <span class="chip" class:bad={d.result === 'filtered'}>{resultLabel[d.result] ?? d.result}</span>
+            <span class="chip" class:bad={d.result === 'filtered'}>{resultLabel[d.result] ? t(resultLabel[d.result]) : d.result}</span>
           </li>
         {/each}
       </ul>
     {/each}
   </section>
-  <ConfigEditor kind="upstream" path="upstreams" title="Upstream servers" noun="upstream" fields={upstreamFields}
+  <ConfigEditor kind="upstream" path="upstreams" title={t('groups.field.upstreams')} noun={t('upstreams.manage.noun')} fields={upstreamFields}
     summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream} />
-  <ConfigEditor kind="upstream_group" path="upstream-groups" title="Upstream groups" noun="upstream group" fields={groupFields}
+  <ConfigEditor kind="upstream_group" path="upstream-groups" title={t('upstreams.manage.groupTitle')} noun={t('upstreams.manage.groupNoun')} fields={groupFields}
     summary={(d) => `${String(d.strategy ?? 'failover')}: ${((d.members as string[]) ?? []).join(', ')}`} onchanged={reload} />
   <p class="muted small">
-    To send one domain to a different server (a work network, your router), add a forwarded domain on the
-    <a href={href('/local-dns')}>Names on my network</a> page.<HelpButton id="routes" />
+    {t('upstreams.forwarded.before')}<a href={href('/local-dns')}>{t('nav.localDns')}</a>{t('upstreams.forwarded.after')}<HelpButton id="routes" />
   </p>
 </div>
 

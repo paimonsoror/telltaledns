@@ -6,6 +6,7 @@
   import { clock, num } from '../format';
   import type { Marker } from '../annotations.svelte';
   import { visibleMarkers } from '../markers';
+  import { localeTag, t as tr, tn } from '../i18n';
 
   export interface Series {
     label: string;
@@ -76,7 +77,15 @@
   }
 
   const markLabel = (marks: Marker[]) =>
-    marks.map((m) => `${clock(m.time)}: ${m.summary}${m.actor ? ` (${m.actor})` : ''}`).join('; ');
+    marks
+      .map((m) =>
+        tr(m.actor ? 'widgets.chart.mark.actor' : 'widgets.chart.mark', {
+          time: clock(m.time),
+          summary: m.summary,
+          actor: m.actor ?? '',
+        }),
+      )
+      .join(tr('nav.health.separator'));
   function openMark(marks: Marker[]) {
     const h = marks.find((m) => m.href)?.href;
     if (h) location.hash = h;
@@ -152,7 +161,7 @@
     late.setHours(22, 22, 22, 0);
     // In legend order (after the stacked reverse).
     legendChars = [
-      Math.max('total'.length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
+      Math.max(tr('widgets.chart.total').length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
       ...order.map((i) => format(series[i].values.reduce((a, v) => a + (v ?? 0), 0)).length),
     ];
     const opts: uPlot.Options = {
@@ -180,7 +189,7 @@
           values: (_u, vals) =>
             vals.map((v) =>
               times.length > 1 && times[times.length - 1] - times[0] > 172_800
-                ? new Date(v * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                ? new Date(v * 1000).toLocaleDateString(localeTag(), { month: 'short', day: 'numeric' })
                 : clock(v, seconds && times[times.length - 1] - times[0] < 180),
             ),
         },
@@ -193,7 +202,7 @@
         },
       ],
       series: [
-        { value: (_u, v) => (v == null ? 'total' : clock(v, true)) },
+        { value: (_u, v) => (v == null ? tr('widgets.chart.total') : clock(v, true)) },
         ...order.map((i) => {
           const c = color(series[i].color);
           return {
@@ -238,17 +247,17 @@
   <div class="card-head">
     <h2>{title}</h2>
     <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>
-      {showTable ? 'Chart' : 'Table'}
+      {showTable ? tr('dashboard.chart') : tr('flow.table')}
     </button>
   </div>
   {#if times.length === 0}
-    <p class="empty">No data yet.</p>
+    <p class="empty">{tr('widgets.chart.empty')}</p>
   {:else if showTable}
     <div class="table-wrap table-view">
       <table>
         <thead>
           <tr>
-            <th>Time</th>
+            <th>{tr('dashw.time')}</th>
             {#each series as s (s.label)}<th class="num">{s.label}</th>{/each}
           </tr>
         </thead>
@@ -264,10 +273,10 @@
       {#if inRange.length}
         <!-- REQ: OBS-033 — the markers in this range, as rows. -->
         <table class="compact changes-table">
-          <thead><tr><th>Changed</th><th>What</th></tr></thead>
+          <thead><tr><th>{tr('widgets.chart.changed')}</th><th>{tr('dashboard.what')}</th></tr></thead>
           <tbody>
             {#each inRange as m, i (i)}
-              <tr><td>{clock(m.time)}</td><td>{m.summary}{#if m.actor} · {m.actor}{/if}{#if m.nodes.length} · {m.nodes.join(', ')}{/if}</td></tr>
+              <tr><td>{clock(m.time)}</td><td>{m.summary}{#if m.actor}{tr('widgets.chart.sep')}{m.actor}{/if}{#if m.nodes.length}{tr('widgets.chart.sep')}{m.nodes.join(tr('widgets.chart.list'))}{/if}</td></tr>
             {/each}
           </tbody>
         </table>
@@ -277,6 +286,7 @@
   <div class="plot" bind:this={wrap} bind:clientWidth={width} hidden={showTable || times.length === 0}>
     <div bind:this={el}></div>
     {#if placed.length}
+      <!-- Two changes can share a second: key by position, not by time. -->
       <div
         class="mk-layer"
         data-testid="chart-markers"
@@ -285,7 +295,7 @@
         style:width={`${box.width}px`}
         style:height={`${box.height}px`}
       >
-        {#each placed as p (p.x)}
+        {#each placed as p, i (i)}
           <button
             type="button"
             class="mk"
@@ -308,11 +318,11 @@
               <div>
                 <span class="muted">{clock(m.time)}</span>
                 {m.summary}
-                {#if m.actor}<span class="muted"> · {m.actor}</span>{/if}
-                {#if m.nodes.length}<span class="muted"> · {m.nodes.join(', ')}</span>{/if}
+                {#if m.actor}<span class="muted">{tr('widgets.chart.sep')}{m.actor}</span>{/if}
+                {#if m.nodes.length}<span class="muted">{tr('widgets.chart.sep')}{m.nodes.join(tr('widgets.chart.list'))}</span>{/if}
               </div>
             {/each}
-            {#if tip.marks.length > 5}<div class="muted">and {tip.marks.length - 5} more</div>{/if}
+            {#if tip.marks.length > 5}<div class="muted">{tn('widgets.chart.more', tip.marks.length - 5)}</div>{/if}
           </div>
         {/if}
       </div>

@@ -6,16 +6,19 @@
   import ChangesControls from '../components/ChangesControls.svelte';
   import ErrorNote from '../components/ErrorNote.svelte';
   import HelpButton from '../components/HelpButton.svelte';
+  import { t } from '../i18n';
 
-  let { d, title = 'Dashboard' }: { d: DashData; title?: string } = $props();
+  let { d, title }: { d: DashData; title?: string } = $props();
+  // The page's own name when the caller gives none.
+  const heading = $derived(title ?? t('legacy.title'));
 </script>
 
 <div class="page-head">
-  <h1>{title}<HelpButton id="how-it-works" /></h1>
+  <h1>{heading}<HelpButton id="how-it-works" /></h1>
   <DashControls {d} />
 </div>
 <ChangesControls part="body" advanced={d.advanced} />
 <ErrorNote error={d.error} />
 {#if d.summary?.missingNodes?.length}
-  <div class="notice warn small">Partial results: {d.summary.missingNodes.join(', ')} didn't answer, so these numbers cover the other cluster nodes.</div>
+  <div class="notice warn small">{t('legacy.partialResults', { nodes: d.summary.missingNodes.join(', ') })}</div>
 {/if}

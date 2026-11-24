@@ -1,0 +1,125 @@
+// REQ: API-011 — queries 界面的中文文案。键名与 en/queries.ts 一一对应。
+// 名字嵌在句子中间的地方（标记里用 `<bdi>` 包住）被拆成 `…Start`/`…Mid` 与 `…End`/`…After`：
+// 前者写到名字之前，后者接着名字之后写。
+import type { MessageKey } from '../en';
+
+export const queries: Partial<Record<MessageKey, string>> = {
+  // 标题、实时视图，以及筛选条件上方的提示。
+  'queries.live.streaming': '实时接收中',
+  'queries.live.connecting': '正在连接',
+  'queries.live.retrying': '正在重试',
+  'queries.liveIgnores': '实时视图会忽略响应码、起始时间和分组筛选；它显示实时发生的新查询。',
+  'queries.traceNotice': '跟踪 ID 为',
+  'queries.showAllQueries': '显示全部查询',
+
+  // 筛选条件：标签、匹配方式菜单，以及“非”复选框。
+  'queries.filter.match': '匹配方式',
+  'queries.match.substring': '包含',
+  'queries.match.exact': '完全一致',
+  'queries.match.suffix': '及其子域',
+  'queries.match.glob': '通配符 (*)',
+  'queries.match.regex': '正则表达式',
+  'queries.match.notSubstring': '不包含',
+  'queries.match.notExact': '不是',
+  'queries.match.notSuffix': '不是，也不在其下',
+  'queries.match.notGlob': '不匹配通配符',
+  'queries.match.notRegex': '不匹配正则表达式',
+  'queries.filter.clientNot': '除这台客户端以外的所有客户端',
+  'queries.filter.qtypeNot': '除这些以外的所有类型',
+  'queries.filter.rcode': '响应码',
+  'queries.filter.rcodeNot': '除这些以外的所有响应码',
+  'queries.filter.minLatency': '慢于（ms）',
+  'queries.filter.any': '任意',
+  'queries.filter.since': '起始时间',
+  'queries.not': '非',
+  'queries.statusNot': '除所选以外的所有状态',
+  'queries.clear': '清除',
+
+  // 查询状态：徽标和筛选标签上的文字（发给接口的仍然是标识符本身）。
+  'queries.status.other': '其他',
+  'queries.status.stale': '陈旧',
+  'queries.status.refreshing': '刷新中',
+  'queries.status.special': '特殊',
+  'queries.status.servfail': '上游故障',
+  'queries.status.rate_limited': '限速',
+  'queries.status.allowed': '已放行',
+  'queries.status.malformed': '格式错误',
+
+  // “起始时间”菜单里的时间范围（值由接口决定，这里只有文字）。
+  'queries.range.7d': '7 天',
+
+  // 表格：列名、行上的提示，以及没有结果时的说明。
+  'queries.col.took': '耗时',
+  'queries.nodeTitle': '做出应答的集群节点',
+  'queries.timing': '其中上游 {upstream}（共 {total}）',
+  'queries.why': '为什么？',
+  'queries.empty': '没有匹配的查询。',
+
+  // 表尾：显示了多少行、搜索看了哪些文件，以及下一页。
+  'queries.foot.rows': '{n} 行',
+  'queries.foot.notReached': ' · 没能访问：{names}',
+  'queries.foot.searched': ' · 在 {files} 个小时文件里检索了 {total} 个块中的 {read} 个',
+  'queries.foot.liveRows': '{n} 行实时数据（只保留最新 {max} 行）',
+  'queries.foot.skipped': ' · 为跟上速度跳过了 {n} 条匹配的查询',
+  'queries.older': '更早',
+
+  // “为什么？”抽屉：标题，以及解释之前关于这一行的那句话。
+  'queries.whyTitle': '为什么：{name}',
+  'queries.whyExplains': '说明这条查询现在会被如何处理；自 {time} 起，列表或设置可能已经改变。',
+  'queries.whyLoggedAs': '记录状态为',
+  'queries.whyLoggedBy': ' 由 {list}',
+  'queries.whyEnd': '。',
+  'queries.makeQuickRule': '创建快捷规则',
+  'queries.loadingDevices': '正在加载设备…',
+
+  // 快捷规则表单：它的文字，以及它作用于谁。
+  'queries.quickRule.action': '操作',
+  'queries.quickRule.allow': '放行',
+  'queries.quickRule.block': '拦截',
+  'queries.quickRule.appliesTo': '适用于',
+  'queries.quickRule.scopeDevice': '一台设备',
+  'queries.quickRule.scopeGroup': '一个分组',
+  'queries.quickRule.devicePlaceholder': '已命名的设备、IP 或网段',
+  'queries.quickRule.forLower': '持续',
+  'queries.quickRule.duration': '时长',
+  'queries.quickRule.notePlaceholder': '备注（可选），例如：妈妈玩的游戏',
+  'queries.quickRule.saveChanges': '保存修改',
+  'queries.quickRule.save': '保存规则',
+
+  // 规则持续多久。
+  'queries.duration.30m': '30 分钟',
+  'queries.duration.2h': '2 小时',
+  'queries.duration.today': '到今晚零点',
+  'queries.duration.1d': '1 天',
+  'queries.duration.always': '直到我删除它',
+  'queries.duration.keep': '保持当前的结束时间（{end}）',
+
+  // 工作负载的分组是从哪来的（表单说明里分组后面的那几个字）。
+  'queries.origin.podLabel': '由 Pod 上的标签设定',
+  'queries.origin.namespaceLabel': '由命名空间上的标签设定',
+  'queries.origin.map': '由某条规则设定',
+  'queries.origin.defaultGroup': '工作负载的默认分组',
+  'queries.origin.network': '它所在网络的分组',
+  'queries.origin.group': '它所在的分组',
+
+  // 表单填了什么，以及日志里它是怎么显示的。
+  'queries.seen.groupPlaced': '{workload} 是一个 Kubernetes 工作负载，它的 Pod 会不断重建，因此这条规则针对它所在的分组 ',
+  'queries.seen.groupPlacedAfter': '（{origin}）：其中的每台设备。若只想针对某个地址，请选择“一台设备”。',
+  'queries.seen.groupOtherMid': ' 是一个 Kubernetes 工作负载，它所在的分组是 ',
+  'queries.seen.groupOtherAfter': '。这条规则针对 ',
+  'queries.seen.everyDevice': '：其中的每台设备。',
+  'queries.seen.forPrefix': '这条规则针对 ',
+  'queries.seen.podIs': '{address} 是 ',
+  'queries.seen.podChanges': ' 的一个 Pod，而 Pod 一旦重启地址就会改变。',
+  'queries.seen.podUseGroup': '若要覆盖它的所有 Pod，请选择“一个分组”。',
+  'queries.seen.podAddGroup': '若要覆盖它的所有 Pod，请先把该工作负载放进某个分组：在日志里点击它的名称，然后选择“添加到分组…”。',
+  'queries.seen.namedDevice': '{address} 是你的设备“',
+  'queries.seen.namedDeviceEnd': '”。',
+  'queries.seen.seenAsStart': '{address}（日志里显示为 ',
+  'queries.seen.podUnknown': '这看起来像是一个本节点不认识的 Kubernetes Pod：Pod 一旦重启地址就会改变，所以请用操作员为它设定的分组，而不是这个地址。',
+  'queries.seen.address': '针对地址的规则会在地址改变后失效：请在路由器里为该地址保留固定 IP，或者给设备命名，这样只需改一处，而不必改每一条规则。',
+
+  // 每条快捷规则都会这样，写在表单下面。
+  'queries.quickRule.foot': '包含子域。先于任何列表做出判定。设备可能会在几分钟内继续使用旧的应答。',
+  'queries.quickRule.footEdit': '保存时会保留这条规则是谁建的、什么时候建的。',
+};

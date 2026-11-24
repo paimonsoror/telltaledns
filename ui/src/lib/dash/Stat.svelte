@@ -2,6 +2,8 @@
   // Dashboard lab — one number with its label and its change against the previous period. No
   // card, ring or sparkline: the change is plain colored text, colored by what is good for the
   // metric, not by direction.
+  import { t } from '../i18n';
+
   let {
     label,
     value,
@@ -35,7 +37,7 @@
   <div class="value {tone}">{value}</div>
   {#if text || sub}
     <div class="foot">
-      {#if text}<span class="delta {kind}" title="Against the previous period of the same length">{text}</span>{/if}
+      {#if text}<span class="delta {kind}" title={t('dashboard.previousPeriodTitle')}>{text}</span>{/if}
       {#if sub}<span class="sub">{sub}</span>{/if}
     </div>
   {/if}

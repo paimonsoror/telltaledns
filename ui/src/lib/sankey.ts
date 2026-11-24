@@ -3,15 +3,17 @@
 // it), links stacked within their nodes so each band's width is its exact count. Pure: the
 // page draws it as SVG.
 
+import type { MessageKey } from './i18n';
+
 export type FlowNode = { id: string; stage: string; name: string; count: number; deadEnd: number };
 export type FlowLink = { source: string; target: string; count: number; failure: boolean };
 
 export const STAGES = ['group', 'status', 'upstream', 'rcode'] as const;
-export const STAGE_LABEL: Record<string, string> = {
-  group: 'Groups',
-  status: 'Decision',
-  upstream: 'Upstream',
-  rcode: 'Response',
+export const STAGE_LABEL: Record<string, MessageKey> = {
+  group: 'nav.groups',
+  status: 'flow.stage.status',
+  upstream: 'flow.stage.upstream',
+  rcode: 'flow.stage.rcode',
 };
 
 export type PlacedNode = FlowNode & { col: number; x: number; y: number; w: number; h: number };

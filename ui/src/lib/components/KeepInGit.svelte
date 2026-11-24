@@ -1,6 +1,8 @@
 <script lang="ts">
   // REQ: API-002 (T7.5, ADR-069) — on a node whose configuration comes from Git: what to add
   // to the repository (or the Helm values' `config:`) to keep a change made here.
+  import { t } from '../i18n';
+
   let { toml }: { toml: string } = $props();
   let copied = $state(false);
   async function copy() {
@@ -16,12 +18,11 @@
 
 <div class="keep" data-testid="keep-in-git">
   <div class="head">
-    <strong>Keep it in Git</strong>
-    <button class="link small" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+    <strong>{t('simulation.keepInGit.title')}</strong>
+    <button class="link small" onclick={copy}>{copied ? t('common.copied') : t('common.copy')}</button>
   </div>
   <p class="small muted">
-    This node's configuration comes from Git. The change is saved on this node and shared with the cluster, but a
-    rebuild from Git won't have it until you add this:
+    {t('simulation.keepInGit.note')}
   </p>
   <pre class="mono small">{toml}</pre>
 </div>

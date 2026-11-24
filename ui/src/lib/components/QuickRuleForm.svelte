@@ -18,6 +18,8 @@
   import { untrack } from 'svelte';
   import { api, ApiError, type S } from '../api';
   import { endsAt } from '../format';
+  // `t` is this file's own timer (the check as you type); the catalog's is `tr`.
+  import { t as tr, type MessageKey } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
   import SimulationCard from './SimulationCard.svelte';
@@ -60,19 +62,19 @@
   const checkDomId = `${listId}-check`;
 
   /** A group an operator put the workload in. */
-  const placedBy: Record<string, string> = {
-    pod_label: 'set by a label on its pods',
-    namespace_label: 'set by a label on its namespace',
-    map: 'set by a rule',
+  const placedBy: Record<string, MessageKey> = {
+    pod_label: 'queries.origin.podLabel',
+    namespace_label: 'queries.origin.namespaceLabel',
+    map: 'queries.origin.map',
   };
   /** Where any other group of a workload comes from. */
-  const otherGroup: Record<string, string> = {
-    default_group: 'the default group for workloads',
-    none: "its network's group",
+  const otherGroup: Record<string, MessageKey> = {
+    default_group: 'queries.origin.defaultGroup',
+    none: 'queries.origin.network',
   };
   /** The words for a workload's group, whichever it is. */
   const origin = (from: string) =>
-    Object.hasOwn(placedBy, from) ? placedBy[from] : Object.hasOwn(otherGroup, from) ? otherGroup[from] : 'its group';
+    Object.hasOwn(placedBy, from) ? tr(placedBy[from]) : Object.hasOwn(otherGroup, from) ? tr(otherGroup[from]) : tr('queries.origin.group');
   // What the log calls a pod is `namespace/kind/name`. When this node's explanation has no workload for
   // the row, that shape decides nothing about the rule (the field and the scope stay as they were);
   // it only changes the advice in the label, which is wrong for a pod: its address changes.
@@ -90,7 +92,8 @@
   let note = $state('');
   let saving = $state(false);
   let error = $state<unknown>(null);
-  let saved = $state('');
+  // What the server said the save did (`''` when it said nothing); `null` until something is saved.
+  let saved = $state<string | null>(null);
   let groups = $state<S['GroupInfo'][]>([]);
   let devices = $state<S['ClientInfo'][]>([]);
 
@@ -116,18 +119,18 @@
     if (!known) api.clients().then((c) => (devices = c.items)).catch(() => {});
   });
 
-  const durations = [
-    { v: '30', l: '30 minutes' },
-    { v: '60', l: '1 hour' },
-    { v: '120', l: '2 hours' },
-    { v: 'today', l: 'Until midnight' },
-    { v: '1440', l: '1 day' },
-    { v: 'always', l: 'Until I remove it' },
-  ];
+  const durations = $derived([
+    { v: '30', l: tr('queries.duration.30m') },
+    { v: '60', l: tr('nav.pause.hour') },
+    { v: '120', l: tr('queries.duration.2h') },
+    { v: 'today', l: tr('queries.duration.today') },
+    { v: '1440', l: tr('queries.duration.1d') },
+    { v: 'always', l: tr('queries.duration.always') },
+  ]);
   /** An edit can keep the end time the rule has (a new duration counts from now). */
   const options = $derived(
     rule?.expires && (rule.expiresInSeconds ?? 0) > 0
-      ? [{ v: 'keep', l: `Keep the current end (${endsAt(rule.expires)})` }, ...durations]
+      ? [{ v: 'keep', l: tr('queries.duration.keep', { end: endsAt(rule.expires) }) }, ...durations]
       : durations,
   );
 
@@ -196,13 +199,13 @@
     e.preventDefault();
     saving = true;
     error = null;
-    saved = '';
+    saved = null;
     const body = ruleBody();
     const id = rule?.id ?? `r-${Date.now().toString(36)}`;
     try {
       const c = await api.putRule(id, body);
-      saved = c.impact ?? 'Saved.';
-      onsaved?.(saved);
+      saved = c.impact ?? '';
+      onsaved?.(saved || tr('common.saved'));
     } catch (err) {
       error = err;
     } finally {
@@ -213,25 +216,25 @@
 
 <form class="quick" onsubmit={save} data-testid={rule ? 'quick-rule-edit-form' : 'quick-rule-form'}>
   <div class="row">
-    <span class="seg" role="group" aria-label="Action">
-      <button type="button" aria-pressed={action === 'allow'} onclick={() => (action = 'allow')}>Allow</button>
-      <button type="button" aria-pressed={action === 'block'} onclick={() => (action = 'block')}>Block</button>
+    <span class="seg" role="group" aria-label={tr('queries.quickRule.action')}>
+      <button type="button" aria-pressed={action === 'allow'} onclick={() => (action = 'allow')}>{tr('queries.quickRule.allow')}</button>
+      <button type="button" aria-pressed={action === 'block'} onclick={() => (action = 'block')}>{tr('queries.quickRule.block')}</button>
     </span>
-    <input class="grow mono" aria-label="Domain" placeholder="game.example.com" bind:value={name} oninput={touch} required />
+    <input class="grow mono" aria-label={tr('localdns.forward.domain')} placeholder="game.example.com" bind:value={name} oninput={touch} required />
   </div>
   <div class="row">
-    <label class="small">For
-      <select bind:value={scope} onchange={touch} aria-label="Applies to">
-        <option value="device">a device</option>
-        <option value="group">a group</option>
-        <option value="everyone">everyone</option>
+    <label class="small">{tr('rules.col.for')}
+      <select bind:value={scope} onchange={touch} aria-label={tr('queries.quickRule.appliesTo')}>
+        <option value="device">{tr('queries.quickRule.scopeDevice')}</option>
+        <option value="group">{tr('queries.quickRule.scopeGroup')}</option>
+        <option value="everyone">{tr('rules.everyone')}</option>
       </select>
     </label>
     {#if scope === 'device'}
       <input
-        aria-label="Device"
+        aria-label={tr('flow.device')}
         list={listId}
-        placeholder="named device, IP, or network"
+        placeholder={tr('queries.quickRule.devicePlaceholder')}
         bind:value={who}
         oninput={touch}
         aria-invalid={checkError ? 'true' : undefined}
@@ -240,20 +243,20 @@
       />
       <datalist id={listId}>{#each known ?? devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
     {:else if scope === 'group'}
-      <select aria-label="Group" bind:value={whichGroup} onchange={touch} required>
+      <select aria-label={tr('legacy.group')} bind:value={whichGroup} onchange={touch} required>
         {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
       </select>
     {/if}
-    <label class="small">for
-      <select aria-label="Duration" bind:value={duration}>
+    <label class="small">{tr('queries.quickRule.forLower')}
+      <select aria-label={tr('queries.quickRule.duration')} bind:value={duration}>
         {#each options as d (d.v)}<option value={d.v}>{d.l}</option>{/each}
       </select>
     </label>
   </div>
   <div class="row">
-    <input class="grow" aria-label="Note" placeholder="Note (optional), e.g. Mom's game" bind:value={note} />
-    <button class="primary" disabled={saving || !name.trim()}>{saving ? 'Saving…' : rule ? 'Save changes' : 'Save rule'}</button>
-    {#if rule}<button type="button" class="link" onclick={oncancel}>Cancel</button>{/if}
+    <input class="grow" aria-label={tr('rules.col.note')} placeholder={tr('queries.quickRule.notePlaceholder')} bind:value={note} />
+    <button class="primary" disabled={saving || !name.trim()}>{saving ? tr('localdns.form.saving') : rule ? tr('queries.quickRule.saveChanges') : tr('queries.quickRule.save')}</button>
+    {#if rule}<button type="button" class="link" onclick={oncancel}>{tr('common.cancel')}</button>{/if}
   </div>
   {#if !rule && address}
     <!-- REQ: FLT-005, FLT-017 (issue #73) — what the form filled in, and what the log shows for it. The
@@ -261,45 +264,39 @@
     {#if scope === 'group' && workload}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
         {#if whichGroup === group}
-          <bdi>{workload}</bdi> is a Kubernetes workload and its pods come and go, so this rule is for its group, <bdi>{whichGroup}</bdi>
-          ({origin(workloadFrom)}): every device in it. For one address instead, choose “a device”.
+          {tr('queries.seen.groupPlaced', { workload })}<bdi>{whichGroup}</bdi>{tr('queries.seen.groupPlacedAfter', { origin: origin(workloadFrom) })}
         {:else if group}
-          <bdi>{workload}</bdi> is a Kubernetes workload whose group is <bdi>{group}</bdi>. This rule is for <bdi>{whichGroup}</bdi>: every
-          device in it.
+          <bdi>{workload}</bdi>{tr('queries.seen.groupOtherMid')}<bdi>{group}</bdi>{tr('queries.seen.groupOtherAfter')}<bdi>{whichGroup}</bdi>{tr('queries.seen.everyDevice')}
         {:else}
-          This rule is for <bdi>{whichGroup}</bdi>: every device in it.
+          {tr('queries.seen.forPrefix')}<bdi>{whichGroup}</bdi>{tr('queries.seen.everyDevice')}
         {/if}
       </p>
     {:else if scope === 'device' && workload && who.trim() === address}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
-        {address} is one pod of <bdi>{workload}</bdi>, and a pod's address changes whenever it restarts.
-        {#if placed}For every pod, choose “a group”.{:else}To cover all its pods, put the workload in a group first: click its name in the log,
-          then Add to group…{/if}
+        {tr('queries.seen.podIs', { address })}<bdi>{workload}</bdi>{tr('queries.seen.podChanges')}
+        {#if placed}{tr('queries.seen.podUseGroup')}{:else}{tr('queries.seen.podAddGroup')}{/if}
       </p>
     {:else if scope === 'device' && device !== address && who.trim() === device}
-      <p class="muted small seen" data-testid="quick-rule-seen-as">{address} is your device “<bdi>{device}</bdi>”.</p>
+      <p class="muted small seen" data-testid="quick-rule-seen-as">{tr('queries.seen.namedDevice', { address })}<bdi>{device}</bdi>{tr('queries.seen.namedDeviceEnd')}</p>
     {:else if scope === 'device' && who.trim() === address}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
-        {#if seenAs && seenAs !== address}{address} (shown in the log as <bdi>{seenAs}</bdi>).{/if}
+        {#if seenAs && seenAs !== address}{tr('queries.seen.seenAsStart', { address })}<bdi>{seenAs}</bdi>{tr('slo.offEnd')}{/if}
         {#if podLike}
-          This looks like a Kubernetes pod this node doesn't know about: a pod's address changes whenever it restarts, so use the group an
-          operator placed it in, not the address.
+          {tr('queries.seen.podUnknown')}
         {:else}
-          A rule for an address stops matching when the address changes: reserve the address in your router, or name the device so you change
-          one place, not every rule.<HelpButton id="device-name" />
+          {tr('queries.seen.address')}<HelpButton id="device-name" />
         {/if}
       </p>
     {/if}
   {/if}
   <p class="muted small">
-    Includes subdomains. Decides before any list. Devices may keep an old answer for a few minutes.{#if rule} Saving keeps who made the
-    rule and when.{/if}
+    {tr('queries.quickRule.foot')}{#if rule}{' '}{tr('queries.quickRule.footEdit')}{/if}
   </p>
   <!-- A polite live region that stays in the page, so a refusal that comes and goes while someone types
        is announced once, and the Device field points at it while it is there. -->
   <div id={checkDomId} role="status" data-testid="quick-rule-check">{#if !error}<ErrorNote error={checkError} quiet />{/if}</div>
   <ErrorNote {error} />
-  {#if saved && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved}</div>{/if}
+  {#if saved !== null && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved || tr('common.saved')}</div>{/if}
   {#if name.trim() && (scope !== 'device' || who.trim())}<SimulationCard run={simulateRule} />{/if}
 </form>
 

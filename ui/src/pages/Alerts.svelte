@@ -7,6 +7,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import { t } from '../lib/i18n';
 
   let status = $state<S['AlertsStatus'] | null>(null);
   let destinations = $state<string[]>([]);
@@ -25,57 +26,57 @@
   $effect(() => poll(load, 15_000));
 
   const kinds = ['email', 'ntfy', 'gotify', 'slack', 'webhook'];
-  const destinationFields: Field[] = [
-    { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email',
-      help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook.' },
-    { key: 'url', label: 'Address', type: 'text', placeholder: 'smtp://smtp.gmail.com:587 or https://ntfy.sh/my-topic',
-      help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Others: the https:// URL.' },
-    { key: 'from', label: 'From (email)', type: 'text', placeholder: 'you@gmail.com' },
-    { key: 'to', label: 'To (email, one per line)', type: 'lines', placeholder: 'you@gmail.com' },
-    { key: 'username', label: 'Account (email)', type: 'text', placeholder: 'you@gmail.com' },
+  const destinationFields = $derived<Field[]>([
+    { key: 'type', label: t('qw.cache.type'), type: 'select', options: kinds, initial: 'email',
+      help: t('alerts.dest.typeHelp') },
+    { key: 'url', label: t('qw.explain.address'), type: 'text', placeholder: t('alerts.dest.addressPlaceholder'),
+      help: t('alerts.dest.addressHelp') },
+    { key: 'from', label: t('alerts.dest.from'), type: 'text', placeholder: 'you@gmail.com' },
+    { key: 'to', label: t('alerts.dest.to'), type: 'lines', placeholder: 'you@gmail.com' },
+    { key: 'username', label: t('alerts.dest.account'), type: 'text', placeholder: 'you@gmail.com' },
     // REQ: OBS-010 (ADR-179) — a destination with a credential file is an administrator's, and
     // the file is in a folder meant for secrets.
-    { key: 'password_file', label: 'Password file (email)', type: 'text', placeholder: '/run/secrets/smtp-password',
-      help: 'A file on the node holding the password (a Gmail app password, for example). The password itself never goes through the UI. An administrator sets this. Use a file under /run/secrets, /etc/telltale-secrets or the data directory\'s secrets folder.' },
-    { key: 'token_file', label: 'Token file (ntfy, Gotify)', type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true,
-      help: 'A file on the node holding the access token. An administrator sets this. Use a file under /run/secrets, /etc/telltale-secrets or the data directory\'s secrets folder.' },
-    { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true },
-  ];
+    { key: 'password_file', label: t('alerts.dest.passwordFile'), type: 'text', placeholder: '/run/secrets/smtp-password',
+      help: t('alerts.dest.passwordFileHelp') },
+    { key: 'token_file', label: t('alerts.dest.tokenFile'), type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true,
+      help: t('alerts.dest.tokenFileHelp') },
+    { key: 'tls_ca', label: t('alerts.dest.tlsCa'), type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true },
+  ]);
   const conditions = [
     'upstream_down', 'node_down', 'sync_lag', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
     'disk_full', 'plan_pending', 'update_available', 'maintenance',
   ];
   const ruleFields = $derived<Field[]>([
-    { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down' },
-    { key: 'to', label: 'Send to', type: 'multi', options: destinations },
-    { key: 'for_secs', label: 'For at least (seconds)', type: 'number', placeholder: '60',
-      help: 'How long the condition must hold before the alert goes out, so short blips stay quiet.' },
-    { key: 'threshold', label: 'Threshold (%)', type: 'number', placeholder: '5 (servfail_rate) or 90 (disk_full)', advanced: true },
-    { key: 'enabled', label: 'On', type: 'bool', initial: true },
+    { key: 'when', label: t('alerts.rule.when'), type: 'select', options: conditions, initial: 'upstream_down' },
+    { key: 'to', label: t('alerts.rule.sendTo'), type: 'multi', options: destinations },
+    { key: 'for_secs', label: t('alerts.rule.forSecs'), type: 'number', placeholder: '60',
+      help: t('alerts.rule.forSecsHelp') },
+    { key: 'threshold', label: t('alerts.rule.threshold'), type: 'number', placeholder: t('alerts.rule.thresholdPlaceholder'), advanced: true },
+    { key: 'enabled', label: t('alerts.rule.on'), type: 'bool', initial: true },
   ]);
-  const test = {
-    label: 'Send test',
+  const test = $derived({
+    label: t('alerts.dest.sendTest'),
     run: async (name: string) => {
       const r = await api.alertTest(name);
-      return r.ok ? { ok: true, text: 'sent. Check that it arrived.' } : { ok: false, text: r.error ?? 'not delivered' };
+      return r.ok ? { ok: true, text: t('alerts.dest.sent') } : { ok: false, text: r.error ?? t('alerts.dest.notDelivered') };
     },
-  };
+  });
 </script>
 
 <div class="page">
-  <h1>Alerts<HelpButton id="alerts" /></h1>
+  <h1>{t('nav.alerts')}<HelpButton id="alerts" /></h1>
   <ErrorNote {error} />
 
   <section class="card" data-testid="alerts-now">
-    <h2>Now</h2>
+    <h2>{t('alerts.now.title')}</h2>
     {#if status && !status.evaluating}
-      <p class="muted small">Rules are checked on the cluster's primary (or a node on its own); there's nothing to check here.</p>
+      <p class="muted small">{t('alerts.now.elsewhere')}</p>
     {:else if status && status.firing.length === 0}
-      <p class="empty">Nothing is firing.</p>
+      <p class="empty">{t('alerts.now.empty')}</p>
     {:else if status}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Rule</th><th>About</th><th>What</th></tr></thead>
+          <thead><tr><th>{t('rules.col.rule')}</th><th>{t('alerts.now.about')}</th><th>{t('dashboard.what')}</th></tr></thead>
           <tbody>
             {#each status.firing as f (f.rule + f.subject)}
               <tr><td><span class="badge bad">{f.rule}</span></td><td class="mono small">{f.subject}</td><td>{f.summary}</td></tr>
@@ -87,18 +88,18 @@
     {#each status?.maintenance ?? [] as m (m.node)}
       <!-- REQ: OPS-010 — alerts about a node in maintenance are paused. -->
       <p class="small muted" data-testid="alerts-maintenance">
-        Alerts for <strong>{m.node}</strong> are paused during maintenance until {dateTime(Date.parse(m.until) / 1000)} ({m.reason}).
+        {t('alerts.maintenance.lead')} <strong>{m.node}</strong> {t('alerts.maintenance.rest', { when: dateTime(Date.parse(m.until) / 1000), reason: m.reason })}
       </p>
     {/each}
     {#if status?.deliveries.length}
-      <h3 class="small muted">Last delivery per destination</h3>
+      <h3 class="small muted">{t('alerts.deliveries.title')}</h3>
       <div class="table-wrap">
         <table class="compact">
           <tbody>
             {#each status.deliveries as d (d.destination)}
               <tr>
                 <td><strong>{d.destination}</strong></td>
-                <td>{#if d.ok}<span class="badge ok">delivered</span>{:else}<span class="badge bad">failed</span>{/if}</td>
+                <td>{#if d.ok}<span class="badge ok">{t('alerts.deliveries.delivered')}</span>{:else}<span class="badge bad">{t('changes.state.failed')}</span>{/if}</td>
                 <td class="small muted">{dateTime(d.unixSeconds)}</td>
                 <td class="small">{d.error ?? ''}</td>
               </tr>
@@ -109,9 +110,9 @@
     {/if}
   </section>
 
-  <ConfigEditor kind="alert_destination" path="alerts/destinations" title="Destinations" noun="destination"
+  <ConfigEditor kind="alert_destination" path="alerts/destinations" title={t('alerts.dest.title')} noun={t('alerts.dest.noun')}
     help="alerts" fields={destinationFields} rowAction={test} onchanged={load}
     summary={(d) => `${String(d.type ?? '')}: ${d.type === 'email' ? ((d.to as string[]) ?? []).join(', ') : String(d.url ?? '')}`} />
-  <ConfigEditor kind="alert_rule" path="alerts/rules" title="Rules" noun="rule" help="alerts" fields={ruleFields}
-    summary={(d) => `${String(d.when ?? '')} → ${((d.to as string[]) ?? []).join(', ')}${d.enabled === false ? ' (off)' : ''}`} />
+  <ConfigEditor kind="alert_rule" path="alerts/rules" title={t('alerts.rule.title')} noun={t('alerts.rule.noun')} help="alerts" fields={ruleFields}
+    summary={(d) => `${String(d.when ?? '')} → ${((d.to as string[]) ?? []).join(', ')}${d.enabled === false ? t('alerts.rule.summaryOff') : ''}`} />
 </div>

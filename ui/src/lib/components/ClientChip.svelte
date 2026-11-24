@@ -9,7 +9,8 @@
   import HelpButton from './HelpButton.svelte';
   import ChangePreview from './ChangePreview.svelte';
   import Icon from './Icon.svelte';
-  import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
+  import { groupFromLabel, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
+  import { t as tr, type MessageKey } from '../i18n';
   import { isMac, listsMac, normMac, sameIp } from '../macKeys';
 
   let {
@@ -39,9 +40,13 @@
   const label = $derived(workload ? (name ?? workload.name) : (name ?? ip));
   const tip = $derived(
     workload
-      ? `Kubernetes workload ${workload.name}${pod ? ` (pod ${pod}, ${ip})` : workload.pods.length ? ` (pods: ${workload.pods.map((p) => p.name).join(', ')})` : ''}`
+      ? pod
+        ? tr('qw.chip.tip.pod', { workload: workload.name, pod, ip })
+        : workload.pods.length
+          ? tr('qw.chip.tip.pods', { workload: workload.name, pods: workload.pods.map((p) => p.name).join(', ') })
+          : tr('qw.chip.tip.workload', { workload: workload.name })
       : name
-        ? `${name} (${ip})`
+        ? tr('qw.chip.tip.named', { name, ip })
         : ip,
   );
   let wGroup = $state('');
@@ -73,32 +78,80 @@
   const macChosen = $derived(offerMac && useMac);
   /** The device the form edits: the one that has the MAC when the MAC is chosen, else the one at this address. */
   const target = $derived(macChosen && heldElsewhere ? macHolder : existing);
-  const macSource = $derived(recognition?.macFrom === 'neighbor' ? 'seen on this network' : 'from your router');
+  const macSource = $derived(
+    recognition?.macFrom === 'neighbor' ? tr('qw.chip.mac.source.neighbor') : tr('qw.chip.mac.source.router'),
+  );
   /** What keeps vouching for the MAC, and what it can't follow: the sentence says so, not just that the MAC "follows". */
   const macVouch = $derived(
-    recognition?.macFrom === 'neighbor'
-      ? "this server's neighbor table still holds this MAC at one address"
-      : 'your router still reports this MAC at one address (IPv4 only)',
+    recognition?.macFrom === 'neighbor' ? tr('qw.chip.mac.vouch.neighbor') : tr('qw.chip.mac.vouch.router'),
   );
   /** Why the address, not the MAC, is what the form starts with. */
   const macReason = $derived(
     recognition?.macShared
       ? recognition.macFrom === 'neighbor'
-        ? "This server's neighbor table holds this MAC address at more than one address (a range extender or bridge may share it), so it can't tell these devices apart."
-        : "Your router reports this MAC address at more than one address (a range extender or bridge may share it), so it can't tell these devices apart."
+        ? tr('qw.chip.mac.reason.shared.neighbor')
+        : tr('qw.chip.mac.reason.shared.router')
       : recognition?.macFrom === 'neighbor'
-        ? "Only this server sees this MAC address directly: other servers in your cluster, or one in Docker or Kubernetes, won't recognize the device by it."
+        ? tr('qw.chip.mac.reason.local')
         : '',
   );
   /** Who the sentences below talk about. */
-  const who = $derived(macChosen ? `this device (${mac}, now at ${ip})` : ip);
-  const article = (p: string) => (/^[aeiou]/i.test(p) ? 'an' : 'a');
+  const who = $derived(macChosen ? tr('qw.chip.who', { mac, ip }) : ip);
+  /** Which English article a product name takes ('an' before a vowel); Chinese has neither. */
+  const articleKey = (p: string): MessageKey =>
+    /^[aeiou]/i.test(p) ? 'qw.chip.identity.looks.an' : 'qw.chip.identity.looks.a';
   const kinds = ['phone', 'tablet', 'laptop', 'desktop', 'tv', 'streaming', 'speaker', 'console', 'camera', 'doorbell', 'plug', 'bulb', 'thermostat', 'hub', 'vacuum', 'printer', 'nas', 'network', 'appliance', 'wearable', 'car', 'other', 'unknown'];
+  // The kinds above are what the API is sent; these are what a person reads.
+  const KIND_LABEL: Record<string, MessageKey> = {
+    phone: 'qw.kind.phone',
+    tablet: 'qw.kind.tablet',
+    laptop: 'qw.kind.laptop',
+    desktop: 'qw.kind.desktop',
+    tv: 'qw.kind.tv',
+    streaming: 'qw.kind.streaming',
+    speaker: 'qw.kind.speaker',
+    console: 'qw.kind.console',
+    camera: 'qw.kind.camera',
+    doorbell: 'qw.kind.doorbell',
+    plug: 'qw.kind.plug',
+    bulb: 'qw.kind.bulb',
+    thermostat: 'qw.kind.thermostat',
+    hub: 'qw.kind.hub',
+    vacuum: 'qw.kind.vacuum',
+    printer: 'qw.kind.printer',
+    nas: 'qw.kind.nas',
+    network: 'qw.kind.network',
+    appliance: 'qw.kind.appliance',
+    wearable: 'qw.kind.wearable',
+    car: 'qw.kind.car',
+    other: 'qw.kind.misc',
+    unknown: 'qw.kind.unknown',
+  };
+  /** The words for a kind; a kind this build doesn't know yet is shown as it is. */
+  const kindLabel = (k: string) => (KIND_LABEL[k] ? tr(KIND_LABEL[k]) : k);
   let busy = $state(false);
   // The form appears only once its data is in, so a slow load can't wipe what was typed.
   let loading = $state(false);
-  let error = $state('');
-  let done = $state('');
+  // A message is kept as its parts, not as a finished sentence, so it follows the language on
+  // screen: `error` is the server's own words (or the one thing this form checks itself), and
+  // `done` says what was saved.
+  type Saved =
+    | { kind: 'workload'; workload: string; group: string }
+    | { kind: 'recent'; n: number; name: string }
+    | { kind: 'queries'; who: string; name: string };
+  let serverError = $state('');
+  let nameError = $state(false);
+  const error = $derived(nameError ? tr('qw.chip.error.name') : serverError);
+  let saved = $state<Saved | null>(null);
+  const done = $derived(
+    !saved
+      ? ''
+      : saved.kind === 'workload'
+        ? tr('qw.chip.saved.workload', { workload: saved.workload, group: saved.group })
+        : saved.kind === 'recent'
+          ? tr('qw.chip.saved.recent', { n: saved.n, name: saved.name })
+          : tr('qw.chip.saved.queries', { who: saved.who, name: saved.name }),
+  );
 
   const canEdit = $derived(session.user?.role === 'admin' || session.user?.role === 'operator');
 
@@ -118,15 +171,16 @@
   async function editWorkload() {
     open = false;
     editing = 'workload';
-    error = '';
-    done = '';
+    serverError = '';
+    nameError = false;
+    saved = null;
     preview = null;
     loading = true;
     try {
       groups = (await api.groups()).items;
       wGroup = workload?.group ?? '';
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      serverError = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
@@ -135,11 +189,12 @@
   async function previewWorkload() {
     if (!workload || !wGroup) return;
     busy = true;
-    error = '';
+    serverError = '';
+    nameError = false;
     try {
       preview = await api.putWorkloadGroup(workload.name, wGroup, true);
     } catch (e) {
-      error = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
+      serverError = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }
@@ -149,14 +204,15 @@
     ev.preventDefault();
     if (!workload || !wGroup) return;
     busy = true;
-    error = '';
+    serverError = '';
+    nameError = false;
     try {
       await api.putWorkloadGroup(workload.name, wGroup);
-      done = `Saved. ${workload.name}'s next query uses ${wGroup}.`;
+      saved = { kind: 'workload', workload: workload.name, group: wGroup };
       void loadWorkloads(true);
       onchanged?.(workload.name);
     } catch (e) {
-      error = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
+      serverError = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }
@@ -165,8 +221,9 @@
   async function edit(mode: 'name' | 'groups') {
     open = false;
     editing = mode;
-    error = '';
-    done = '';
+    serverError = '';
+    nameError = false;
+    saved = null;
     loading = true;
     try {
       // REQ: API-010 (T8.6) — suggest the name the device gave DHCP, the router, or mDNS.
@@ -204,7 +261,7 @@
       useMac = !existing && (recognition?.macFrom === 'router' || recognition?.macFrom === 'peer') && !recognition.macShared;
       if (target?.name !== existing?.name) fill();
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      serverError = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
@@ -261,11 +318,12 @@
     ev.preventDefault();
     const n = newName.trim();
     if (!n) {
-      error = 'Give the device a name.';
+      nameError = true;
       return;
     }
     busy = true;
-    error = '';
+    serverError = '';
+    nameError = false;
     try {
       const r = await api.putClient(target?.name ?? n, {
         name: n,
@@ -273,13 +331,11 @@
         groups: chosen.length ? chosen : ['default'],
         kind: kind || undefined,
       });
-      done =
-        r.recentQueries > 0
-          ? `Saved. ${r.recentQueries} recent queries now show “${n}”.`
-          : `Saved. Queries from ${who} now show “${n}”.`;
+      saved =
+        r.recentQueries > 0 ? { kind: 'recent', n: r.recentQueries, name: n } : { kind: 'queries', who, name: n };
       onchanged?.(n);
     } catch (e) {
-      error = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
+      serverError = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }
@@ -299,38 +355,36 @@
       e.stopPropagation();
       open = !open;
     }}
-    >{#if workload}<span class="glyph" aria-label="Kubernetes workload"><Icon name="workload" size={14} /></span>{/if}{display ?? label}</button
+    >{#if workload}<span class="glyph" aria-label={tr('qw.chip.glyph')}><Icon name="workload" size={14} /></span>{/if}{display ?? label}</button
   >
   {#if open}
-    <span class="menu" role="menu" aria-label={`Device ${ip}`}>
+    <span class="menu" role="menu" aria-label={tr('qw.chip.menu', { ip })}>
       {#if canEdit && workload}
-        <button role="menuitem" disabled title="Kubernetes names workloads">Name this device… <span class="muted small">(named by Kubernetes)</span></button>
-        <button role="menuitem" onclick={editWorkload}>Add to group…</button>
+        <button role="menuitem" disabled title={tr('qw.chip.kubernetesNames')}>{tr('qw.chip.name')} <span class="muted small">{tr('qw.chip.namedByKubernetes')}</span></button>
+        <button role="menuitem" onclick={editWorkload}>{tr('qw.chip.addToGroup')}</button>
       {:else if canEdit}
-        <button role="menuitem" onclick={() => edit('name')}>Name this device…</button>
-        <button role="menuitem" onclick={() => edit('groups')}>Add to group…</button>
+        <button role="menuitem" onclick={() => edit('name')}>{tr('qw.chip.name')}</button>
+        <button role="menuitem" onclick={() => edit('groups')}>{tr('qw.chip.addToGroup')}</button>
       {/if}
-      <a role="menuitem" href={href('/queries', { client: workload ? workload.name : ip })} onclick={close}>Show queries</a>
+      <a role="menuitem" href={href('/queries', { client: workload ? workload.name : ip })} onclick={close}>{tr('qw.chip.showQueries')}</a>
     </span>
   {/if}
 </span>
 
 {#if editing === 'workload' && workload}
-  <Drawer title="Put the workload in a group" onclose={() => (editing = null)}>
+  <Drawer title={tr('qw.chip.workload.title')} onclose={() => (editing = null)}>
     {#if loading}
-      <p class="muted" role="status" aria-live="polite">Loading…</p>
+      <p class="muted" role="status" aria-live="polite">{tr('common.loading')}</p>
     {:else}
       <form class="stack" onsubmit={saveWorkload} data-testid="workload-group-form">
         <p class="muted small">
-          <b>{workload.name}</b> is a Kubernetes workload: its name comes from Kubernetes.
-          {#if workload.group}Its group is {workload.group} now (set by its {groupFromText[workload.groupFrom] ?? workload.groupFrom}).{:else}It has no
-            group of its own now: its network's group applies.{/if} This adds a rule for exactly this workload; a <code>telltaledns.io/group</code> label on its pods or namespace still
-          wins, and is the way to do it from Git.<HelpButton id="kubernetes-workloads" />
+          <b>{workload.name}</b> {tr('qw.chip.workload.isK8s')}
+          {#if workload.group}{tr('qw.chip.workload.groupNow', { group: workload.group, from: groupFromLabel(workload.groupFrom) })}{:else}{tr('qw.chip.workload.noGroup')}{/if} {tr('qw.chip.workload.ruleLead')} <code>telltaledns.io/group</code> {tr('qw.chip.workload.ruleTail')}<HelpButton id="kubernetes-workloads" />
         </p>
         <label>
-          Group
-          <select bind:value={wGroup} onchange={() => (preview = null)} aria-label="Group">
-            <option value="" disabled>Choose a group</option>
+          {tr('legacy.group')}
+          <select bind:value={wGroup} onchange={() => (preview = null)} aria-label={tr('legacy.group')}>
+            <option value="" disabled>{tr('qw.chip.group.choose')}</option>
             {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
           </select>
         </label>
@@ -344,49 +398,48 @@
         {#if done}<p class="notice ok" role="status">{done}</p>{/if}
         <div class="row">
           {#if !preview}
-            <button type="button" class="primary" disabled={busy || !wGroup} onclick={previewWorkload}>{busy ? 'Checking…' : 'Preview'}</button>
+            <button type="button" class="primary" disabled={busy || !wGroup} onclick={previewWorkload}>{busy ? tr('qw.chip.checking') : tr('qw.chip.preview')}</button>
           {:else}
-            <button type="submit" class="primary" disabled={busy || !!done}>{busy ? 'Saving…' : 'Save'}</button>
+            <button type="submit" class="primary" disabled={busy || !!done}>{busy ? tr('qw.chip.saving') : tr('common.save')}</button>
           {/if}
-          <button type="button" onclick={() => (editing = null)}>Close</button>
+          <button type="button" onclick={() => (editing = null)}>{tr('common.close')}</button>
         </div>
       </form>
     {/if}
   </Drawer>
 {:else if editing === 'name' || editing === 'groups'}
-  <Drawer title={editing === 'name' ? 'Name this device' : 'Add to a group'} onclose={() => (editing = null)}>
+  <Drawer title={editing === 'name' ? tr('qw.chip.name.title') : tr('qw.chip.groups.title')} onclose={() => (editing = null)}>
     {#if loading}
-      <p class="muted" role="status" aria-live="polite">Loading…</p>
+      <p class="muted" role="status" aria-live="polite">{tr('common.loading')}</p>
     {:else if existing && existing.source === 'file'}
       <p class="notice">
-        <b>{existing.name}</b> is defined in the configuration file, so it's changed there, not here.
+        <b>{existing.name}</b> {tr('qw.chip.fromFile')}
       </p>
     {:else}
       <form class="stack" onsubmit={save}>
         <p class="muted small">
-          Queries from {#if macChosen}this device (<code>{mac}</code>, now at <code>{ip}</code>){:else}<code>{ip}</code>{/if} will show this name
-          everywhere, including past ones. The device is recognized by {matchFor().join(', ')}.
+          {#if macChosen}{tr('qw.chip.form.intro.macLead')}<code>{mac}</code>{tr('qw.chip.form.intro.macMid')} <code>{ip}</code>{tr('qw.chip.form.intro.macTail', { match: matchFor().join(', ') })}{:else}{tr('qw.chip.form.intro.ipLead')} <code>{ip}</code> {tr('qw.chip.form.intro.ipTail', { match: matchFor().join(', ') })}{/if}
         </p>
         <label>
-          Name
-          <input name="device-name" bind:value={newName} placeholder="Living room TV" maxlength="64" required />
+          {tr('clients.col.name')}
+          <input name="device-name" bind:value={newName} placeholder={tr('qw.chip.form.namePlaceholder')} maxlength="64" required />
         </label>
         <HelpButton id="device-name" />
         {#if identity?.available && identity.level !== 'unknown' && identity.product && identity.source !== 'override'}
           <p class="muted small" data-testid="identity-suggestion">
-            Looks like {article(identity.product)} {identity.product} ({identity.level}).
-            {#if identity.suggestedGroup}The {identity.suggestedGroup} group asks for this kind of device.{/if}
+            {tr(articleKey(identity.product), { product: identity.product, level: identity.level })}
+            {#if identity.suggestedGroup}{tr('qw.chip.identity.suggestedGroup', { group: identity.suggestedGroup })}{/if}
           </p>
         {/if}
         <label>
-          What it is
-          <select bind:value={kind} aria-label="What it is">
-            <option value="">Let TelltaleDNS guess</option>
-            {#each kinds as k (k)}<option value={k}>{k === 'unknown' ? 'unknown (stop guessing)' : k}</option>{/each}
+          {tr('qw.chip.form.kind')}
+          <select bind:value={kind} aria-label={tr('qw.chip.form.kind')}>
+            <option value="">{tr('qw.chip.form.kind.guess')}</option>
+            {#each kinds as k (k)}<option value={k}>{k === 'unknown' ? tr('qw.chip.kind.unknownStop') : kindLabel(k)}</option>{/each}
           </select>
         </label>
         <fieldset>
-          <legend>Groups <span class="muted small">(first one's settings apply)</span><HelpButton id="device-groups" /></legend>
+          <legend>{tr('nav.groups')} <span class="muted small">{tr('qw.chip.form.groupsFirst')}</span><HelpButton id="device-groups" /></legend>
           {#each groups as g (g.name)}
             <label class="check"><input type="checkbox" checked={chosen.includes(g.name)} onchange={() => toggle(g.name)} /> {g.name}</label>
           {/each}
@@ -394,27 +447,27 @@
         {#if offerMac}
           <!-- REQ: FLT-006, API-010 (ADR-183) — a MAC address follows the device when its address changes. -->
           <fieldset data-testid="recognize-by">
-            <legend>Recognize it by<HelpButton id="device-mac" /></legend>
+            <legend>{tr('qw.chip.form.mac')}<HelpButton id="device-mac" /></legend>
             <label class="check">
               <input type="radio" name="recognize-by" value="mac" checked={useMac} onchange={() => recognizeBy(true)} />
-              <span>Its MAC address, <code>{mac}</code> <span class="muted small">({macSource}): follows the device when its address changes, while {macVouch}</span></span>
+              <span>{tr('qw.chip.mac.itsMac')} <code>{mac}</code> <span class="muted small">{tr('qw.chip.mac.follows', { source: macSource, vouch: macVouch })}</span></span>
             </label>
             <label class="check">
               <input type="radio" name="recognize-by" value="ip" checked={!useMac} onchange={() => recognizeBy(false)} />
-              <span>This address, <code>{ip}</code><span class="muted small">: stops matching if the device gets another address (a DHCP reservation in your router keeps it)</span></span>
+              <span>{tr('qw.chip.mac.thisAddress')} <code>{ip}</code><span class="muted small">{tr('qw.chip.mac.thisAddressTail')}</span></span>
             </label>
             {#if macReason}<p class="muted small" data-testid="mac-reason">{macReason}</p>{/if}
             {#if macChosen && heldElsewhere && macHolder}
-              <p class="notice" data-testid="mac-holder">{macHolder.name} already has this MAC address: this changes {macHolder.name}.</p>
+              <p class="notice" data-testid="mac-holder">{tr('qw.chip.mac.holder', { name: macHolder.name })}</p>
             {/if}
             {#if macChosen && recognition?.macRandomized}
               <p class="notice" data-testid="mac-randomized">
-                This is a private Wi-Fi address the device made up. It stays the same on your network unless the device is set to change it or forgets the network; if it changes, name the device again, or turn its private address off for this network.
+                {tr('qw.chip.mac.randomized')}
               </p>
             {/if}
             {#if macChosen && !matchFor().some((k) => !isMac(k) && !k.startsWith('id:'))}
               <p class="muted small" data-testid="mac-only-limits">
-                With only a MAC address, this device isn't covered by its group's anomaly mutes, change previews and simulations, the Clients page's guess of what it is, or look-ups of its identity and rhythm by name.
+                {tr('qw.chip.mac.onlyLimits')}
               </p>
             {/if}
           </fieldset>
@@ -423,16 +476,20 @@
           <ChangePreview
             highlight="blocked"
             device={newName.trim()}
-            name="any site"
-            sentence={`Queries from ${who} will show “${newName.trim()}”, past ones included, and get the lists of ${chosen.length ? chosen.join(', ') : 'default'}.`}
+            name={tr('qw.chip.preview.anySite')}
+            sentence={tr('qw.chip.preview.sentence', {
+              who,
+              name: newName.trim(),
+              lists: chosen.length ? chosen.join(', ') : 'default',
+            })}
             simulate={simulateChange}
           />
         {/if}
         {#if error}<p class="notice bad" role="alert">{error}</p>{/if}
         {#if done}<p class="notice ok" role="status">{done}</p>{/if}
         <div class="row">
-          <button type="submit" class="primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
-          <button type="button" onclick={() => (editing = null)}>Close</button>
+          <button type="submit" class="primary" disabled={busy}>{busy ? tr('qw.chip.saving') : tr('common.save')}</button>
+          <button type="button" onclick={() => (editing = null)}>{tr('common.close')}</button>
         </div>
       </form>
     {/if}

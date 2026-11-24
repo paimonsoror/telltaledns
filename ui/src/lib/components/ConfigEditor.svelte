@@ -33,6 +33,8 @@
 <script lang="ts">
   import { api, type S } from '../api';
   import { can } from '../session.svelte';
+  // REQ: API-011 — every word the editor says itself; a caller passes its own title and noun.
+  import { t } from '../i18n';
   import { currentMode } from '../mode.svelte';
   import Drawer from './Drawer.svelte';
   import ErrorNote from './ErrorNote.svelte';
@@ -87,7 +89,7 @@
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
     if (!formAction || !editing) return;
-    formOut = { ok: true, text: 'Testing…' };
+    formOut = { ok: true, text: t('settings.editor.testing') };
     try {
       formOut = await formAction.run(body());
     } catch (err) {
@@ -97,7 +99,7 @@
   let actionOut = $state<{ name: string; ok: boolean; text: string } | null>(null);
   async function runAction(name: string) {
     if (!rowAction) return;
-    actionOut = { name, ok: true, text: 'Sending…' };
+    actionOut = { name, ok: true, text: t('settings.editor.sending') };
     try {
       actionOut = { name, ...(await rowAction.run(name)) };
     } catch (err) {
@@ -131,12 +133,13 @@
     void load();
   });
 
-  const badge: Record<string, [string, string]> = {
-    file: ['config file', ''],
-    added: ['added here', 'ok'],
-    override: ['overrides the file', 'warn'],
-    hidden: ['hidden', 'bad'],
-  };
+  // A getter: the badge follows the language on screen.
+  const badge = $derived<Record<string, [string, string]>>({
+    file: [t('rules.source.file'), ''],
+    added: [t('settings.editor.badgeAdded'), 'ok'],
+    override: [t('settings.editor.badgeOverride'), 'warn'],
+    hidden: [t('settings.editor.badgeHidden'), 'bad'],
+  });
 
   function open(e?: S['ConfigEntry']) {
     preview = null;
@@ -222,11 +225,11 @@
 <section class="card" data-testid={`editor-${kind}`}>
   <div class="head">
     <h2>{title}{#if help}<HelpButton id={help} />{:else}<HelpButton id="config-sources" />{/if}</h2>
-    {#if writable && !singleton}<button onclick={() => open()}>Add {noun}</button>{/if}
+    {#if writable && !singleton}<button onclick={() => open()}>{t('settings.editor.add', { noun })}</button>{/if}
   </div>
   <ErrorNote {error} />
   {#if entries.length === 0}
-    <p class="empty">None yet.</p>
+    <p class="empty">{t('settings.editor.none')}</p>
   {:else}
     <div class="table-wrap">
       <table class="compact">
@@ -236,17 +239,17 @@
             {@const st = status?.(e)}
             <tr data-testid="entry-row">
               <td><strong>{e.name}</strong><span class="badge {cls}">{label}</span>{#if st}<span class="badge {st.cls}" data-testid="entry-status">{st.text}</span>{/if}</td>
-              <td class="small muted">{e.definition ? summary(e.definition as Record<string, unknown>) : 'left out of the configuration'}</td>
+              <td class="small muted">{e.definition ? summary(e.definition as Record<string, unknown>) : t('settings.editor.hiddenNote')}</td>
               {#if writable}
                 <td class="actions">
                   {#if rowAction && e.source !== 'hidden'}
                     <button class="link small" onclick={() => runAction(e.name)}>{rowAction.label}</button>
                   {/if}
-                  {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>Edit</button>{/if}
+                  {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>{t('rules.edit')}</button>{/if}
                   {#if e.source === 'override' || e.source === 'hidden'}
-                    <button class="link small" disabled={busy} onclick={() => remove(e)}>Revert to the file</button>
+                    <button class="link small" disabled={busy} onclick={() => remove(e)}>{t('settings.editor.revert')}</button>
                   {:else if !singleton}
-                    <button class="link small danger" disabled={busy} onclick={() => remove(e)}>Remove</button>
+                    <button class="link small danger" disabled={busy} onclick={() => remove(e)}>{t('rules.remove')}</button>
                   {/if}
                 </td>
               {/if}
@@ -264,24 +267,24 @@
 </section>
 
 {#if editing}
-  <Drawer title={editing.isNew ? `Add ${noun}` : `${noun}: ${editing.name}`} onclose={() => (editing = null)}>
+  <Drawer title={editing.isNew ? t('settings.editor.add', { noun }) : t('settings.editor.editTitle', { noun, name: editing.name })} onclose={() => (editing = null)}>
     {#if result?.keepInGit}
-      <p class="notice ok small">{result.applied ? 'Saved.' : ''}</p>
+      <p class="notice ok small">{result.applied ? t('common.saved') : ''}</p>
       <KeepInGit toml={result.keepInGit} />
-      <button onclick={() => (editing = null)}>Done</button>
+      <button onclick={() => (editing = null)}>{t('settings.editor.done')}</button>
     {:else}
       <form class="form" onsubmit={check}>
         {#if notice}<p class="notice warn small" role="note" data-testid="editor-notice">{notice}</p>{/if}
         <label>
-          Name
-          <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label="Name" />
+          {t('clients.col.name')}
+          <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label={t('clients.col.name')} />
         </label>
         {#each shown as f (f.key)}
           <label>
             {f.label}
             {#if f.type === 'select'}
               <select bind:value={editing.values[f.key]} aria-label={f.label}>
-                <option value={undefined}>(default)</option>
+                <option value={undefined}>{t('qw.explain.defaultRoute')}</option>
                 {#each f.options ?? [] as o (o)}<option value={o}>{o}</option>{/each}
               </select>
             {:else if f.type === 'multi'}
@@ -349,17 +352,17 @@
         <ErrorNote error={formError} />
         {#if preview}
           <div class="preview" data-testid="entry-preview">
-            <p><b>What this will do:</b> {preview.impact || 'Changes the configuration as shown.'}</p>
+            <p><b>{t('settings.editor.what')}</b> {preview.impact || t('settings.editor.whatFallback')}</p>
             {#each preview.warnings as w (w)}<p class="small warn-text">{w}</p>{/each}
             {#if replayable}<SimulationCard run={simulateDraft} />{/if}
           </div>
           <div class="row">
-            <button type="button" class="primary" disabled={busy} onclick={apply}>Apply</button>
-            <button type="button" onclick={() => (preview = null)}>Change it</button>
+            <button type="button" class="primary" disabled={busy} onclick={apply}>{t('common.apply')}</button>
+            <button type="button" onclick={() => (preview = null)}>{t('settings.editor.changeIt')}</button>
           </div>
         {:else}
           <div class="row">
-            <button class="primary" disabled={busy || !editing.name.trim()}>Check</button>
+            <button class="primary" disabled={busy || !editing.name.trim()}>{t('settings.editor.check')}</button>
             {#if formAction}<button type="button" onclick={runFormAction}>{formAction.label}</button>{/if}
           </div>
         {/if}

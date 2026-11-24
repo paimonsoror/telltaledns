@@ -3,6 +3,8 @@
   // wrong first, then memory, CPU, and disk with their last hour, then the details.
   import type { S } from '../api';
   import { bytes, duration, num, pct } from '../format';
+  // REQ: API-011 — the card's own words; the numbers and the OS's names are not ours to translate.
+  import { t, type MessageKey } from '../i18n';
   import HelpButton from './HelpButton.svelte';
 
   let { title, sub = '', host }: { title: string; sub?: string; host: S['HostReport'] } = $props();
@@ -21,15 +23,15 @@
     return pts.map((v, i) => `${i ? 'L' : 'M'}${((i / (pts.length - 1)) * 100).toFixed(1)},${(23 - (v / top) * 22).toFixed(1)}`).join(' ');
   }
   const memPct = $derived(h.cgroupMemUsedPercent ?? h.memUsedPercent);
-  const unavailable: Record<string, string> = {
-    memory: 'memory',
-    load: 'load average',
-    cpu: 'CPU',
-    process: 'process details',
-    cgroup: 'container limits (not in a container, or not readable)',
-    thermal: 'temperature (no sensor)',
-    disk: 'disk space',
-    os: 'OS name (none in a minimal container image)',
+  const unavailable: Record<string, MessageKey> = {
+    memory: 'clusterWidgets.host.na.memory',
+    load: 'clusterWidgets.host.na.load',
+    cpu: 'clusterWidgets.host.cpu',
+    process: 'clusterWidgets.host.na.process',
+    cgroup: 'clusterWidgets.host.na.cgroup',
+    thermal: 'clusterWidgets.host.na.thermal',
+    disk: 'clusterWidgets.host.na.disk',
+    os: 'clusterWidgets.host.na.os',
   };
 </script>
 
@@ -48,55 +50,63 @@
 
   <div class="meters">
     <div class="meter">
-      <div class="row"><span class="label">Memory</span><b>{pct(memPct, 0)}</b></div>
+      <div class="row"><span class="label">{t('qw.cache.memory')}</span><b>{pct(memPct, 0)}</b></div>
       <div class="bar"><span class={level(memPct)} style:width={width(memPct)}></span></div>
       <div class="muted small">
         {#if h.cgroupMemLimitBytes != null}
-          {bytes(h.cgroupMemUsedBytes)} of a {bytes(h.cgroupMemLimitBytes)} container limit · host {pct(h.memUsedPercent, 0)} of {bytes(h.memTotalBytes)}
+          {t('clusterWidgets.host.mem.cgroup', {
+            used: bytes(h.cgroupMemUsedBytes),
+            limit: bytes(h.cgroupMemLimitBytes),
+            hostPct: pct(h.memUsedPercent, 0),
+            hostTotal: bytes(h.memTotalBytes),
+          })}
         {:else if h.memTotalBytes != null}
-          {bytes((h.memTotalBytes ?? 0) - (h.memAvailableBytes ?? 0))} of {bytes(h.memTotalBytes)} used
-        {:else}unavailable{/if}
-        {#if h.swapTotalBytes}{' · '}swap {bytes(h.swapUsedBytes)} of {bytes(h.swapTotalBytes)}{/if}
-        {#if h.oomKills}{' · '}<span class="bad-text">{num(h.oomKills)} OOM kills ever</span>{/if}
+          {t('clusterWidgets.host.mem.of', {
+            used: bytes((h.memTotalBytes ?? 0) - (h.memAvailableBytes ?? 0)),
+            total: bytes(h.memTotalBytes),
+          })}
+        {:else}{t('clusterWidgets.host.unavailable')}{/if}
+        {#if h.swapTotalBytes}{' · '}{t('clusterWidgets.host.mem.swap', { used: bytes(h.swapUsedBytes), total: bytes(h.swapTotalBytes) })}{/if}
+        {#if h.oomKills}{' · '}<span class="bad-text">{t('clusterWidgets.host.mem.oom', { n: num(h.oomKills) })}</span>{/if}
       </div>
       {#if line('memUsedPercent')}<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><path d={line('memUsedPercent')} /></svg>{/if}
     </div>
 
     <div class="meter">
-      <div class="row"><span class="label">CPU</span><b>{pct(h.cpuPercent, 0)}</b></div>
+      <div class="row"><span class="label">{t('clusterWidgets.host.cpu')}</span><b>{pct(h.cpuPercent, 0)}</b></div>
       <div class="bar"><span class={level(h.cpuPercent, 70, 90)} style:width={width(h.cpuPercent)}></span></div>
       <div class="muted small">
-        {#if h.load1 != null}load {h.load1.toFixed(2)} / {h.load5?.toFixed(2)} / {h.load15?.toFixed(2)}{/if}
-        {#if h.cpus != null}{' · '}{h.cpus} cores{/if}
-        {#if h.cgroupCpuQuotaCores != null}{' · '}limit {h.cgroupCpuQuotaCores} cores{/if}
-        {#if h.throttledPercent}{' · '}<span class={h.throttledPercent >= 10 ? 'bad-text' : ''}>throttled {pct(h.throttledPercent, 0)}</span>{/if}
-        {#if h.cpuPercent == null && h.load1 == null}unavailable{/if}
+        {#if h.load1 != null}{t('clusterWidgets.host.cpu.load', { l1: h.load1.toFixed(2), l5: h.load5?.toFixed(2) ?? '', l15: h.load15?.toFixed(2) ?? '' })}{/if}
+        {#if h.cpus != null}{' · '}{t('clusterWidgets.host.cpu.cores', { n: h.cpus })}{/if}
+        {#if h.cgroupCpuQuotaCores != null}{' · '}{t('clusterWidgets.host.cpu.limit', { n: h.cgroupCpuQuotaCores })}{/if}
+        {#if h.throttledPercent}{' · '}<span class={h.throttledPercent >= 10 ? 'bad-text' : ''}>{t('clusterWidgets.host.cpu.throttled', { pct: pct(h.throttledPercent, 0) })}</span>{/if}
+        {#if h.cpuPercent == null && h.load1 == null}{t('clusterWidgets.host.unavailable')}{/if}
       </div>
       {#if line('cpuPercent')}<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><path d={line('cpuPercent')} /></svg>{/if}
     </div>
 
     <div class="meter">
-      <div class="row"><span class="label">Data disk</span><b>{pct(h.diskUsedPercent, 0)}</b></div>
+      <div class="row"><span class="label">{t('clusterWidgets.host.dataDisk')}</span><b>{pct(h.diskUsedPercent, 0)}</b></div>
       <div class="bar"><span class={level(h.diskUsedPercent, 80, 90)} style:width={width(h.diskUsedPercent)}></span></div>
       <div class="muted small">
-        {#if h.diskTotalBytes != null}{bytes(h.diskFreeBytes)} free of {bytes(h.diskTotalBytes)}{:else}unavailable{/if}
-        {#if h.qlogBytes != null}{' · '}query log {bytes(h.qlogBytes)}{/if}
-        {#if h.snapshotBytes != null}{' · '}lists {bytes(h.snapshotBytes)}{/if}
-        {#if h.writeBytesPerSecond != null}{' · '}writes {bytes(h.writeBytesPerSecond)}/s{/if}
+        {#if h.diskTotalBytes != null}{t('clusterWidgets.host.disk.free', { free: bytes(h.diskFreeBytes), total: bytes(h.diskTotalBytes) })}{:else}{t('clusterWidgets.host.unavailable')}{/if}
+        {#if h.qlogBytes != null}{' · '}{t('clusterWidgets.host.disk.qlog', { bytes: bytes(h.qlogBytes) })}{/if}
+        {#if h.snapshotBytes != null}{' · '}{t('clusterWidgets.host.disk.lists', { bytes: bytes(h.snapshotBytes) })}{/if}
+        {#if h.writeBytesPerSecond != null}{' · '}{t('clusterWidgets.host.disk.writes', { bytes: bytes(h.writeBytesPerSecond) })}{/if}
       </div>
       {#if line('diskUsedPercent')}<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><path d={line('diskUsedPercent')} /></svg>{/if}
     </div>
   </div>
 
   <dl class="facts small">
-    {#if h.temperatureC != null}<dt>Temperature</dt><dd class={h.temperatureC >= 80 ? 'bad-text' : h.temperatureC >= 70 ? 'warn-text' : ''}>{h.temperatureC.toFixed(1)} °C</dd>{/if}
-    {#if h.processRssBytes != null}<dt>TelltaleDNS memory</dt><dd>{bytes(h.processRssBytes)}{#if h.threads != null}{' · '}{h.threads} threads{/if}</dd>{/if}
-    {#if h.openFds != null}<dt>Open files</dt><dd>{num(h.openFds)}{#if h.maxFds != null}{' of '}{num(h.maxFds)}{/if}</dd>{/if}
-    {#if h.hostUptimeSeconds != null}<dt>Machine up</dt><dd>{duration(h.hostUptimeSeconds)}</dd>{/if}
-    {#if h.clockOffsetMs != null}<dt>Clock</dt><dd class={Math.abs(h.clockOffsetMs) >= 2000 ? 'bad-text' : ''}>{Math.abs(h.clockOffsetMs) < 50 ? 'in step' : `${(h.clockOffsetMs / 1000).toFixed(1)} s ${h.clockOffsetMs > 0 ? 'ahead' : 'behind'}`}</dd>{/if}
+    {#if h.temperatureC != null}<dt>{t('clusterWidgets.host.fact.temperature')}</dt><dd class={h.temperatureC >= 80 ? 'bad-text' : h.temperatureC >= 70 ? 'warn-text' : ''}>{h.temperatureC.toFixed(1)} °C</dd>{/if}
+    {#if h.processRssBytes != null}<dt>{t('clusterWidgets.host.fact.memory')}</dt><dd>{bytes(h.processRssBytes)}{#if h.threads != null}{' · '}{t('clusterWidgets.host.fact.threads', { n: h.threads })}{/if}</dd>{/if}
+    {#if h.openFds != null}<dt>{t('clusterWidgets.host.fact.openFiles')}</dt><dd>{num(h.openFds)}{#if h.maxFds != null}{t('clusterWidgets.host.fact.of')}{num(h.maxFds)}{/if}</dd>{/if}
+    {#if h.hostUptimeSeconds != null}<dt>{t('clusterWidgets.host.fact.machineUp')}</dt><dd>{duration(h.hostUptimeSeconds)}</dd>{/if}
+    {#if h.clockOffsetMs != null}<dt>{t('clusterWidgets.host.fact.clock')}</dt><dd class={Math.abs(h.clockOffsetMs) >= 2000 ? 'bad-text' : ''}>{Math.abs(h.clockOffsetMs) < 50 ? t('clusterWidgets.host.fact.inStep') : t(h.clockOffsetMs > 0 ? 'clusterWidgets.host.fact.ahead' : 'clusterWidgets.host.fact.behind', { seconds: (h.clockOffsetMs / 1000).toFixed(1) })}</dd>{/if}
   </dl>
   {#if h.unavailable.length}
-    <p class="muted small">Not available here: {h.unavailable.map((u) => unavailable[u] ?? u).join(', ')}.<HelpButton id="host-resources" /></p>
+    <p class="muted small">{t('clusterWidgets.host.notAvailable', { list: h.unavailable.map((u) => (unavailable[u] ? t(unavailable[u]) : u)).join(', ') })}<HelpButton id="host-resources" /></p>
   {/if}
 </article>
 

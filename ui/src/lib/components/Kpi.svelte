@@ -1,6 +1,8 @@
 <script lang="ts">
   // T6.8 — a KPI tile: the number, its change against the previous period (colored by what's
   // good for this metric, not by direction), and an optional sparkline.
+  import { t } from '../i18n';
+
   let {
     label,
     value,
@@ -64,7 +66,7 @@
   <div class="label">{label}</div>
   <div class="value {tone}">{value}</div>
   <div class="foot">
-    {#if deltaText}<span class="delta {deltaClass}" title="Against the previous period of the same length">{deltaText}</span>{/if}
+    {#if deltaText}<span class="delta {deltaClass}" title={t('widgets.kpi.deltaTitle')}>{deltaText}</span>{/if}
     {#if sub}<span class="sub muted small">{sub}</span>{/if}
   </div>
   {#if sparkPath}

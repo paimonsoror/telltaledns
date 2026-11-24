@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from '../i18n';
   // REQ: API-011, ADR-036 — before a change is saved: what it will do, in a sentence and a
   // diagram.
   import type { FlowPath } from '../help';
@@ -23,7 +24,7 @@
 </script>
 
 <div class="preview" data-testid="change-preview">
-  <p><b>What this will do:</b> {sentence}</p>
+  <p><b>{t('widgets.changePreview.lead')}</b> {sentence}</p>
   <FlowDiagram {highlight} {device} {name} />
   {#if simulate}<SimulationCard run={simulate} />{/if}
 </div>

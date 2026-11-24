@@ -1,5 +1,6 @@
 // Dashboard lab — calming a time series for display: fewer, wider buckets (sums stay exact for
 // the interval they cover), no half-filled bucket at the newest edge.
+import { localeTag } from '../i18n';
 
 export interface RawSeries {
   label: string;
@@ -56,8 +57,8 @@ export function rebucket(times: number[], series: RawSeries[], maxPts: number): 
 
 /** "05:47:00 PM · 17 s": the start and how long the bucket is, for a tooltip with little room. */
 export function bucketStart(t: number, span: number, multiDay: boolean): string {
-  const clock = new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: span < 60 ? '2-digit' : undefined });
-  const day = multiDay ? `${new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}, ` : '';
+  const clock = new Date(t * 1000).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit', second: span < 60 ? '2-digit' : undefined });
+  const day = multiDay ? `${new Date(t * 1000).toLocaleDateString(localeTag(), { month: 'short', day: 'numeric' })}, ` : '';
   const len = span < 60 ? `${span} s` : span < 3600 ? `${Math.round(span / 60)} min` : `${Math.round(span / 3600)} h`;
   return `${day}${clock} · ${len}`;
 }
@@ -66,8 +67,8 @@ export function bucketStart(t: number, span: number, multiDay: boolean): string 
 export function bucketLabel(t: number, span: number, multiDay: boolean): string {
   const withSec = span < 60;
   const clock = (x: number) =>
-    new Date(x * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: withSec ? '2-digit' : undefined });
-  const day = multiDay ? `${new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}, ` : '';
+    new Date(x * 1000).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit', second: withSec ? '2-digit' : undefined });
+  const day = multiDay ? `${new Date(t * 1000).toLocaleDateString(localeTag(), { month: 'short', day: 'numeric' })}, ` : '';
   if (span >= 3600) return `${day}${clock(t)}`;
   return `${day}${clock(t)} – ${clock(t + span)}`;
 }

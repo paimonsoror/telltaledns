@@ -3,10 +3,12 @@
   // fixed order (summary, diagram, when, example, caution, term, docs). It never blocks the
   // form underneath (Escape or ✕ closes it).
   import { docsUrl, topic } from '../help';
+  import { t as tr } from '../i18n';
   import Drawer from './Drawer.svelte';
   import FlowDiagram from './FlowDiagram.svelte';
 
   let { id }: { id: string } = $props();
+  // `t` is the topic; the translations come in as `tr` so the two never shadow each other.
   const t = $derived(topic(id));
   let open = $state(false);
 </script>
@@ -14,7 +16,7 @@
 <button
   type="button"
   class="help-btn"
-  aria-label={`Help: ${t.title}`}
+  aria-label={tr('help.button.aria', { title: t.title })}
   title={t.title}
   data-help={id}
   onclick={(e) => {
@@ -29,11 +31,11 @@
     <div class="help" data-testid="help-panel">
       <p class="lead">{t.summary}</p>
       {#if t.diagram}<FlowDiagram highlight={t.diagram} />{/if}
-      {#if t.when}<h3>When you'd use it</h3><p>{t.when}</p>{/if}
-      {#if t.example}<h3>Example</h3><p>{t.example}</p>{/if}
-      {#if t.caution}<h3>Careful</h3><p class="notice warn">{t.caution}</p>{/if}
-      {#if t.term}<p class="muted small">The DNS term for this is <b>{t.term}</b>.</p>{/if}
-      {#if docsUrl(t)}<p><a href={docsUrl(t)} target="_blank" rel="noreferrer">Full documentation</a></p>{/if}
+      {#if t.when}<h3>{tr('help.panel.when')}</h3><p>{t.when}</p>{/if}
+      {#if t.example}<h3>{tr('help.panel.example')}</h3><p>{t.example}</p>{/if}
+      {#if t.caution}<h3>{tr('help.panel.caution')}</h3><p class="notice warn">{t.caution}</p>{/if}
+      {#if t.term}<p class="muted small">{tr('help.panel.termBefore')}<b>{t.term}</b>{tr('queries.whyEnd')}</p>{/if}
+      {#if docsUrl(t)}<p><a href={docsUrl(t)} target="_blank" rel="noreferrer">{tr('help.panel.docs')}</a></p>{/if}
     </div>
   </Drawer>
 {/if}

@@ -10,6 +10,7 @@
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import { loadWorkloads, workloads } from '../lib/workloads.svelte';
+  import { t, tn } from '../lib/i18n';
 
   // REQ: FLT-017 — the workloads a group holds (the default group: those without one).
   const workloadsIn = (group: string) =>
@@ -33,62 +34,62 @@
     const out: Window[] = [];
     for (const line of s.split('\n').map((x) => x.trim()).filter(Boolean)) {
       const m = /^([a-z,]+)\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/i.exec(line);
-      if (!m) throw new Error(`"${line}": write the days and times like "weekdays 21:00-07:00"`);
+      if (!m) throw new Error(t('groups.schedule.errLine', { line }));
       out.push({ days: m[1].toLowerCase().split(',').filter(Boolean), start: m[2], end: m[3] });
     }
-    if (!out.length) throw new Error('Add at least one window, like "weekdays 21:00-07:00".');
+    if (!out.length) throw new Error(t('groups.schedule.errEmpty'));
     return out;
   }
   const scheduleFields = $derived<Field[]>([
-    { key: 'action', label: 'During the windows', type: 'select', options: ['block_all', 'enable_lists', 'block_services'], initial: 'block_all',
-      help: 'block_all: a bedtime (everything blocked except quick allow rules and local names). enable_lists: extra lists apply. block_services: extra services are blocked.' },
-    { key: 'window', label: 'Windows (one per line)', type: 'lines', placeholder: 'weekdays 21:00-07:00\nsat,sun 23:00-08:00',
-      help: 'Days: mon … sun, weekdays, weekends, daily. An end before the start runs past midnight.',
+    { key: 'action', label: t('groups.schedule.action'), type: 'select', options: ['block_all', 'enable_lists', 'block_services'], initial: 'block_all',
+      help: t('groups.schedule.actionHelp') },
+    { key: 'window', label: t('groups.schedule.window'), type: 'lines', placeholder: 'weekdays 21:00-07:00\nsat,sun 23:00-08:00',
+      help: t('groups.schedule.windowHelp'),
       toText: windowText, fromText: windowsFrom },
-    { key: 'lists', label: 'Lists (enable_lists)', type: 'multi', options: listNames },
-    { key: 'services', label: 'Services (block_services)', type: 'multi', options: services.map((s) => s.id) },
-    { key: 'tz', label: 'Time zone', type: 'text', placeholder: 'America/New_York', advanced: true,
-      help: 'IANA time zone. Default: the node\u2019s.' },
+    { key: 'lists', label: t('groups.schedule.lists'), type: 'multi', options: listNames },
+    { key: 'services', label: t('groups.schedule.services'), type: 'multi', options: services.map((s) => s.id) },
+    { key: 'tz', label: t('groups.schedule.tz'), type: 'text', placeholder: 'America/New_York', advanced: true,
+      help: t('groups.schedule.tzHelp') },
   ]);
   const serviceName = (id: string) => services.find((s) => s.id === id)?.name ?? id;
 
   // REQ: API-002 (T7.5) — add and change groups here.
   const groupFields = $derived<Field[]>([
-    { key: 'networks', label: 'Networks', type: 'lines', placeholder: '192.168.2.0/24',
-      help: 'One per line. Every device on these networks belongs to the group.' },
-    { key: 'lists', label: 'Lists', type: 'multi', options: listNames,
-      help: 'Leave all unticked on a new group to use every enabled list.' },
+    { key: 'networks', label: t('groups.field.networks'), type: 'lines', placeholder: '192.168.2.0/24',
+      help: t('groups.field.networksHelp') },
+    { key: 'lists', label: t('nav.lists'), type: 'multi', options: listNames,
+      help: t('groups.field.listsHelp') },
     // REQ: UPS-007 (T9.25)
-    { key: 'upstreams', label: 'Upstream servers', type: 'select', options: upstreamGroupNames,
-      help: 'The upstream group this group’s questions go to. (default) uses the default group; routes for a domain still win.' },
+    { key: 'upstreams', label: t('groups.field.upstreams'), type: 'select', options: upstreamGroupNames,
+      help: t('groups.field.upstreamsHelp') },
     // REQ: FLT-011 (T7.11)
-    { key: 'safe_search', label: 'Safe search', type: 'bool',
-      help: 'Google, Bing, DuckDuckGo, Yandex, and Pixabay show only safe results; YouTube uses Restricted Mode.' },
-    { key: 'youtube_restrict', label: 'YouTube restriction', type: 'select', options: ['strict', 'moderate', 'off'], advanced: true },
+    { key: 'safe_search', label: t('groups.field.safeSearch'), type: 'bool',
+      help: t('groups.field.safeSearchHelp') },
+    { key: 'youtube_restrict', label: t('groups.field.youtube'), type: 'select', options: ['strict', 'moderate', 'off'], advanced: true },
     // REQ: FLT-012 (T7.9)
-    { key: 'blocked_services', label: 'Blocked services', type: 'multi', options: services.map((s) => s.id),
-      help: 'Block a whole service (all its domains) for this group, on top of its lists.' },
+    { key: 'blocked_services', label: t('groups.field.blockedServices'), type: 'multi', options: services.map((s) => s.id),
+      help: t('groups.field.blockedServicesHelp') },
     // REQ: FLT-014 (T7.20), DNS-016 (T7.21) — answer filtering and DNS64 (T8.6).
-    { key: 'rebinding_protection', label: 'Rebinding protection', type: 'bool', advanced: true,
-      help: 'Block answers from the internet that point at private addresses (DNS rebinding).' },
-    { key: 'block_answer_ips', label: 'Block answers in', type: 'lines', placeholder: '203.0.113.0/24', advanced: true,
-      help: 'Answers with an address in these networks are blocked, whatever the name.' },
-    { key: 'dns64', label: 'DNS64', type: 'bool', advanced: true,
-      help: 'Make IPv6 addresses for IPv4-only names, for IPv6-only networks with NAT64.' },
-    { key: 'dns64_prefix', label: 'DNS64 prefix', type: 'text', placeholder: '64:ff9b::/96', advanced: true },
+    { key: 'rebinding_protection', label: t('groups.field.rebinding'), type: 'bool', advanced: true,
+      help: t('groups.field.rebindingHelp') },
+    { key: 'block_answer_ips', label: t('groups.field.blockAnswerIps'), type: 'lines', placeholder: '203.0.113.0/24', advanced: true,
+      help: t('groups.field.blockAnswerIpsHelp') },
+    { key: 'dns64', label: t('groups.field.dns64'), type: 'bool', advanced: true,
+      help: t('groups.field.dns64Help') },
+    { key: 'dns64_prefix', label: t('groups.field.dns64Prefix'), type: 'text', placeholder: '64:ff9b::/96', advanced: true },
     // REQ: DNS-016 (T9.10)
-    { key: 'dns64_exclude', label: 'DNS64 exclusions', type: 'lines', placeholder: '2001:db8:bad::/48', advanced: true,
-      help: 'IPv6 addresses here count as missing (the name gets made-up ones); IPv4 addresses here are never made into IPv6.' },
+    { key: 'dns64_exclude', label: t('groups.field.dns64Exclude'), type: 'lines', placeholder: '2001:db8:bad::/48', advanced: true,
+      help: t('groups.field.dns64ExcludeHelp') },
     // REQ: FLT-016 (T12.5)
-    { key: 'filter_aaaa', label: 'No IPv6 addresses', type: 'bool', advanced: true,
-      help: 'Answer IPv6 (AAAA) questions with nothing, so these devices use IPv4: for a network whose IPv6 is broken. Your own names still answer. Not with DNS64.' },
+    { key: 'filter_aaaa', label: t('groups.field.filterAaaa'), type: 'bool', advanced: true,
+      help: t('groups.field.filterAaaaHelp') },
     // REQ: FLT-010 (T9.7)
-    { key: 'schedules', label: 'Schedules', type: 'multi', options: scheduleNames,
-      help: 'Schedules this group follows (make them under Schedules, below).' },
-    { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
-    { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
-      help: 'When a device matches several groups, the highest priority wins.' },
-    { key: 'color', label: 'Color', type: 'text', placeholder: '#4f8cff', advanced: true },
+    { key: 'schedules', label: t('groups.schedule.title'), type: 'multi', options: scheduleNames,
+      help: t('groups.field.schedulesHelp') },
+    { key: 'block_mode', label: t('groups.field.blockMode'), type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
+    { key: 'priority', label: t('groups.col.priority'), type: 'number', placeholder: '0', advanced: true,
+      help: t('groups.field.priorityHelp') },
+    { key: 'color', label: t('groups.field.color'), type: 'text', placeholder: '#4f8cff', advanced: true },
   ]);
 
   function load() {
@@ -124,11 +125,10 @@
 </script>
 
 <div class="page">
-  <h1>Groups<HelpButton id="groups" /></h1>
+  <h1>{t('nav.groups')}<HelpButton id="groups" /></h1>
   <ErrorNote {error} />
   <p class="muted small">
-    A group is a kind of device: every device on a group's networks belongs to it (a named device can also be put in a
-    group of its own). Groups decide which lists apply and show what each kind of device does.
+    {t('groups.intro')}
   </p>
 
   <div class="group-grid">
@@ -137,40 +137,40 @@
         <div class="card-head">
           <h2>{g.name}</h2>
           {#if g.pausedUntilUnixSeconds}
-            <span class="badge warn">paused until {dateTime(g.pausedUntilUnixSeconds)}</span>
+            <span class="badge warn">{t('groups.pausedUntil', { time: dateTime(g.pausedUntilUnixSeconds) })}</span>
           {/if}
         </div>
         <div class="muted small mono">
           {g.networks.length
             ? g.networks.join(', ')
             : g.name === 'default'
-              ? 'devices that match nothing else'
+              ? t('groups.devices.default')
               : workloadsIn(g.name).length
-                ? 'named devices and Kubernetes workloads'
-                : 'named devices only'}
+                ? t('groups.devices.namedAndWorkloads')
+                : t('groups.devices.namedOnly')}
         </div>
         {#if g.safeSearch}
           <div class="small" data-testid="group-safe-search">
-            Safe search on{g.youtubeRestrict === 'off' ? ' (not YouTube)' : g.youtubeRestrict === 'moderate' ? ' (YouTube moderate)' : ''}<HelpButton id="safe-search" />
+            {t('groups.safeSearch')}{g.youtubeRestrict === 'off' ? t('groups.safeSearch.notYouTube') : g.youtubeRestrict === 'moderate' ? t('groups.safeSearch.youtubeModerate') : ''}<HelpButton id="safe-search" />
           </div>
         {/if}
         {#if g.schedules.length}
           <div class="small" data-testid="group-schedules">
-            Schedules: {#each g.schedules as s, i (s)}{i ? ', ' : ''}{s}{#if g.schedulesOn.includes(s)}
-                <span class="badge warn">on now</span>{/if}{/each}<HelpButton id="schedules" />
+            {t('groups.schedulesLabel')} {#each g.schedules as s, i (s)}{i ? ', ' : ''}{s}{#if g.schedulesOn.includes(s)}
+                <span class="badge warn">{t('groups.schedules.onNow')}</span>{/if}{/each}<HelpButton id="schedules" />
           </div>
         {/if}
         {#if g.blockedServices.length}
           <div class="small" data-testid="group-services">
-            Blocks {g.blockedServices.map(serviceName).join(', ')}<HelpButton id="blocked-services" />
+            {t('groups.blocks', { services: g.blockedServices.map(serviceName).join(', ') })}<HelpButton id="blocked-services" />
           </div>
         {/if}
         <!-- REQ: FLT-014, FLT-015 (T7.20), DNS-016 (T7.21) — shown since T8.6. -->
         {#if g.rebindingProtection || g.blockAnswerIps.length}
           <div class="small" data-testid="group-answers">
             {[
-              g.rebindingProtection ? 'Rebinding protection on' : '',
-              g.blockAnswerIps.length ? `blocks answers in ${g.blockAnswerIps.join(', ')}` : '',
+              g.rebindingProtection ? t('groups.answers.rebinding') : '',
+              g.blockAnswerIps.length ? t('groups.answers.blockIps', { networks: g.blockAnswerIps.join(', ') }) : '',
             ]
               .filter(Boolean)
               .join('; ')}<HelpButton id="rebinding" />
@@ -178,71 +178,71 @@
         {/if}
         {#if g.rewrites.length}
           <div class="small" data-testid="group-rewrites">
-            Rewrites: {#each g.rewrites as r, i (r.domain)}{i ? ', ' : ''}<span class="mono">{r.domain} → {r.answer}</span>{/each}<HelpButton id="rewrites" />
+            {t('groups.rewritesLabel')} {#each g.rewrites as r, i (r.domain)}{i ? ', ' : ''}<span class="mono">{r.domain} → {r.answer}</span>{/each}<HelpButton id="rewrites" />
           </div>
         {/if}
         {#if g.upstreams}
           <div class="small" data-testid="group-upstreams">
-            Upstream servers: <span class="mono">{g.upstreams}</span>
+            {t('groups.upstreamsLabel')} <span class="mono">{g.upstreams}</span>
           </div>
         {/if}
         {#if g.dns64}
           <div class="small" data-testid="group-dns64">
-            DNS64 on (<span class="mono">{g.dns64Prefix ?? '64:ff9b::/96'}</span>)<HelpButton id="dns64" />
+            {t('groups.dns64OnStart')}<span class="mono">{g.dns64Prefix ?? '64:ff9b::/96'}</span>{t('groups.dns64OnEnd')}<HelpButton id="dns64" />
           </div>
         {/if}
         {#if g.filterAaaa}
-          <div class="small" data-testid="group-filter-aaaa">No IPv6 addresses (AAAA answered with nothing)<HelpButton id="filter-aaaa" /></div>
+          <div class="small" data-testid="group-filter-aaaa">{t('groups.filterAaaa')}<HelpButton id="filter-aaaa" /></div>
         {/if}
         <dl class="stats">
-          <div><dt>Queries (24 h)</dt><dd>{num(g.queries24h)}{#if total}<span class="muted small"> · {pct((g.queries24h / total) * 100, 0)}</span>{/if}</dd></div>
-          <div><dt>Blocked</dt><dd>{g.queries24h ? pct((g.blocked24h / g.queries24h) * 100) : '–'}</dd></div>
-          <div><dt>Devices (this hour)</dt><dd>{num(g.devicesThisHour)}</dd></div>
+          <div><dt>{t('groups.stat.queries')}</dt><dd>{num(g.queries24h)}{#if total}<span class="muted small"> · {pct((g.queries24h / total) * 100, 0)}</span>{/if}</dd></div>
+          <div><dt>{t('legacy.blocked')}</dt><dd>{g.queries24h ? pct((g.blocked24h / g.queries24h) * 100) : '–'}</dd></div>
+          <div><dt>{t('groups.stat.devices')}</dt><dd>{num(g.devicesThisHour)}</dd></div>
         </dl>
         {#if tops[g.name]}
           <div class="tops small">
             <div>
-              <div class="muted">Top names</div>
+              <div class="muted">{t('groups.top.names')}</div>
               <ol>{#each tops[g.name].domains as t (t.key)}<li class="mono">{t.key} <span class="muted">{num(t.count)}</span></li>{/each}</ol>
             </div>
             <div>
-              <div class="muted">Top blocked</div>
+              <div class="muted">{t('legacy.topBlocked')}</div>
               {#if tops[g.name].blocked.length}
                 <ol>{#each tops[g.name].blocked as t (t.key)}<li class="mono">{t.key} <span class="muted">{num(t.count)}</span></li>{/each}</ol>
-              {:else}<span class="muted">nothing blocked</span>{/if}
+              {:else}<span class="muted">{t('groups.top.nothingBlocked')}</span>{/if}
             </div>
           </div>
         {/if}
         <!-- REQ: FLT-017 — the Kubernetes workloads in the group, with their glyph. -->
         {#if workloadsIn(g.name).length}
           <div class="small workloads" data-testid="group-workloads">
-            <span class="muted">Workloads:</span>
+            <span class="muted">{t('groups.workloadsLabel')}</span>
             {#each workloadsIn(g.name).slice(0, 8) as w (w.name)}<span class="wl"><ClientChip ip={w.key} name={w.name} /></span>{/each}
-            {#if workloadsIn(g.name).length > 8}<a href={href('/clients', { tab: 'workloads' })}>and {workloadsIn(g.name).length - 8} more</a>{/if}
+            {#if workloadsIn(g.name).length > 8}<a href={href('/clients', { tab: 'workloads' })}>{tn('groups.workloads.more', workloadsIn(g.name).length - 8)}</a>{/if}
           </div>
         {/if}
-        <a class="small" href={href('/queries', { group: g.name })}>Show this group's queries</a>
+        <a class="small" href={href('/queries', { group: g.name })}>{t('groups.showQueries')}</a>
       </section>
     {/each}
   </div>
 
   <section class="card">
-    <h2>Settings</h2>
+    <h2>{t('nav.settings')}</h2>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Group</th><th class="num">Priority</th><th>Lists<HelpButton id="lists" /></th>{#if advanced}<th>Blocked answer</th>{/if}<th>Blocking</th></tr></thead>
+        <thead><tr><th>{t('legacy.group')}</th><th class="num">{t('groups.col.priority')}</th><th>{t('nav.lists')}<HelpButton id="lists" /></th>{#if advanced}<th>{t('groups.field.blockMode')}</th>{/if}<th>{t('groups.col.blocking')}</th></tr></thead>
         <tbody>
           {#each groups as g (g.name)}
             <tr>
               <td><strong>{g.name}</strong></td>
               <td class="num">{g.priority}</td>
-              <td>{g.lists ? g.lists.join(', ') || 'none' : 'every enabled list'}</td>
-              {#if advanced}<td>{g.blockMode} · TTL {g.blockTtlSeconds} s</td>{/if}
+              <td>{g.lists ? g.lists.join(', ') || t('groups.lists.none') : t('groups.lists.everyEnabled')}</td>
+              {#if advanced}<td>{g.blockMode} · {t('groups.blockTtl', { seconds: g.blockTtlSeconds })}</td>{/if}
               <td>
                 {#if g.pausedUntilUnixSeconds}
-                  <span class="badge warn">paused until {dateTime(g.pausedUntilUnixSeconds)}</span>
+                  <span class="badge warn">{t('groups.pausedUntil', { time: dateTime(g.pausedUntilUnixSeconds) })}</span>
                 {:else}
-                  <span class="badge ok">on</span>
+                  <span class="badge ok">{t('settings.value.on')}</span>
                 {/if}
               </td>
             </tr>
@@ -251,11 +251,11 @@
       </table>
     </div>
   </section>
-  <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields}
-    summary={(d) => `${((d.networks as string[]) ?? []).join(', ') || 'named devices only'} · ${d.lists ? `${(d.lists as string[]).length} lists` : 'every enabled list'}`}
+  <ConfigEditor kind="group" path="groups" title={t('groups.manage.title')} noun={t('groups.manage.noun')} fields={groupFields}
+    summary={(d) => `${((d.networks as string[]) ?? []).join(', ') || t('groups.devices.namedOnly')} · ${d.lists ? tn('groups.manage.lists', (d.lists as string[]).length) : t('groups.lists.everyEnabled')}`}
     onchanged={load} />
   <!-- REQ: FLT-010 (T9.7) — schedules made here; groups follow them through `schedules`. -->
-  <ConfigEditor kind="schedule" path="schedules" title="Schedules" noun="schedule" help="schedules" fields={scheduleFields}
+  <ConfigEditor kind="schedule" path="schedules" title={t('groups.schedule.title')} noun={t('groups.schedule.noun')} help="schedules" fields={scheduleFields}
     summary={(d) => `${String(d.action ?? '')}: ${((d.window as { days: string[]; start: string; end: string }[]) ?? []).map((w) => `${w.days.join(',')} ${w.start}-${w.end}`).join('; ')}`}
     onchanged={load} />
 </div>

@@ -4,31 +4,46 @@
   // DNS servers. The path in `highlight` is drawn bold; the rest stays faint. Inline SVG (no
   // library, CSP-safe), with a text equivalent for screen readers and small screens.
   import type { FlowPath } from '../help';
+  import { t, type MessageKey } from '../i18n';
 
   let {
     highlight,
-    device = 'A device',
-    name = 'a name',
+    device,
+    name,
     detail = '',
   }: { highlight: FlowPath; device?: string; name?: string; detail?: string } = $props();
 
-  const outs: { id: FlowPath; label: string; sub: string }[] = [
-    { id: 'cache', label: 'From memory', sub: 'cache' },
-    { id: 'local', label: 'Your names', sub: 'local records' },
-    { id: 'blocked', label: 'Blocked', sub: 'filter lists' },
-    { id: 'route', label: 'Another server', sub: 'routes' },
-    { id: 'upstream', label: 'Public DNS', sub: 'upstreams' },
-  ];
+  // The words are looked up in the language on screen: `t()` reads the locale, so a diagram
+  // that is on screen when the language changes is redrawn in the other one. A caller that
+  // passes its own device or name (the explain view, a change preview) keeps them as they are.
+  const deviceWord = $derived(device ?? t('help.flow.aDevice'));
+  const nameWord = $derived(name ?? t('help.flow.aName'));
+  const shown = $derived(deviceWord.length > 18 ? deviceWord.slice(0, 17) + '…' : deviceWord);
 
-  const sentence: Record<FlowPath, string> = {
-    cache: 'answers from memory, because it was asked recently',
-    local: 'answers with one of your own names',
-    blocked: 'blocks it, so it never loads',
-    route: 'asks the server you chose for that domain',
-    upstream: 'asks a public DNS server and remembers the answer',
-    refused: 'refuses, because the device may not use this server',
+  const outs: { id: FlowPath; label: string; sub: string }[] = $derived([
+    { id: 'cache', label: t('help.flow.fromMemory'), sub: t('dashw.path.cache') },
+    { id: 'local', label: t('help.flow.local'), sub: t('help.flow.localSub') },
+    { id: 'blocked', label: t('legacy.blocked'), sub: t('help.flow.blockedSub') },
+    { id: 'route', label: t('help.flow.route'), sub: t('help.flow.routeSub') },
+    { id: 'upstream', label: t('help.flow.upstream'), sub: t('help.flow.upstreamSub') },
+  ]);
+
+  const answers: Record<FlowPath, MessageKey> = {
+    cache: 'help.flow.answer.cache',
+    local: 'help.flow.answer.local',
+    blocked: 'help.flow.answer.blocked',
+    route: 'help.flow.answer.route',
+    upstream: 'help.flow.answer.upstream',
+    refused: 'help.flow.answer.refused',
   };
-  const text = $derived(`${device} asks for ${name}; TelltaleDNS ${sentence[highlight]}${detail ? ` (${detail})` : ''}.`);
+  const text = $derived(
+    t('help.flow.sentence', {
+      device: deviceWord,
+      name: nameWord,
+      outcome: t(answers[highlight]),
+      detail: detail ? ` (${detail})` : '',
+    }),
+  );
   const y = (i: number) => 20 + i * 40;
 </script>
 
@@ -40,12 +55,12 @@
       </marker>
     </defs>
     <rect x="8" y="84" width="130" height="52" rx="10" class="flow-box" class:flow-refused={highlight === 'refused'} />
-    <text x="73" y="106" text-anchor="middle" class="flow-text">{device.length > 18 ? device.slice(0, 17) + '…' : device}</text>
-    <text x="73" y="124" text-anchor="middle" class="flow-sub">asks for a name</text>
+    <text x="73" y="106" text-anchor="middle" class="flow-text">{shown}</text>
+    <text x="73" y="124" text-anchor="middle" class="flow-sub">{t('help.flow.asks')}</text>
     <path d="M138 110 H226" class="flow-line" class:flow-on={highlight !== 'refused'} marker-end="url(#flow-arrow)" />
     <rect x="228" y="80" width="150" height="60" rx="12" class="flow-core" />
     <text x="303" y="107" text-anchor="middle" class="flow-core-text">TelltaleDNS</text>
-    <text x="303" y="125" text-anchor="middle" class="flow-core-sub">{highlight === 'refused' ? 'refused' : 'decides'}</text>
+    <text x="303" y="125" text-anchor="middle" class="flow-core-sub">{highlight === 'refused' ? t('help.flow.refused') : t('help.flow.decides')}</text>
     {#each outs as o, i (o.id)}
       <path
         d={`M378 110 C420 110 420 ${y(i) + 18} 462 ${y(i) + 18}`}

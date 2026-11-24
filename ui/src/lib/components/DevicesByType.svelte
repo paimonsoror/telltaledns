@@ -2,6 +2,7 @@
   // REQ: OBS-025 (T13.3) — devices by what they look like (Advanced dashboard).
   import { api, type S } from '../api';
   import { href } from '../router.svelte';
+  import { t } from '../i18n';
   import HelpButton from './HelpButton.svelte';
 
   let items = $state<S['DeviceIdentity'][]>([]);
@@ -20,14 +21,14 @@
 
 <section class="card" data-testid="devices-by-type">
   <div class="card-head">
-    <h2>Devices by type<HelpButton id="identify" /></h2>
-    <a href={href('/clients')} class="small">Clients</a>
+    <h2>{t('deviceWidgets.byType.title')}<HelpButton id="identify" /></h2>
+    <a href={href('/clients')} class="small">{t('nav.clients')}</a>
   </div>
   {#if counts.length === 0}
-    <p class="empty">No devices identified yet.</p>
+    <p class="empty">{t('deviceWidgets.byType.empty')}</p>
   {:else}
     <table class="compact">
-      <thead><tr><th>Type</th><th class="num">Devices</th></tr></thead>
+      <thead><tr><th>{t('qw.cache.type')}</th><th class="num">{t('clients.tab.devices')}</th></tr></thead>
       <tbody>
         {#each counts as [cls, n] (cls)}<tr><td>{cls}</td><td class="num">{n}</td></tr>{/each}
       </tbody>

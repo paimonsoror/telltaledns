@@ -1,6 +1,7 @@
 // REQ: FLT-017 (T15.1) — the Kubernetes workloads, loaded once and kept for a minute, so any
 // client chip can tell a workload (by its name, its analytics key, or a pod address) and show
 // its glyph and pod. Nothing is fetched when the feature is off.
+import { t, type MessageKey } from './i18n';
 import { api, type S } from './api';
 
 type Index = {
@@ -77,11 +78,17 @@ export function podAt(ip: string): string | undefined {
   return workloads.index.pods.get(ip);
 }
 
-/** Where a workload's group came from, in words. */
-export const groupFromText: Record<string, string> = {
-  pod_label: 'pod label',
-  namespace_label: 'namespace label',
-  map: 'rule',
-  default_group: 'default group',
-  none: 'network group',
+/** Where a workload's group came from: the words live in the catalogs. */
+export const groupFromKey: Record<string, MessageKey> = {
+  pod_label: 'qw.groupFrom.podLabel',
+  namespace_label: 'qw.groupFrom.namespaceLabel',
+  map: 'alerts.rule.noun',
+  default_group: 'qw.groupFrom.defaultGroup',
+  none: 'qw.groupFrom.networkGroup',
 };
+
+/** The words for where a workload's group came from; an unknown value shows as it is. */
+export function groupFromLabel(from: string | null | undefined): string {
+  const key = from ? groupFromKey[from] : undefined;
+  return key ? t(key) : (from ?? '');
+}

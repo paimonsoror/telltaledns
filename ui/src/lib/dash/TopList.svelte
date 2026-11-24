@@ -17,6 +17,7 @@
   import DomainIcon from '../icons/DomainIcon.svelte';
   import { num } from '../format';
   import { parseName, workloadName, type Parsed } from './names';
+  import { t } from '../i18n';
 
   let {
     items,
@@ -88,7 +89,7 @@
   function ends(label: string): [string, string] {
     return !label.includes('.') && label.length > 22 ? [label.slice(0, -7), label.slice(-7)] : [label, ''];
   }
-  const pctOf = (v: number, t: number) => (t ? `${((v / t) * 100).toFixed(v / t < 0.1 ? 1 : 0)}%` : '–');
+  const pctOf = (v: number, all: number) => (all ? `${((v / all) * 100).toFixed(v / all < 0.1 ? 1 : 0)}%` : '–');
 
   // A device's split: blocked, cached (stale and refreshed included) and forwarded come from the API;
   // "other" is the rest of its count (local, special, refused, …, and the sketch's error bound).
@@ -115,7 +116,7 @@
 </script>
 
 {#if shown.length === 0}
-  <p class="empty">Nothing yet.</p>
+  <p class="empty">{t('legacy.empty')}</p>
 {:else}
   <ol class="tl">
     {#each shown as r (r.it.key)}
@@ -125,7 +126,7 @@
       {@const target = merged ? (p?.main ?? it.key) : it.key}
       {@const [sub, base] = p ? cut(p.main) : kind === 'clients' ? ['', ''] : cut(it.key)}
       {@const [head, tail] = ends(base)}
-      {@const tag = merged ? `search suffix ×${r.variants.length}` : (p?.tag ?? '')}
+      {@const tag = merged ? t('dashboard.searchSuffix', { n: r.variants.length }) : (p?.tag ?? '')}
       {@const sp = kind === 'clients' ? splitOf(it, r.count) : null}
       <li class:open={open[it.key]} style:--w={`${(r.count / max) * 100}%`}>
         <div class="line">
@@ -140,7 +141,7 @@
               {#if tag}<span class="tag">{tag}</span>{/if}
             {/if}
           </span>
-          <button class="n" aria-expanded={!!open[it.key]} aria-label={`Details for ${it.name ?? p?.main ?? it.key}`} onclick={() => (open[it.key] = !open[it.key])}>
+          <button class="n" aria-expanded={!!open[it.key]} aria-label={t('dashboard.detailsFor', { name: it.name ?? p?.main ?? it.key })} onclick={() => (open[it.key] = !open[it.key])}>
             <span class="num">{num(r.count)}</span><span class="chev" aria-hidden="true"></span>
           </button>
         </div>
@@ -152,7 +153,7 @@
         {#if open[it.key]}
           <div class="more">
             {#if merged}
-              <p class="small muted">Pods asked for <b class="real">{p?.main}</b> with each of their DNS search suffixes added, so it's one question that looks like {r.variants.length}:</p>
+              <p class="small muted">{t('dashboard.podsAskedPre')}<b class="real">{p?.main}</b>{t('dashboard.podsAskedPost', { n: r.variants.length })}</p>
               <ul class="vars">
                 {#each r.variants as v (v.key)}
                   <li><code>{v.key}</code><b>{num(v.count)}</b></li>
@@ -161,7 +162,7 @@
             {:else}
               <div class="full">
                 <code>{it.key}</code>
-                <button class="link small" onclick={() => copy(it.key)}>{copied === it.key ? 'Copied' : 'Copy'}</button>
+                <button class="link small" onclick={() => copy(it.key)}>{copied === it.key ? t('common.copied') : t('common.copy')}</button>
               </div>
               {#if it.name && kind === 'clients'}<div class="small muted">{it.name}</div>{/if}
               {#if p?.note}<p class="small muted">{p.note}</p>{/if}
@@ -174,8 +175,8 @@
               </ul>
             {/if}
             <p class="small muted">
-              {num(r.count)} queries · {pctOf(r.count, total)} of this list ·
-              <a href={link(target, merged)}>{kind === 'clients' ? 'Show its queries' : 'Show in the query log'}</a>
+              {t('dashboard.queriesCount', { count: num(r.count) })} · {t('dashboard.ofThisList', { pct: pctOf(r.count, total) })} ·
+              <a href={link(target, merged)}>{kind === 'clients' ? t('dashboard.showItsQueries') : t('dashboard.showInLog')}</a>
             </p>
           </div>
         {/if}

@@ -17,6 +17,8 @@
   import AgentChanges from './pages/AgentChanges.svelte';
   import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
+  import { t, type MessageKey } from './lib/i18n';
+  import LanguageToggle from './lib/components/LanguageToggle.svelte';
   import { loadIconPrefs } from './lib/icons/prefs.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
@@ -40,26 +42,26 @@
   import Alerts from './pages/Alerts.svelte';
 
   // T6.8 — the sidebar in sections, each page with an icon.
-  const pages: { path: string; label: string; page: Component; icon: string; section: string }[] = [
-    { path: '/', label: 'Dashboard', page: Dashboard, icon: 'dashboard', section: 'Monitor' },
-    { path: '/traffic', label: 'Traffic map', page: Traffic, icon: 'traffic', section: 'Monitor' },
-    { path: '/heatmap', label: 'Heatmap', page: Heatmap, icon: 'heatmap', section: 'Monitor' },
-    { path: '/flow', label: 'Flow', page: Flow, icon: 'flow', section: 'Monitor' },
-    { path: '/queries', label: 'Query log', page: Queries, icon: 'queries', section: 'Monitor' },
-    { path: '/analyze', label: 'Analyze', page: Analyze, icon: 'analyze', section: 'Monitor' },
-    { path: '/explain', label: 'Explain', page: Explain, icon: 'explain', section: 'Monitor' },
-    { path: '/anomalies', label: 'Anomalies', page: Anomalies, icon: 'anomalies', section: 'Monitor' },
-    { path: '/clients', label: 'Clients', page: Clients, icon: 'clients', section: 'Devices' },
-    { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
-    { path: '/lists', label: 'Lists', page: Lists, icon: 'lists', section: 'Filtering & DNS' },
-    { path: '/rules', label: 'Quick rules', page: Rules, icon: 'rules', section: 'Filtering & DNS' },
-    { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
-    { path: '/local-dns', label: 'Names on my network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
-    { path: '/cluster', label: 'Cluster', page: Cluster, icon: 'cluster', section: 'System' },
-    { path: '/alerts', label: 'Alerts', page: Alerts, icon: 'bell', section: 'System' },
-    { path: '/agent-changes', label: 'Agent changes', page: AgentChanges, icon: 'inbox', section: 'System' },
-    { path: '/cache', label: 'Cache', page: Cache, icon: 'cache', section: 'System' },
-    { path: '/settings', label: 'Settings', page: Settings, icon: 'settings', section: 'System' },
+  const pages: { path: string; label: MessageKey; page: Component; icon: string; section: MessageKey }[] = [
+    { path: '/', label: 'legacy.title', page: Dashboard, icon: 'dashboard', section: 'nav.section.monitor' },
+    { path: '/traffic', label: 'nav.traffic', page: Traffic, icon: 'traffic', section: 'nav.section.monitor' },
+    { path: '/heatmap', label: 'nav.heatmap', page: Heatmap, icon: 'heatmap', section: 'nav.section.monitor' },
+    { path: '/flow', label: 'nav.flow', page: Flow, icon: 'flow', section: 'nav.section.monitor' },
+    { path: '/queries', label: 'nav.queries', page: Queries, icon: 'queries', section: 'nav.section.monitor' },
+    { path: '/analyze', label: 'nav.analyze', page: Analyze, icon: 'analyze', section: 'nav.section.monitor' },
+    { path: '/explain', label: 'nav.explain', page: Explain, icon: 'explain', section: 'nav.section.monitor' },
+    { path: '/anomalies', label: 'nav.anomalies', page: Anomalies, icon: 'anomalies', section: 'nav.section.monitor' },
+    { path: '/clients', label: 'nav.clients', page: Clients, icon: 'clients', section: 'clients.tab.devices' },
+    { path: '/groups', label: 'nav.groups', page: Groups, icon: 'groups', section: 'clients.tab.devices' },
+    { path: '/lists', label: 'nav.lists', page: Lists, icon: 'lists', section: 'nav.section.filtering' },
+    { path: '/rules', label: 'nav.rules', page: Rules, icon: 'rules', section: 'nav.section.filtering' },
+    { path: '/upstreams', label: 'nav.upstreams', page: Upstreams, icon: 'upstreams', section: 'nav.section.filtering' },
+    { path: '/local-dns', label: 'nav.localDns', page: LocalDns, icon: 'names', section: 'nav.section.filtering' },
+    { path: '/cluster', label: 'nav.cluster', page: Cluster, icon: 'cluster', section: 'nav.section.system' },
+    { path: '/alerts', label: 'nav.alerts', page: Alerts, icon: 'bell', section: 'nav.section.system' },
+    { path: '/agent-changes', label: 'changes.title', page: AgentChanges, icon: 'inbox', section: 'nav.section.system' },
+    { path: '/cache', label: 'nav.cache', page: Cache, icon: 'cache', section: 'nav.section.system' },
+    { path: '/settings', label: 'nav.settings', page: Settings, icon: 'settings', section: 'nav.section.system' },
   ];
   const sections = [...new Set(pages.map((p) => p.section))];
 
@@ -73,6 +75,9 @@
     navigate('/queries', { [key]: q });
     search = '';
   }
+  // A role in the reader's language; a value this build doesn't know stays as the server sent it.
+  const roleName = (role: string) =>
+    role === 'admin' || role === 'operator' || role === 'viewer' ? t(`common.role.${role}` as MessageKey) : role;
   const initials = $derived(
     (session.user?.username ?? '?')
       .split(/[\s._-]+/)
@@ -177,11 +182,11 @@
 />
 
 {#if !session.loaded}
-  <p class="empty">Loading…</p>
+  <p class="empty">{t('common.loading')}</p>
 {:else if session.error && !session.user}
   <main class="center">
-    <div class="notice bad">Can't reach TelltaleDNS: {session.error}</div>
-    <button onclick={refreshSession}>Retry</button>
+    <div class="notice bad">{t('common.unreachable', { error: session.error })}</div>
+    <button onclick={refreshSession}>{t('common.retry')}</button>
   </main>
 {:else if route.path === '/display'}
   <!-- REQ: OBS-035 (T14.13) — a wall display's link, signed in or not. -->
@@ -196,25 +201,25 @@
 {:else}
   <div class="layout" class:open={menuOpen}>
     {#if menuOpen}
-      <button type="button" class="scrim" aria-label="Close the menu" data-testid="menu-scrim" onclick={closeMenu}></button>
+      <button type="button" class="scrim" aria-label={t('nav.closeMenu')} data-testid="menu-scrim" onclick={closeMenu}></button>
     {/if}
-    <nav class="side" aria-label="Main">
+    <nav class="side" aria-label={t('nav.main')}>
       <a class="brand" href="#/" onclick={closeMenu}><Logo /> <span>TelltaleDNS</span></a>
       {#each sections as sec (sec)}
-        <div class="section">{sec}</div>
+        <div class="section">{t(sec)}</div>
         {#each pages.filter((p) => p.section === sec) as p (p.path)}
           <a class="nav" href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined} onclick={closeMenu}>
-            <Icon name={p.icon} /> <span>{p.label}</span>
+            <Icon name={p.icon} /> <span>{t(p.label)}</span>
             {#if badges[p.path]}
-              <b class="count" class:alert={p.path === '/lists'} title={p.path === '/lists' ? 'lists failing to download' : 'new anomalies in the last 24 hours (not acknowledged)'}>{badges[p.path]}</b>
+              <b class="count" class:alert={p.path === '/lists'} title={p.path === '/lists' ? t('nav.badge.lists') : t('nav.badge.anomalies')}>{badges[p.path]}</b>
             {/if}
           </a>
         {/each}
       {/each}
       <!-- On phones the header has no room: the detail level lives in the menu. -->
-      <span class="mode mode-nav small" role="group" aria-label="Detail level (menu)">
-        <button class="link small" aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple view</button>
-        <button class="link small" aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced view</button>
+      <span class="mode mode-nav small" role="group" aria-label={t('nav.detailLevelMenu')}>
+        <button class="link small" aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>{t('nav.simpleView')}</button>
+        <button class="link small" aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>{t('nav.advancedView')}</button>
       </span>
       <span class="spacer"></span>
       <!-- The project: plain links, nothing is fetched (works on an offline network). -->
@@ -222,82 +227,87 @@
         <!-- REQ: OBS-015 — health first: status, set apart from the links out. -->
         <HealthIcon />
         <span class="links-gap" aria-hidden="true"></span>
-        <a href="https://github.com/paimonsoror/telltaledns" target="_blank" rel="noreferrer" aria-label="TelltaleDNS on GitHub" title="TelltaleDNS on GitHub">
+        <a href="https://github.com/paimonsoror/telltaledns" target="_blank" rel="noreferrer" aria-label={t('nav.github')} title={t('nav.github')}>
           <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
         </a>
-        <a href="https://paimonsoror.github.io/telltaledns/" target="_blank" rel="noreferrer" aria-label="Project site and guides" title="Project site and guides">
+        <a href="https://paimonsoror.github.io/telltaledns/" target="_blank" rel="noreferrer" aria-label={t('nav.site')} title={t('nav.site')}>
           <Icon name="book" size={18} />
         </a>
       </div>
       <!-- REQ: OPS-004 (ADR-046) — which build this is, and whether a newer one exists. -->
       {#if info?.build}
-        <a class="build small" href="#/settings?tab=system" data-testid="build-footer" onclick={closeMenu} title={`commit ${info.build.commit}, ${info.build.target}`}>
+        <a class="build small" href="#/settings?tab=system" data-testid="build-footer" onclick={closeMenu} title={t('nav.build', { commit: info.build.commit, target: info.build.target })}>
           {#if info.node}<span class="node"
               >{info.node}<!-- REQ: CLU-002 — in a cluster, which kind of node this UI belongs to. -->{#if info.cluster}<span
                   class="role"
                   class:primary={info.cluster.primary}
                   data-testid="node-role"
                   title={info.cluster.primary
-                    ? `the primary of cluster ${info.cluster.name} (site ${info.cluster.site}): configuration changes are made here`
-                    : `a replica in site ${info.cluster.site}: changes you save here are sent to the primary, which applies them for every node`}
-                  >{info.cluster.primary ? 'primary' : 'replica'}</span
+                    ? t('nav.primaryTitle', { name: info.cluster.name, site: info.cluster.site })
+                    : t('nav.replicaTitle', { site: info.cluster.site })}
+                  >{info.cluster.primary ? t('nav.primary') : t('nav.replica')}</span
                 >{/if}</span
             >{/if}
           <span>{info.build.version} · {info.build.commit}</span>
-          {#if info.update?.state === 'available'}<span class="pill">update</span>{/if}
+          {#if info.update?.state === 'available'}<span class="pill">{t('nav.update')}</span>{/if}
         </a>
       {/if}
     </nav>
     <header class="top">
-      <button class="icon-btn menu" aria-label={unwell ? `Menu (health: ${unwell})` : 'Menu'} aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}
+      <button class="icon-btn menu" aria-label={unwell ? t('nav.menuHealth', { level: unwell }) : t('nav.menu')} aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}
         ><Icon name="menu" />{#if unwell}<span class="menu-dot {unwell}" data-testid="menu-health-dot"></span>{/if}</button
       >
       <form class="search" role="search" onsubmit={doSearch}>
         <Icon name="search" size={16} />
-        <input aria-label="Search names or clients" placeholder="Search a name or client…" bind:value={search} />
+        <input aria-label={t('nav.searchAria')} placeholder={t('nav.searchPlaceholder')} bind:value={search} />
       </form>
       <span class="spacer"></span>
-      <span class="mode seg small" role="group" aria-label="Detail level">
-        <button aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple</button>
-        <button aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced</button>
+      <span class="mode seg small" role="group" aria-label={t('nav.detailLevel')}>
+        <button aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>{t('nav.simple')}</button>
+        <button aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>{t('nav.advanced')}</button>
       </span>
       <HelpButton id="simple-advanced" />
       <AgentInbox />
       <PauseControl />
       {#if currentMode() === 'advanced'}
         <!-- REQ: OBS-035 — the wall display (full screen, for a monitor). -->
-        <button class="icon-btn" onclick={() => navigate('/wall')} title="Wall display (full screen, for a monitor)" aria-label="Wall display" data-testid="open-wall"
+        <button class="icon-btn" onclick={() => navigate('/wall')} title={t('nav.wallTitle')} aria-label={t('nav.wall')} data-testid="open-wall"
           ><Icon name="wall" /></button
         >
       {/if}
-      <button class="icon-btn" onclick={() => (theme = nextTheme)} title={`Theme: ${theme} (click for ${nextTheme})`} aria-label={`Theme: ${theme}`}>
+      <button
+        class="icon-btn"
+        onclick={() => (theme = nextTheme)}
+        title={t('nav.themeNext', { theme: t(`nav.theme.${theme}` as MessageKey), next: t(`nav.theme.${nextTheme}` as MessageKey) })}
+        aria-label={t('nav.theme', { theme: t(`nav.theme.${theme}` as MessageKey) })}
+      >
         <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} />
       </button>
+      <LanguageToggle />
       <span class="who">
         <span class="avatar" aria-hidden="true">{initials}</span>
-        <span class="who-text"><strong>{session.user.username}</strong><span class="role muted small">{session.user.role}</span></span>
+        <span class="who-text"><strong>{session.user.username}</strong><span class="role muted small">{roleName(session.user.role)}</span></span>
       </span>
-      <button class="icon-btn" onclick={signOut} title="Sign out" aria-label="Sign out"><Icon name="logout" /></button>
+      <button class="icon-btn" onclick={signOut} title={t('nav.signOut')} aria-label={t('nav.signOut')}><Icon name="logout" /></button>
     </header>
     <main class="content">
       {#if info && !info.queryLog}
-        <div class="notice warn banner">The query log is off on this node: the query log and "Why?" from history are unavailable.</div>
+        <div class="notice warn banner">{t('nav.banner.queryLogOff')}</div>
       {/if}
       {#if info?.clientIpsMasked}
         {@const m = info.clientIpsMasked}
         <div class="notice warn banner" data-testid="masked-banner">
-          <strong>Client IPs appear masked.</strong>
-          {m.sharePercent}% of the last {m.queries} queries came from {m.sources.join(', ')}, which look like
-          infrastructure (a Kubernetes node, a Docker bridge, or a router forwarding DNS) rather than devices.
-          Per-device statistics and rules see those addresses instead of your devices.
-          <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">How to fix it</a><HelpButton id="masked-clients" />
+          <strong>{t('nav.banner.masked.title')}</strong>
+          {t('nav.banner.masked.body', { share: m.sharePercent, queries: m.queries, sources: m.sources.join(', ') })}
+          <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">{t('nav.banner.masked.fix')}</a><HelpButton id="masked-clients" />
         </div>
       {/if}
       {#if info?.maintenance && current.path !== '/cluster'}
         <!-- REQ: OPS-010 — the node serving this UI is in maintenance (the Cluster page has its own, with actions). -->
         <div class="notice warn banner" data-testid="maintenance-app-banner">
-          <strong>This node is in maintenance</strong> ({info.maintenance.reason}): it reports not ready and keeps answering DNS;
-          its alerts are paused. <a href="#/cluster">Cluster</a><HelpButton id="maintenance" />
+          <strong>{t('nav.banner.maintenance.title')}</strong>
+          {t('nav.banner.maintenance.body', { reason: info.maintenance.reason })}
+          <a href="#/cluster">{t('nav.cluster')}</a><HelpButton id="maintenance" />
         </div>
       {/if}
       {#key current.path}

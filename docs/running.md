@@ -3355,6 +3355,11 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Upstreams, lists, and groups can be added and changed on their pages ([Changing the configuration in the UI](#changing-the-configuration-in-the-ui)).
 
 The menu ends with the health icon ([Health](#health)), links to the project on GitHub and its site (plain links: the UI fetches nothing from the internet), then this node's name and version.
+### Language
+The web UI speaks English and Simplified Chinese. The language button in the header — a globe, or `EN`/`中` on a phone — switches (a link ending in `?lang=zh-CN` or `?lang=en` does the same); the choice is kept in your browser, and until you choose, a Chinese browser opens in Chinese and every other one in English. There is no server setting and nothing is stored about it.
+
+Every screen is translated: the header and menu, sign-in and first-run setup, both dashboards, the query log (with **Why?**), Settings, the wall and display pages, and every **?** help panel (ADR-185). Documentation prose, the site's pages, the CLI, and messages the server sends stay English. Configuration keys, API values and messages, DNS terms, and domain or device names are the same in both languages. The switch names the language it goes to, so it is usable without reading the current one.
+
 
 ### Domain icons
 A small mark sits left of each name in the dashboard's **Top domains** and **Top blocked** lists and in the query log. The page draws it from data it already has, so nothing is fetched and nothing about your queries is sent to anyone: no favicon service is involved, and the page's content security policy still allows images only from itself.

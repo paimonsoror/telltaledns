@@ -10,13 +10,14 @@
   import { draw, geometry, height, hit, layout, locate, type Grid } from '../lib/heatmap';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import { t, tn, type MessageKey } from '../lib/i18n';
 
   type Kind = 'network' | 'client' | 'name';
   const windows = [
-    { id: '24h', label: '24 h', from: '-24h', days: 1 },
-    { id: '7d', label: '7 d', from: '-7d', days: 7 },
-    { id: '30d', label: '30 d', from: '-30d', days: 30 },
-    { id: '90d', label: '90 d', from: '-90d', days: 90 },
+    { id: '24h', label: 'flow.window.24h' as MessageKey, from: '-24h', days: 1 },
+    { id: '7d', label: 'flow.window.7d' as MessageKey, from: '-7d', days: 7 },
+    { id: '30d', label: 'legacy.range.30d' as MessageKey, from: '-30d', days: 30 },
+    { id: '90d', label: 'heatmap.window.90d' as MessageKey, from: '-90d', days: 90 },
   ];
   const p = route.params;
   let kind = $state<Kind>((['network', 'client', 'name'].includes(p.get('kind') ?? '') ? p.get('kind') : 'network') as Kind);
@@ -155,12 +156,12 @@
     const end = mins + grid.slot / 60;
     const hm = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
     const when = `${grid.rows[ri].label} ${hm(mins)}–${hm(end)}`;
-    if (!c.covered) return `${when} · below this hour's top list`;
-    if (c.value == null) return `${when} · no data`;
-    const what = measure === 'blocked' ? 'blocked queries' : 'queries';
+    if (!c.covered) return t('heatmap.tip.below', { when });
+    if (c.value == null) return t('heatmap.tip.none', { when });
+    const what = t(measure === 'blocked' ? 'heatmap.measure.blocked' : 'heatmap.count.queries');
     return fold
-      ? `${when} · ${num(Math.round(c.value))} ${what} on average over ${c.days} day${c.days === 1 ? '' : 's'}`
-      : `${when} · ${num(c.value)} ${what}`;
+      ? tn('heatmap.tip.average', c.days, { when, count: num(Math.round(c.value)), what })
+      : t('heatmap.tip.value', { when, count: num(c.value), what });
   }
   function show(ri: number, ci: number, x: number, y: number) {
     tip = { x, y, text: slotText(ri, ci) };
@@ -224,10 +225,10 @@
     // Everything shown goes in the URL: the URL is read back on every change.
     navigate('/heatmap', { kind, key, window: win.id, grain: grain === '15m' ? undefined : grain, measure: measure === 'blocked' ? measure : undefined, fold: fold ? '1' : undefined }, true);
   }
-  const kinds: { id: Kind; label: string }[] = [
-    { id: 'network', label: 'Network' },
-    { id: 'client', label: 'Device' },
-    { id: 'name', label: 'Name' },
+  const kinds: { id: Kind; label: MessageKey }[] = [
+    { id: 'network', label: 'heatmap.scope.network' },
+    { id: 'client', label: 'flow.device' },
+    { id: 'name', label: 'clients.col.name' },
   ];
   // The table view: one row per day (or weekday), hours as columns (finer slots summed).
   const table = $derived.by(() => {
@@ -249,47 +250,47 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>Heatmap<HelpButton id="heatmap" /></h1>
+    <h1>{t('nav.heatmap')}<HelpButton id="heatmap" /></h1>
     <div class="row controls">
-      <div class="seg" role="group" aria-label="What">
+      <div class="seg" role="group" aria-label={t('heatmap.what')}>
         {#each kinds as k (k.id)}
-          <button type="button" aria-pressed={kind === k.id} onclick={() => (kind = k.id)}>{k.label}</button>
+          <button type="button" aria-pressed={kind === k.id} onclick={() => (kind = k.id)}>{t(k.label)}</button>
         {/each}
       </div>
-      <div class="seg" role="group" aria-label="Window">
+      <div class="seg" role="group" aria-label={t('flow.window')}>
         {#each windows as w (w.id)}
-          <button type="button" aria-pressed={win.id === w.id} onclick={() => (win = w)}>{w.label}</button>
+          <button type="button" aria-pressed={win.id === w.id} onclick={() => (win = w)}>{t(w.label)}</button>
         {/each}
       </div>
       {#if kind === 'network' && win.days <= 7}
         <span class="pill-field bare">
-          <select bind:value={grain} aria-label="Slot">
-            <option value="hour">hours</option>
-            <option value="15m">15 minutes</option>
-            <option value="minute">minutes</option>
+          <select bind:value={grain} aria-label={t('heatmap.slot')}>
+            <option value="hour">{t('heatmap.slot.hour')}</option>
+            <option value="15m">{t('heatmap.slot.15m')}</option>
+            <option value="minute">{t('heatmap.slot.minute')}</option>
           </select>
         </span>
       {/if}
       {#if kind !== 'client'}
         <span class="pill-field bare">
-          <select bind:value={measure} aria-label="Count">
-            <option value="queries">queries</option>
-            <option value="blocked">blocked</option>
+          <select bind:value={measure} aria-label={t('heatmap.count')}>
+            <option value="queries">{t('heatmap.count.queries')}</option>
+            <option value="blocked">{t('wall.kpi.blocked')}</option>
           </select>
         </span>
       {/if}
-      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={fold} data-testid="heatmap-fold" />Typical week</label></span>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={fold} data-testid="heatmap-fold" />{t('heatmap.typicalWeek')}</label></span>
     </div>
   </div>
   {#if kind !== 'network'}
     <form class="row keyform" onsubmit={setKey}>
       <input
         bind:value={keyInput}
-        placeholder={kind === 'client' ? 'a device address, e.g. 192.168.2.14' : 'a name, e.g. pool.ntp.org'}
-        aria-label={kind === 'client' ? 'Device address' : 'Name'}
+        placeholder={kind === 'client' ? t('flow.devicePlaceholder') : t('heatmap.keyPlaceholder.name')}
+        aria-label={kind === 'client' ? t('flow.deviceAddress') : t('clients.col.name')}
         data-testid="heatmap-key"
       />
-      <button type="submit">Show</button>
+      <button type="submit">{t('heatmap.show')}</button>
     </form>
   {/if}
 
@@ -298,22 +299,22 @@
   <section class="card" data-testid="heatmap">
     <div class="card-head" bind:clientWidth={headWidth}>
       <h2>
-        {#if kind === 'network'}The whole network{:else if key}{key}{:else}Pick a {kind === 'client' ? 'device' : 'name'}{/if}
-        {#if data}<span class="muted small">· {data.grain === '15m' ? '15-minute' : data.grain} slots, your local time</span>{/if}
+        {#if kind === 'network'}{t('heatmap.head.all')}{:else if key}{key}{:else}{kind === 'client' ? t('heatmap.head.pickDevice') : t('heatmap.head.pickName')}{/if}
+        {#if data}<span class="muted small">· {t('heatmap.slots', { grain: data.grain === '15m' ? t('heatmap.grain.15m') : data.grain })}</span>{/if}
       </h2>
       {#if kind === 'client' && key}
         <!-- REQ: OBS-034 — the device's day, lane by lane. -->
-        <a class="small" href={href('/clients', { device: key, view: 'timeline' })} data-testid="heatmap-day">Day timeline</a>
+        <a class="small" href={href('/clients', { device: key, view: 'timeline' })} data-testid="heatmap-day">{t('heatmap.dayTimeline')}</a>
       {/if}
-      <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? 'Grid' : 'Table'}</button>
+      <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? t('dashw.showGrid') : t('flow.table')}</button>
     </div>
-    {#if data?.missingNodes?.length}<p class="small muted">Without {data.missingNodes.join(', ')}: they didn't answer.</p>{/if}
+    {#if data?.missingNodes?.length}<p class="small muted">{t('heatmap.missing', { nodes: data.missingNodes.join(', ') })}</p>{/if}
     {#if !data && !error}
-      <p class="empty">{kind === 'network' || key ? 'Loading…' : 'Enter one above.'}</p>
+      <p class="empty">{kind === 'network' || key ? t('common.loading') : t('heatmap.empty')}</p>
     {:else if data && showTable}
       <div class="table-wrap table-view">
         <table class="compact" data-testid="heatmap-table">
-          <thead><tr><th>Day</th>{#each Array.from({ length: 24 }, (_, h) => h) as h (h)}<th class="num">{String(h).padStart(2, '0')}</th>{/each}</tr></thead>
+          <thead><tr><th>{t('heatmap.col.day')}</th>{#each Array.from({ length: 24 }, (_, h) => h) as h (h)}<th class="num">{String(h).padStart(2, '0')}</th>{/each}</tr></thead>
           <tbody>
             {#each table as r, i (i)}
               <tr><td>{r.label}</td>{#each r.hours as v, j (j)}<td class="num">{v}</td>{/each}</tr>
@@ -327,8 +328,8 @@
         class="grid-focus"
         tabindex="0"
         role="grid"
-        aria-roledescription="heatmap"
-        aria-label="Heatmap: rows are days, columns times of day. Arrow keys move between cells, Enter opens the query log."
+        aria-roledescription={t('heatmap.grid.role')}
+        aria-label={t('heatmap.grid.aria')}
         data-testid="heatmap-canvas"
         onmousemove={move}
         onmouseleave={() => (tip = null)}
@@ -342,9 +343,9 @@
     </div>
     {#if data}
       <p class="muted small legend">
-        Stronger colour = more {measure === 'blocked' ? 'blocked queries' : 'queries'}; bars at the right and bottom sum each row and column.
-        {#if data.precision === 'topList'}Counts come from each hour's top 100: <span class="hatch-sw"></span> hatched hours had this one below the list.{/if}
-        Select a cell for its queries (the query log keeps fewer days than the heatmap).
+        {t('heatmap.legend.stronger', { what: t(measure === 'blocked' ? 'heatmap.measure.blocked' : 'heatmap.count.queries') })}
+        {#if data.precision === 'topList'}{t('heatmap.legend.topListBefore')}<span class="hatch-sw"></span>{t('heatmap.legend.topListAfter')}{/if}
+        {t('heatmap.legend.cell')}
       </p>
     {/if}
   </section>

@@ -6,6 +6,7 @@
   import { href, navigate, route } from '../router.svelte';
   import { num } from '../format';
   import { changes } from '../annotations.svelte';
+  import { t, type MessageKey } from '../i18n';
   import Chart, { type Series } from './Chart.svelte';
   import BarList from './BarList.svelte';
   import ErrorNote from './ErrorNote.svelte';
@@ -44,7 +45,7 @@
         for (const p of points) if (p.startUnixSeconds === t && (n === undefined || p.node === n)) spent += p.bad;
         return Math.round((100 - (spent * 100) / Math.max(1, allowed)) * 10) / 10;
       });
-      return { label: n ?? 'every node', color: colors[i % colors.length], values };
+      return { label: n ?? t('qw.cache.everyNode'), color: colors[i % colors.length], values };
     });
     return { times, series };
   }
@@ -65,69 +66,83 @@
   }
   const hidden = (w: string) => data?.coverage.hidden?.includes(w) ?? false;
   const nothing = $derived(data != null && data.budget.bad === 0);
-  const titles: Record<string, string> = { availability: 'Answers that work', latency: 'Answers that are quick' };
+  // The two objectives' words are keys: what they say follows the language on screen.
+  const titles: Record<string, MessageKey> = {
+    availability: 'dashboard.slo.availability',
+    latency: 'dashboard.slo.latency',
+  };
 </script>
 
 <div class="budget-tab" data-testid="budget-attribution">
   <div class="row head">
-    <h2>Who spent the error budget?<HelpButton id="slo-attribution" /></h2>
+    <h2>{t('simulation.budget.title')}<HelpButton id="slo-attribution" /></h2>
     <span class="spacer"></span>
-    <div class="seg" role="group" aria-label="Objective">
+    <div class="seg" role="group" aria-label={t('simulation.budget.objectiveAria')}>
       {#each ['availability', 'latency'] as o (o)}
-        <button aria-pressed={objective === o} onclick={() => navigate('/analyze', { tab: 'budget', objective: o })}>{titles[o]}</button>
+        <button aria-pressed={objective === o} onclick={() => navigate('/analyze', { tab: 'budget', objective: o })}>{t(titles[o])}</button>
       {/each}
     </div>
   </div>
   <ErrorNote {error} />
   {#if !data}
-    <p class="empty">Loading…</p>
+    <p class="empty">{t('slo.loading')}</p>
   {:else}
     <p class="small" data-testid="budget-summary">
-      <strong>{num(data.budget.bad)}</strong> bad of {num(data.budget.answered)} answers since {new Date(data.from).toLocaleDateString()};
-      the target ({data.budget.targetPct}%) allows {num(data.budget.allowedBad)}:
-      {#if data.budget.remainingPct < 0}<span class="bad-text">overspent</span>{:else}{data.budget.remainingPct}% of the budget left{/if}.
+      <strong>{num(data.budget.bad)}</strong>{t('simulation.budget.summary', {
+        answers: num(data.budget.answered),
+        date: new Date(data.from).toLocaleDateString(),
+        target: data.budget.targetPct,
+        allowed: num(data.budget.allowedBad),
+      })}
+      {#if data.budget.remainingPct < 0}<span class="bad-text">{t('simulation.budget.summary.overspent')}</span>{:else}{t('simulation.budget.summary.left', { pct: data.budget.remainingPct })}{/if}
     </p>
     {#if data.note}<div class="notice small">{data.note}</div>{/if}
-    {#if data.missingNodes?.length}<div class="notice warn small">Without {data.missingNodes.join(', ')}: they didn't answer.</div>{/if}
+    {#if data.missingNodes?.length}<div class="notice warn small">{t('heatmap.missing', { nodes: data.missingNodes.join(', ') })}</div>{/if}
     {#if data.coverage.partialNodes?.length}
       <p class="muted small" data-testid="partial-nodes">
-        No client and name lists for part of the window from {data.coverage.partialNodes.join(', ')} (an older build, or a pod
-        counted from the minutes it shipped); their bad answers count everywhere else.
+        {t('simulation.budget.partialNodes', { nodes: data.coverage.partialNodes.join(', ') })}
       </p>
     {/if}
     {#if nothing}
-      <p class="empty" data-testid="budget-empty">Nothing spent this window.</p>
+      <p class="empty" data-testid="budget-empty">{t('simulation.budget.empty')}</p>
     {:else}
       {#if all}
-        <Chart title="Budget left (%)" times={all.times} series={all.series} height={200} markers={changes.markers} format={(n) => `${n}%`} />
+        <Chart title={t('simulation.budget.chartLeft')} times={all.times} series={all.series} height={200} markers={changes.markers} format={(n) => `${n}%`} />
       {/if}
       {#if hidden('timeline_only')}
-        <p class="muted small">The privacy level keeps only the timeline: no breakdown by client, name, or anything else.</p>
+        <p class="muted small">{t('simulation.budget.timelineOnly')}</p>
       {:else}
         <div class="lists">
           {#if hidden('clients_hidden')}
-            <section class="card"><h3>Clients</h3><p class="muted small">Hidden by the privacy level.</p></section>
+            <section class="card"><h3>{t('nav.clients')}</h3><p class="muted small">{t('simulation.budget.hiddenByPrivacy')}</p></section>
           {:else}
-            <BarList title="Clients" testid="by-client" rows={data.byClient} link={(r) => logLink('client', r.key)} empty="No clients recorded." />
+            <BarList
+              title={t('nav.clients')}
+              testid="by-client"
+              rows={data.byClient}
+              link={(r) => logLink('client', r.key)}
+              empty={t('simulation.budget.noClients')}
+            />
           {/if}
           <BarList
-            title={hidden('names_hidden') ? `Names (${data.byName.length}, hidden by the privacy level)` : 'Names'}
+            title={hidden('names_hidden')
+              ? t('simulation.budget.namesHidden', { n: data.byName.length })
+              : t('traffic.mode.name')}
             testid="by-name"
             rows={data.byName}
             link={hidden('names_hidden') ? undefined : (r) => logLink('name', r.key)}
-            empty="No names recorded."
+            empty={t('simulation.budget.noNames')}
           />
-          <BarList title="Upstreams" testid="by-upstream" rows={data.byUpstream} link={(r) => (r.key === 'none' ? undefined : href('/upstreams'))} />
-          <BarList title="Status" testid="by-status" rows={data.byStatus} />
-          <BarList title="Response code" testid="by-rcode" rows={data.byRcode} />
+          <BarList title={t('upstreams.field.members')} testid="by-upstream" rows={data.byUpstream} link={(r) => (r.key === 'none' ? undefined : href('/upstreams'))} />
+          <BarList title={t('cluster.col.status')} testid="by-status" rows={data.byStatus} />
+          <BarList title={t('simulation.budget.rcode')} testid="by-rcode" rows={data.byRcode} />
         </div>
         <p class="muted small">
-          Clients and names are approximate top lists (each count may be up to its ± over); the other lists are exact. Links open the
-          query log, which keeps fewer days than the budget's window.
+          {t('simulation.budget.approximate')}
         </p>
       {/if}
       {#if perNode.length}
-        <h3>By node</h3>
+        <h3>{t('simulation.budget.byNode')}</h3>
         <div class="nodes">
           {#each perNode as n (n.node)}
             <Chart title={n.node} times={n.times} series={n.series} height={120} format={(v) => `${v}%`} />

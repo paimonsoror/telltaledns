@@ -4836,3 +4836,35 @@ test('flt_013 explain says where the MAC that identified the client comes from',
     }
   }
 });
+
+// REQ: API-011 — the UI speaks English and Simplified Chinese. `?lang=zh-CN` is a shared link's
+// way in; the switch in the top bar names the other language; both are remembered in this
+// browser, and the help panel comes from the Chinese glossary. English is put back at the end so
+// the rest of the suite (one serial page) keeps its labels.
+test('api_011 the UI switches to Chinese and back', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?lang=zh-CN');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+  await expect(page.getByRole('link', { name: '仪表盘', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '高级', exact: true })).toBeVisible();
+  // The dashboard's own words, not just the shell.
+  await expect(page.getByRole('heading', { name: /仪表盘/ })).toBeVisible();
+  // The help panel reads from docs/help/topics.zh-CN.json.
+  await page.getByRole('main').getByRole('button', { name: /^帮助：/ }).first().click();
+  const panel = page.getByTestId('help-panel');
+  await expect(panel.getByRole('heading', { name: '什么时候会用到' })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // Pages beyond the dashboard follow the switch too (T28.1: every screen).
+  await page.goto('/#/cache');
+  await expect(page.getByRole('heading', { level: 1, name: /缓存/ })).toBeVisible();
+  await page.goto('/#/clients');
+  await expect(page.getByRole('heading', { level: 1, name: /客户端/ })).toBeVisible();
+  await page.goto('/#/');
+
+  // The switch names the language it goes to, and going back is the same click.
+  await page.getByTestId('language-toggle').click();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await expect(page.getByRole('link', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^Dashboard/ })).toBeVisible();
+});

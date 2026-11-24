@@ -6,6 +6,8 @@
   import { can } from '../session.svelte';
   import { poll } from '../poll';
   import { duration, logDate, logTime, num, pct } from '../format';
+  // REQ: API-011 — the drills tab's own words; a node, a target, and a reason are data.
+  import { t, tn, type MessageKey } from '../i18n';
   import ClientChip from './ClientChip.svelte';
   import Drawer from './Drawer.svelte';
   import ErrorNote from './ErrorNote.svelte';
@@ -63,114 +65,125 @@
     }
   }
 
-  const statusText: Record<string, string> = {
-    running: 'running',
-    collecting: 'collecting the report',
-    complete: 'complete',
-    cancelled: 'cancelled (restart)',
+  const statusText: Record<string, MessageKey> = {
+    running: 'cluster.tab.drillsRunning',
+    collecting: 'clusterWidgets.drillPanel.status.collecting',
+    complete: 'clusterWidgets.drillPanel.status.complete',
+    cancelled: 'clusterWidgets.drillPanel.status.cancelled',
   };
-  const verdictText: Record<string, string> = {
-    followed: 'followed',
-    stuck: 'stuck',
-    quiet: 'quiet',
-    elsewhere: 'elsewhere',
+  const verdictText: Record<string, MessageKey> = {
+    followed: 'clusterWidgets.drillPanel.tile.followed',
+    stuck: 'clusterWidgets.drillPanel.tile.stuck',
+    quiet: 'clusterWidgets.drillPanel.tile.quiet',
+    elsewhere: 'clusterWidgets.drillPanel.verdict.elsewhere',
   };
   const verdictClass: Record<string, string> = { followed: 'ok', stuck: 'bad', quiet: '', elsewhere: '' };
-  const when = (t: string) => `${logDate(t)} ${logTime(t)}`;
+  const when = (iso: string) => `${logDate(iso)} ${logTime(iso)}`;
   const maxTtf = $derived(Math.max(1, ...(report?.devices.map((d) => d.timeToFailoverMs ?? 0) ?? [1])));
 </script>
 
 {#each running as d (d.id)}
   {@const a = live[d.id]}
   <section class="card drill-live" data-testid="drill-live">
-    <h2>Drill running on {d.node}<HelpButton id="failover-drill" /></h2>
+    <h2>{t('clusterWidgets.drillPanel.live.title', { node: d.node })}<HelpButton id="failover-drill" /></h2>
     <p>
-      Not answering <strong>{d.targets}</strong> ({d.reason}).
+      {t('clusterWidgets.drillPanel.live.notAnswering')} <strong>{d.targets}</strong>{t('clusterWidgets.drillPanel.live.reason', { reason: d.reason })}
       {#if a}
         <span data-testid="drill-counters"
-          >{num(a.dropped)} queries unanswered from {num(a.devicesDropped)} device{a.devicesDropped === 1 ? '' : 's'} · {duration(a.secondsLeft)} left</span
+          >{tn('clusterWidgets.drillPanel.live.devices', a.devicesDropped, { dropped: num(a.dropped) })}{t('clusterWidgets.drillPanel.live.left', {
+            time: duration(a.secondsLeft),
+          })}</span
         >
       {/if}
     </p>
     {#if can('operator')}
-      <button onclick={() => end(d)} disabled={ending} data-testid="drill-end">End now</button>
+      <button onclick={() => end(d)} disabled={ending} data-testid="drill-end">{t('clusterWidgets.drillPanel.live.end')}</button>
     {/if}
   </section>
 {/each}
 
 <section class="card">
-  <h2>Failover drills<HelpButton id="failover-drill" /></h2>
+  <h2>{t('clusterWidgets.drillPanel.title')}<HelpButton id="failover-drill" /></h2>
   <p class="muted small">
-    A drill makes one node stop answering chosen devices for up to five minutes, then shows which devices switched to another
-    node (they have a working second DNS server) and which were stuck. Start one with <em>Drill…</em> on a node's row.
+    {t('clusterWidgets.drillPanel.about')} <em>{t('cluster.drill.open')}</em>{t('clusterWidgets.drillPanel.aboutEnd')}
   </p>
   <ErrorNote {error} />
   {#if page && page.items.length === 0}
-    <p class="empty">No drills yet.</p>
+    <p class="empty">{t('clusterWidgets.drillPanel.empty')}</p>
   {:else if page}
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>When</th><th>Node</th><th>Targets</th><th>Status</th><th class="num">Coverage</th><th class="num">Followed</th><th class="num">Stuck</th><th class="num">Quiet</th><th></th></tr>
+          <tr><th>{t('changes.plan.when')}</th><th>{t('qw.cache.node')}</th><th>{t('clusterWidgets.drillPanel.col.targets')}</th><th>{t('cluster.col.status')}</th><th class="num">{t('clusterWidgets.drillPanel.col.coverage')}</th><th class="num">{t('clusterWidgets.drillPanel.col.followed')}</th><th class="num">{t('clusterWidgets.drillPanel.col.stuck')}</th><th class="num">{t('clusterWidgets.drillPanel.col.quiet')}</th><th></th></tr>
         </thead>
         <tbody>
           {#each page.items as d (d.id)}
             <tr data-testid="drill-row">
               <td class="small">{when(d.since)}</td>
-              <td>{d.node}{#if d.viaBalancer}<span class="muted small"> · via balancer</span>{/if}</td>
+              <td>{d.node}{#if d.viaBalancer}<span class="muted small">{t('clusterWidgets.drillPanel.viaBalancer')}</span>{/if}</td>
               <td class="small">{d.targets}</td>
-              <td class="small">{statusText[d.status] ?? d.status}</td>
+              <td class="small">{statusText[d.status] ? t(statusText[d.status]) : d.status}</td>
               <td class="num">{d.coveragePercent != null ? pct(d.coveragePercent) : '–'}</td>
               <td class="num">{d.followed}</td>
               <td class="num" class:bad-text={d.stuck > 0}>{d.stuck}</td>
               <td class="num">{d.quiet}</td>
-              <td>{#if d.status === 'complete'}<button class="link small" onclick={() => show(d.id)} data-testid="drill-open">Report</button>{/if}</td>
+              <td>{#if d.status === 'complete'}<button class="link small" onclick={() => show(d.id)} data-testid="drill-open">{t('clusterWidgets.drillPanel.report')}</button>{/if}</td>
             </tr>
           {/each}
         </tbody>
       </table>
     </div>
-    {#if page.missingNodes.length}<p class="muted small">Not answering: {page.missingNodes.join(', ')}.</p>{/if}
+    {#if page.missingNodes.length}<p class="muted small">{t('clusterWidgets.drillPanel.missing', { nodes: page.missingNodes.join(', ') })}</p>{/if}
   {/if}
 </section>
 <ErrorNote error={reportError} />
 
 {#if report}
-  <Drawer title={`Drill on ${report.node}, ${when(report.since)}`} onclose={() => (report = null)}>
+  <Drawer title={t('clusterWidgets.drillPanel.drawer.title', { node: report.node, when: when(report.since) })} onclose={() => (report = null)}>
     <div class="report" data-testid="drill-report">
       <p class="small muted">
-        {report.targets} for {duration(Math.round((Date.parse(report.ended ?? report.until) - Date.parse(report.since)) / 1000))} · {report.reason} · by {report.by}
+        {t('clusterWidgets.drillPanel.report.for', {
+          targets: report.targets,
+          duration: duration(Math.round((Date.parse(report.ended ?? report.until) - Date.parse(report.since)) / 1000)),
+          reason: report.reason,
+          by: report.by,
+        })}
       </p>
       <div class="tiles">
-        <div class="tile"><span class="big">{report.coveragePercent != null ? pct(report.coveragePercent) : '–'}</span><span class="small muted">coverage</span></div>
-        <div class="tile"><span class="big ok-text">{report.followed}</span><span class="small muted">followed</span></div>
-        <div class="tile"><span class="big" class:bad-text={report.stuck > 0}>{report.stuck}</span><span class="small muted">stuck</span></div>
-        <div class="tile"><span class="big">{report.quiet}</span><span class="small muted">quiet</span></div>
+        <div class="tile"><span class="big">{report.coveragePercent != null ? pct(report.coveragePercent) : '–'}</span><span class="small muted">{t('clusterWidgets.drillPanel.tile.coverage')}</span></div>
+        <div class="tile"><span class="big ok-text">{report.followed}</span><span class="small muted">{t('clusterWidgets.drillPanel.tile.followed')}</span></div>
+        <div class="tile"><span class="big" class:bad-text={report.stuck > 0}>{report.stuck}</span><span class="small muted">{t('clusterWidgets.drillPanel.tile.stuck')}</span></div>
+        <div class="tile"><span class="big">{report.quiet}</span><span class="small muted">{t('clusterWidgets.drillPanel.tile.quiet')}</span></div>
         <div class="tile">
           <span class="big">{report.medianFailoverMs != null ? `${(report.medianFailoverMs / 1000).toFixed(1)} s` : '–'}</span>
-          <span class="small muted">median failover{#if report.p90FailoverMs != null}, p90 {(report.p90FailoverMs / 1000).toFixed(1)} s{/if}</span>
+          <span class="small muted"
+            >{t('clusterWidgets.drillPanel.tile.median')}{#if report.p90FailoverMs != null}{t('clusterWidgets.drillPanel.tile.p90', {
+                seconds: (report.p90FailoverMs / 1000).toFixed(1),
+              })}{/if}</span
+          >
         </div>
       </div>
       {#if report.viaBalancer}
         <p class="notice small">
-          This node is a resolver pod behind one balancer address: devices never see a server change, so the verdicts measure the
-          balancer.{#if report.balancerSwitchMs != null} It kept sending queries to the silent pod for {(report.balancerSwitchMs / 1000).toFixed(1)} s.{/if}
+          {t('clusterWidgets.drillPanel.balancer')}{#if report.balancerSwitchMs != null}{t('clusterWidgets.drillPanel.balancerFor', {
+              seconds: (report.balancerSwitchMs / 1000).toFixed(1),
+            })}{/if}
         </p>
       {/if}
-      {#if report.missingNodes.length}<p class="notice warn small">Missing parts from {report.missingNodes.join(', ')}: devices that went there count as stuck or quiet.</p>{/if}
+      {#if report.missingNodes.length}<p class="notice warn small">{t('clusterWidgets.drillPanel.missingParts', { nodes: report.missingNodes.join(', ') })}</p>{/if}
       {#if report.devices.length === 0}
-        <p class="muted small">The query log's privacy level hides the devices; the counts above still hold.</p>
+        <p class="muted small">{t('clusterWidgets.drillPanel.privacy')}</p>
       {:else}
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Device</th><th>Verdict</th><th class="num">Unanswered</th><th>Time to failover</th><th>Afterwards</th><th>Group</th></tr>
+              <tr><th>{t('flow.device')}</th><th>{t('clusterWidgets.drillPanel.col.verdict')}</th><th class="num">{t('clusterWidgets.drillPanel.col.unanswered')}</th><th>{t('clusterWidgets.drillPanel.col.ttf')}</th><th>{t('clusterWidgets.drillPanel.col.afterwards')}</th><th>{t('legacy.group')}</th></tr>
             </thead>
             <tbody>
               {#each report.devices as d (d.client)}
                 <tr data-testid="drill-device">
                   <td class="mono"><ClientChip ip={d.client} name={d.name ?? undefined} /></td>
-                  <td><span class="badge {verdictClass[d.verdict] ?? ''}">{verdictText[d.verdict] ?? d.verdict}</span></td>
+                  <td><span class="badge {verdictClass[d.verdict] ?? ''}">{verdictText[d.verdict] ? t(verdictText[d.verdict]) : d.verdict}</span></td>
                   <td class="num">{num(d.dropped)}</td>
                   <td>
                     {#if d.timeToFailoverMs != null}
@@ -179,7 +192,9 @@
                     {:else}<span class="muted">–</span>{/if}
                   </td>
                   <td class="small">
-                    {#if d.returned === true}came back{:else if d.returned === false}stayed on {(d.nodes ?? []).join(', ') || 'the other node'}{:else if d.verdict === 'followed'}<span class="muted">checked 15 min after</span>{/if}
+                    {#if d.returned === true}{t('clusterWidgets.drillPanel.cameBack')}{:else if d.returned === false}{t('clusterWidgets.drillPanel.stayedOn', {
+                        list: (d.nodes ?? []).join(', ') || t('clusterWidgets.drillPanel.theOtherNode'),
+                      })}{:else if d.verdict === 'followed'}<span class="muted">{t('clusterWidgets.drillPanel.checkedAfter')}</span>{/if}
                   </td>
                   <td class="small">{d.group ?? ''}</td>
                 </tr>
@@ -189,7 +204,10 @@
         </div>
       {/if}
       <p class="small muted">
-        {#each report.nodes as n, i (n.node)}{i ? ' · ' : ''}{n.node}: {num(n.queries)} queries from {num(n.devices)} devices{/each}
+        {#each report.nodes as n, i (n.node)}{i ? ' · ' : ''}{tn('clusterWidgets.drillPanel.nodeLine', n.devices, {
+            node: n.node,
+            queries: num(n.queries),
+          })}{/each}
       </p>
     </div>
   </Drawer>

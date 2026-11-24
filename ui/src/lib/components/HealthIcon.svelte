@@ -6,6 +6,7 @@
   import { health } from '../health.svelte';
   import { dateTime } from '../format';
   import Icon from './Icon.svelte';
+  import { t, tn, type MessageKey } from '../i18n';
 
   let open = $state(false);
   let wrap = $state<HTMLElement | undefined>();
@@ -33,17 +34,19 @@
   }
   const h = $derived(health.value);
   const level = $derived(h?.level ?? 'healthy');
-  const words: Record<string, string> = {
-    healthy: 'Healthy',
-    degraded: 'Degraded',
-    severe: 'Severe',
+  // The words for a level; a level this build doesn't know yet stays as the server said it.
+  const LEVEL: Record<string, MessageKey> = {
+    healthy: 'cluster.healthy',
+    degraded: 'nav.health.level.degraded',
+    severe: 'nav.health.level.severe',
   };
+  const levelWord = (l: string) => (LEVEL[l] ? t(LEVEL[l]) : l);
   const label = $derived(
     h === null
-      ? 'Health: checking…'
+      ? t('nav.health.aria.checking')
       : level === 'healthy'
-        ? 'Health: everything is working'
-        : `Health: ${words[level]?.toLowerCase() ?? level} (${h.reasons.length} reason${h.reasons.length === 1 ? '' : 's'})`,
+        ? t('nav.health.aria.ok')
+        : tn('nav.health.aria.reasons', h.reasons.length, { level: levelWord(level).toLowerCase() }),
   );
 
   function outside(e: MouseEvent) {
@@ -67,18 +70,18 @@
     onclick={toggle}><Icon name={`health-${level}`} size={18} /></button
   >
   {#if open}
-    <div class="panel" role="dialog" aria-label="Health" data-testid="health-panel" bind:this={panel} use:portal style:left={`${pos.left}px`} style:bottom={`${pos.bottom}px`}>
-      <p class="head"><span class="badge {level === 'healthy' ? 'ok' : level === 'severe' ? 'bad' : 'warn'}">{words[level] ?? level}</span></p>
+    <div class="panel" role="dialog" aria-label={t('nav.health.title')} data-testid="health-panel" bind:this={panel} use:portal style:left={`${pos.left}px`} style:bottom={`${pos.bottom}px`}>
+      <p class="head"><span class="badge {level === 'healthy' ? 'ok' : level === 'severe' ? 'bad' : 'warn'}">{levelWord(level)}</span></p>
       {#if h === null}
-        <p class="small muted">Checking…</p>
+        <p class="small muted">{t('qw.chip.checking')}</p>
       {:else if h.reasons.length === 0}
-        <p class="small">Every upstream answers, every node serves and is in sync, and nothing is rate-limited.</p>
+        <p class="small">{t('nav.health.allGood')}</p>
       {:else}
         <ul>
           {#each h.reasons as r, i (i)}
             <li class={r.level}>
               <span class="small">{#if r.node}<strong>{r.node}</strong>: {/if}{r.summary}</span>
-              {#if r.link}<a class="small" href={r.link} onclick={() => (open = false)}>Look</a>{/if}
+              {#if r.link}<a class="small" href={r.link} onclick={() => (open = false)}>{t('nav.health.look')}</a>{/if}
             </li>
           {/each}
         </ul>
@@ -86,14 +89,15 @@
       {#if h?.maintenance?.length}
         <!-- REQ: OPS-010 — nodes in maintenance are left out of the level; say so. -->
         <p class="small" data-testid="health-maintenance">
-          {h.maintenance.length} node{h.maintenance.length === 1 ? '' : 's'} in maintenance:
-          {#each h.maintenance as m, i (i)}{i ? '; ' : ''}<strong>{m.node}</strong> until {dateTime(Date.parse(m.until) / 1000)} ({m.reason}){/each}
+          {tn('nav.health.maintenance', h.maintenance.length)}
+          {#each h.maintenance as m, i (i)}{i ? t('nav.health.separator') : ''}<strong>{m.node}</strong>
+            {t('nav.health.until', { time: dateTime(Date.parse(m.until) / 1000), reason: m.reason })}{/each}
         </p>
       {/if}
       {#if h && h.missingNodes && h.missingNodes.length > 0}
-        <p class="small muted">Didn't answer: {h.missingNodes.join(', ')}</p>
+        <p class="small muted">{t('nav.health.missing', { nodes: h.missingNodes.join(', ') })}</p>
       {/if}
-      {#if h?.checkedAt}<p class="small muted">Checked {dateTime(Date.parse(h.checkedAt) / 1000)}</p>{/if}
+      {#if h?.checkedAt}<p class="small muted">{t('nav.health.checked', { time: dateTime(Date.parse(h.checkedAt) / 1000) })}</p>{/if}
     </div>
   {/if}
 </span>

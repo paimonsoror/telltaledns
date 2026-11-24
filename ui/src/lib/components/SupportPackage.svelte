@@ -3,6 +3,8 @@
   // needs and nothing that identifies you. A preview says what it would hold; the download is the
   // archive; the pseudonym map, if asked for, is a second, short-lived download.
   import { api, type S, type SupportManifest } from '../api';
+  // REQ: API-011 — the card's own words; what the server sends (a file's path, a note) stays as it is.
+  import { t } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -22,23 +24,24 @@
   let made = $state<{ name: string; id?: string; manifest: SupportManifest } | null>(null);
   let mapGone = $state(false);
 
-  const levels: { id: Level; title: string; text: string }[] = [
+  // A getter: the three choices follow the language on screen.
+  const levels = $derived.by((): { id: Level; title: string; text: string }[] => [
     {
       id: 'strict',
-      title: 'Strict (recommended)',
-      text: 'Addresses, device, group, node and pod names, e-mail addresses and home paths become pseudonyms (device-1, 10.4.7.9). No query names, no free text, and only warnings and errors from the log.',
+      title: t('settings.support.strict'),
+      text: t('settings.support.strictText'),
     },
     {
       id: 'standard',
-      title: 'Standard',
-      text: 'As strict, plus the log\'s INFO lines, top lists with pseudonymized names, and, if you choose, a sample of recent queries.',
+      title: t('settings.support.standard'),
+      text: t('settings.support.standardText'),
     },
     {
       id: 'none',
-      title: 'None',
-      text: 'Real addresses, names and domains. Passwords, tokens and keys are still removed. Read it yourself before you share it.',
+      title: t('settings.support.none'),
+      text: t('settings.support.noneText'),
     },
-  ];
+  ]);
 
   const request = $derived<S['SupportPackageRequest']>({
     level,
@@ -108,13 +111,12 @@
 </script>
 
 <section class="card" data-testid="support-package">
-  <h2>Support package<HelpButton id="support-package" /></h2>
+  <h2>{t('settings.support.title')}<HelpButton id="support-package" /></h2>
   <p>
-    One file to attach to a bug report: build and platform facts, your settings (without secrets), cluster and health,
-    upstreams, list names and counts, a metrics snapshot, and this node's recent log. Nothing is uploaded.
+    {t('settings.support.about')}
   </p>
   <fieldset class="levels">
-    <legend class="small">How much to hide</legend>
+    <legend class="small">{t('settings.support.howMuch')}</legend>
     {#each levels as l (l.id)}
       <label class="level">
         <input type="radio" name="support-level" value={l.id} bind:group={level} data-testid={`level-${l.id}`} />
@@ -123,27 +125,27 @@
     {/each}
   </fieldset>
   <div class="opts">
-    <label class="small">Keep these readable (names, separated by commas)
-      <input bind:value={reveal} placeholder="e.g. pi" aria-label="Names to keep readable" />
+    <label class="small">{t('settings.support.reveal')}
+      <input bind:value={reveal} placeholder={t('settings.support.revealPlaceholder')} aria-label={t('settings.support.revealLabel')} />
     </label>
     {#if level !== 'strict'}
-      <label class="small">Recent queries to include (0 for none)
-        <input type="number" min="0" max="1000" bind:value={sample} aria-label="Query sample" />
+      <label class="small">{t('settings.support.sample')}
+        <input type="number" min="0" max="1000" bind:value={sample} aria-label={t('settings.support.sampleLabel')} />
       </label>
     {/if}
     <label class="small check">
       <input type="checkbox" bind:checked={cluster} data-testid="cluster" />
-      Every node in the cluster (each node hides its own names and addresses first, so nothing real crosses the network)
+      {t('settings.support.cluster')}
     </label>
     <label class="small check">
       <input type="checkbox" bind:checked={keepMap} disabled={cluster} data-testid="keep-map" />
-      Let me download the key to the pseudonyms (for 10 minutes, once)
+      {t('settings.support.keepMap')}
     </label>
   </div>
   <div class="row">
-    <button disabled={busy} onclick={() => run('preview')} data-testid="support-preview">Preview what it holds</button>
+    <button disabled={busy} onclick={() => run('preview')} data-testid="support-preview">{t('settings.support.preview')}</button>
     <button class="primary" disabled={busy} onclick={() => run('make')} data-testid="support-make">
-      {busy ? 'Working…' : 'Make the package'}
+      {busy ? t('settings.support.working') : t('settings.support.make')}
     </button>
   </div>
   <ErrorNote {error} />
@@ -154,30 +156,29 @@
       <div class="manifest" data-testid="support-manifest">
         {#if made}
           <div class="notice ok small" data-testid="support-made">
-            Saved <span class="mono">{made.name}</span> ({kib(total(m))} before compression). Look it over before you
-            attach it: log lines are redacted by pattern, which is best effort.
+            {t('settings.support.saved')} <span class="mono">{made.name}</span> {t('settings.support.savedSize', { size: kib(total(m)) })}
+            {t('settings.support.savedNote')}
           </div>
           {#if made.id}
             <p class="small">
-              <button class="link" disabled={busy || mapGone} onclick={downloadMap} data-testid="support-map">Download the pseudonym map</button>
-              {#if mapGone}<span class="muted">(given out; make another package to get a new one)</span>{/if}
-              It lists what each pseudonym stands for, so it has your real names and addresses: keep it to yourself, and
-              tell a maintainer what <span class="mono">device-3</span> was only if you want to.
+              <button class="link" disabled={busy || mapGone} onclick={downloadMap} data-testid="support-map">{t('settings.support.downloadMap')}</button>
+              {#if mapGone}<span class="muted">{t('settings.support.mapGone')}</span>{/if}
+              {t('settings.support.mapLead')} <span class="mono">device-3</span> {t('settings.support.mapTail')}
             </p>
           {/if}
         {:else}
-          <p class="small muted">This is what a package would hold right now; nothing was saved.</p>
+          <p class="small muted">{t('settings.support.previewNote')}</p>
         {/if}
         {#if m.nodes}
           <!-- REQ: OPS-011 (ADR-172) — a cluster package: each node's part, and whether it answered. -->
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Node</th><th>Answered</th><th class="num">Files</th><th class="num">Size</th><th>Note</th></tr></thead>
+              <thead><tr><th>{t('qw.cache.node')}</th><th>{t('settings.support.colAnswered')}</th><th class="num">{t('settings.support.colFiles')}</th><th class="num">{t('lists.col.size')}</th><th>{t('rules.col.note')}</th></tr></thead>
               <tbody>
                 {#each m.nodes as n (n.node)}
                   <tr data-testid="support-node">
                     <td class="mono">{n.node}</td>
-                    <td class="small">{#if n.status === 'ok'}<span class="badge ok">yes</span>{:else}<span class="badge warn">missing</span>{/if}</td>
+                    <td class="small">{#if n.status === 'ok'}<span class="badge ok">{t('settings.support.yes')}</span>{:else}<span class="badge warn">{t('settings.support.missing')}</span>{/if}</td>
                     <td class="num small">{n.status === 'ok' ? n.files : '—'}</td>
                     <td class="num small">{n.status === 'ok' ? kib(n.bytes) : '—'}</td>
                     <td class="small">{n.note ?? ''}</td>
@@ -189,7 +190,7 @@
         {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>File</th><th>Part</th><th class="num">Size</th><th>Replaced or removed</th></tr></thead>
+            <thead><tr><th>{t('settings.support.colFile')}</th><th>{t('settings.support.colPart')}</th><th class="num">{t('lists.col.size')}</th><th>{t('settings.support.colReplaced')}</th></tr></thead>
             <tbody>
               {#each m.files ?? [] as f (f.path)}
                 <tr data-testid="support-file">
@@ -197,8 +198,8 @@
                   <td class="small">{f.collector}</td>
                   <td class="num small">{f.status === 'missing' ? '—' : kib(f.bytes)}</td>
                   <td class="small">
-                    {#if f.status === 'missing'}<span class="badge warn">missing</span> {f.note}
-                    {:else if f.status === 'truncated'}<span class="badge warn">cut</span> {f.note}
+                    {#if f.status === 'missing'}<span class="badge warn">{t('settings.support.missing')}</span> {f.note}
+                    {:else if f.status === 'truncated'}<span class="badge warn">{t('settings.support.cut')}</span> {f.note}
                     {:else}{counts(f.redactions)}{/if}
                   </td>
                 </tr>
@@ -208,10 +209,10 @@
         </div>
         {/if}
         {#if (m.config_fields_removed ?? []).length > 0}
-          <p class="small muted">Settings removed as secrets: {(m.config_fields_removed ?? []).join(', ')}.</p>
+          <p class="small muted">{t('settings.support.removedSecrets', { fields: (m.config_fields_removed ?? []).join(', ') })}</p>
         {/if}
         {#if (m.config_fields_unclassified ?? []).length > 0}
-          <p class="small"><span class="badge warn">Please report</span> These settings had no rule and were removed: {(m.config_fields_unclassified ?? []).join(', ')}.</p>
+          <p class="small"><span class="badge warn">{t('settings.support.report')}</span> {t('settings.support.unclassified', { fields: (m.config_fields_unclassified ?? []).join(', ') })}</p>
         {/if}
         {#each m.notes as n (n)}<p class="small muted">{n}</p>{/each}
       </div>

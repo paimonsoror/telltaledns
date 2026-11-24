@@ -5,17 +5,18 @@
   import { api, type S } from '../api';
   import { href } from '../router.svelte';
   import { num } from '../format';
+  import { t, tn, type MessageKey, localeTag } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import { LABEL_W, LANE_H, LAT_H, draw, geometry, hit, spans, xOf, type Timeline } from '../timeline';
 
   let { client }: { client: string } = $props();
 
-  const windows = [
-    { id: '1h', label: '1 h', from: '-1h' },
-    { id: '6h', label: '6 h', from: '-6h' },
-    { id: '24h', label: '24 h', from: '-24h' },
-    { id: '3d', label: '3 d', from: '-3d' },
-    { id: '7d', label: '7 d', from: '-7d' },
+  const windows: { id: string; label: MessageKey; from: string }[] = [
+    { id: '1h', label: 'flow.window.1h', from: '-1h' },
+    { id: '6h', label: 'flow.window.6h', from: '-6h' },
+    { id: '24h', label: 'flow.window.24h', from: '-24h' },
+    { id: '3d', label: 'deviceWidgets.timeline.window.3d', from: '-3d' },
+    { id: '7d', label: 'flow.window.7d', from: '-7d' },
   ];
   let win = $state('24h');
   let data = $state<Timeline | null>(null);
@@ -79,9 +80,10 @@
     draw(ctx, data, g, { ink: v('--hm-ink', '#3b6fb6'), bad: v('--bad', '#c2413a'), warn: v('--warn', '#c98a00'), muted: v('--muted', '#888'), grid: v('--border', '#ddd') }, coverage);
   });
 
-  const hm = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const day = (unix: number) => new Date(unix * 1000).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  const hm = (unix: number) => new Date(unix * 1000).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' });
+  const day = (unix: number) => new Date(unix * 1000).toLocaleDateString(localeTag(), { weekday: 'short', day: 'numeric', month: 'short' });
   const span = (bin: number) => (data ? `${hm(data.bins[bin])}–${hm(data.bins[bin] + data.binSeconds)}` : '');
+  const p99Text = (v: number | null) => (v == null ? '–' : t('deviceWidgets.timeline.unit.ms', { n: v }));
   function move(e: MouseEvent) {
     if (!data || !g) return;
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -92,8 +94,20 @@
     }
     const l = data.lanes[h.lane];
     const text = l
-      ? `${span(h.bin)} · ${l.domain ?? 'a domain'} · ${num(l.counts[h.bin])} queries, ${num(l.blocked[h.bin])} blocked${l.slow[h.bin] ? `, ${num(l.slow[h.bin])} slow` : ''}`
-      : `${span(h.bin)} · ${num(data.queries[h.bin])} queries · p99 ${data.p99Ms[h.bin] == null ? '–' : `${data.p99Ms[h.bin]} ms`}`;
+      ? t('deviceWidgets.timeline.tip.lane', {
+          span: span(h.bin),
+          domain: l.domain ?? t('deviceWidgets.timeline.tip.anyDomain'),
+          queries: tn('deviceWidgets.timeline.tip.queries', l.counts[h.bin], { q: num(l.counts[h.bin]) }),
+          blocked: tn('deviceWidgets.timeline.tip.blocked', l.blocked[h.bin], { q: num(l.blocked[h.bin]) }),
+          slow: l.slow[h.bin]
+            ? ', ' + tn('deviceWidgets.timeline.tip.slow', l.slow[h.bin], { q: num(l.slow[h.bin]) })
+            : '',
+        })
+      : t('deviceWidgets.timeline.tip.latency', {
+          span: span(h.bin),
+          queries: tn('deviceWidgets.timeline.tip.queries', data.queries[h.bin], { q: num(data.queries[h.bin]) }),
+          p99: p99Text(data.p99Ms[h.bin]),
+        });
     tip = { x: e.clientX - r.left, y: e.clientY - r.top, text };
   }
   const window_ = $derived(data ? { from: data.from, to: data.to } : {});
@@ -107,41 +121,41 @@
 
 <div class="tl" data-testid="timeline" bind:clientWidth={width}>
   <div class="controls">
-    <div class="seg" role="group" aria-label="Window">
+    <div class="seg" role="group" aria-label={t('anomalies.evidence.window')}>
       {#each windows as w (w.id)}
-        <button type="button" aria-pressed={win === w.id} onclick={() => (win = w.id)}>{w.label}</button>
+        <button type="button" aria-pressed={win === w.id} onclick={() => (win = w.id)}>{t(w.label)}</button>
       {/each}
     </div>
-    <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="timeline-table-toggle" />Table</label></span>
-    {#if loading}<span class="muted small">Reading the query log…</span>{/if}
+    <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="timeline-table-toggle" />{t('flow.table')}</label></span>
+    {#if loading}<span class="muted small">{t('deviceWidgets.timeline.loading')}</span>{/if}
   </div>
   <ErrorNote {error} />
   {#if data}
     {#if data.truncated}
-      <p class="notice warn small" data-testid="timeline-truncated">The query log read stopped early ({data.truncatedReason}): the lanes cover what it read.</p>
+      <p class="notice warn small" data-testid="timeline-truncated">{t('deviceWidgets.timeline.truncated', { reason: data.truncatedReason ?? '' })}</p>
     {/if}
     {#if data.coverageFrom}
-      <p class="muted small" data-testid="timeline-coverage">The query log starts {day(Date.parse(data.coverageFrom) / 1000)} {hm(Date.parse(data.coverageFrom) / 1000)}: the grey part has no rows.</p>
+      <p class="muted small" data-testid="timeline-coverage">{t('deviceWidgets.timeline.coverage', { day: day(Date.parse(data.coverageFrom) / 1000), time: hm(Date.parse(data.coverageFrom) / 1000) })}</p>
     {/if}
     {#if data.lanes.length === 0}
-      <p class="empty">No queries from this device in this window.</p>
+      <p class="empty">{t('deviceWidgets.timeline.empty')}</p>
     {:else if table}
       <div class="scroll">
         <table data-testid="timeline-table">
           <thead>
-            <tr><th>Domain</th><th class="num">Total</th><th class="num">Blocked</th>{#each cols as c (c.from)}<th class="num">{hm(c.start)}</th>{/each}</tr>
+            <tr><th>{t('localdns.forward.domain')}</th><th class="num">{t('dashboard.total')}</th><th class="num">{t('legacy.blocked')}</th>{#each cols as c (c.from)}<th class="num">{hm(c.start)}</th>{/each}</tr>
           </thead>
           <tbody>
             {#each data.lanes as l, i (i)}
               <tr>
-                <td class="mono">{l.domain ?? '(hidden)'}</td>
+                <td class="mono">{l.domain ?? t('deviceWidgets.timeline.hidden')}</td>
                 <td class="num">{num(l.total)}</td>
                 <td class="num">{num(l.blockedTotal)}</td>
                 {#each cols as c (c.from)}<td class="num">{sum(l.counts, c.from, c.to) || ''}</td>{/each}
               </tr>
             {/each}
             <tr class="muted">
-              <td>p99 (ms)</td><td></td><td></td>
+              <td>{t('deviceWidgets.timeline.p99Row')}</td><td></td><td></td>
               {#each cols as c (c.from)}
                 {@const v = data.p99Ms.slice(c.from, c.to).filter((x) => x != null) as number[]}
                 <td class="num">{v.length ? Math.max(...v) : ''}</td>
@@ -173,7 +187,7 @@
           <div class="labels sticky">
             {#each data.lanes as l, i (i)}
               <a class="lane-label mono small" class:other={l.other} style:height="{LANE_H}px" href={laneHref(l)} data-testid="timeline-lane" title={l.domain ?? ''}
-                >{l.domain ?? `domain ${i + 1}`}</a
+                >{l.domain ?? t('deviceWidgets.timeline.laneFallback', { n: i + 1 })}</a
               >
             {/each}
             <span class="lane-label small muted" style:height="{LAT_H}px">p99</span>
@@ -192,7 +206,7 @@
             {#each data.lanes as l, i (i)}
               {@const at = newAt(l)}
               {#if at != null && at >= data.bins[0]}
-                <span class="new" style:left="{xOf(data, g, at)}px" style:top="{i * LANE_H}px" data-testid="timeline-new">new</span>
+                <span class="new" style:left="{xOf(data, g, at)}px" style:top="{i * LANE_H}px" data-testid="timeline-new">{t('deviceWidgets.timeline.new')}</span>
               {/if}
             {/each}
             {#if tip}
@@ -201,7 +215,7 @@
           </div>
         </div>
       </div>
-      <p class="muted small">Darker is more queries; red underline: blocked; amber tick: slower than the latency objective. Dots above: <span class="key hollow"></span> first contact, <span class="key warn"></span> anomaly, <span class="key bad"></span> blocked burst, <span class="key diamond"></span> the device's identity changed; grey ticks are changes.</p>
+      <p class="muted small">{t('deviceWidgets.timeline.legendLead')}<span class="key hollow"></span>{t('deviceWidgets.timeline.legend.firstContact')}<span class="key warn"></span>{t('deviceWidgets.timeline.legend.anomaly')}<span class="key bad"></span>{t('deviceWidgets.timeline.legend.blockedBurst')}<span class="key diamond"></span>{t('deviceWidgets.timeline.legend.identity')}</p>
     {/if}
   {/if}
 </div>

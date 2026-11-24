@@ -4,14 +4,18 @@
   import { api, type S } from '../api';
   import { can } from '../session.svelte';
   import { bytes, num, pct } from '../format';
+  import { t, tn } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
   let {
     name: initial = '',
     compact = false,
-    title = 'Cache',
+    title: titleProp,
   }: { name?: string; compact?: boolean; title?: string } = $props();
+
+  // A caller that names the card ("Look up and flush") says it; otherwise the catalog does.
+  const title = $derived(titleProp ?? t('nav.cache'));
 
   let stats = $state<S['CacheNodeStats'][]>([]);
   let name = $state('');
@@ -64,7 +68,7 @@
     void loadStats();
     if (initial) void lookup();
   });
-  const ttl = (s: number) => (s >= 0 ? `${num(s)} s left` : `stale for ${num(-s)} s`);
+  const ttl = (s: number) => (s >= 0 ? t('qw.cache.ttl.left', { n: num(s) }) : t('qw.cache.ttl.stale', { n: num(-s) }));
 </script>
 
 <section class="card" data-testid="cache-card">
@@ -73,12 +77,12 @@
     <div class="table-wrap">
       <table class="compact">
         <thead>
-          <tr><th>Node</th><th class="num">Entries</th><th class="num">Memory</th><th class="num" title="Answered from the cache: fresh, or refreshed in the background">From cache</th><th class="num">Stale served</th><th class="num">Prefetches</th><th class="num">Evictions</th></tr>
+          <tr><th>{t('qw.cache.node')}</th><th class="num">{t('qw.cache.entries')}</th><th class="num">{t('qw.cache.memory')}</th><th class="num" title={t('qw.cache.fromCache.title')}>{t('qw.cache.fromCache')}</th><th class="num">{t('qw.cache.staleServed')}</th><th class="num">{t('qw.cache.prefetches')}</th><th class="num">{t('qw.cache.evictions')}</th></tr>
         </thead>
         <tbody>
           {#each stats as s, i (s.node ?? i)}
             <tr>
-              <td>{s.node ?? 'this node'}</td>
+              <td>{s.node ?? t('legacy.thisNode')}</td>
               <td class="num">{num(s.entries)}</td>
               <td class="num">{bytes(s.bytes)}</td>
               <td class="num">{pct(s.answeredPercent ?? s.hitPercent)}</td>
@@ -93,22 +97,22 @@
   {/if}
 
   <form class="row" onsubmit={lookup}>
-    <input class="grow mono" aria-label="Name to look up" placeholder="www.example.com" bind:value={name} />
-    <button>Look up</button>
+    <input class="grow mono" aria-label={t('qw.cache.lookupLabel')} placeholder={t('qw.cache.lookupPlaceholder')} bind:value={name} />
+    <button>{t('qw.cache.lookup')}</button>
   </form>
   {#if found}
     {#if found.entries.length === 0}
-      <p class="muted small">Nothing cached for <span class="mono">{found.name}</span>.</p>
+      <p class="muted small">{t('qw.cache.nothingCachedLead')} <span class="mono">{found.name}</span>{t('qw.cache.nothingCachedTail')}</p>
     {:else}
       <div class="table-wrap">
         <table class="compact" data-testid="cache-entries">
-          <thead><tr><th>Node</th><th>Type</th><th>Answer</th><th>Fresh</th><th class="num">Hits</th></tr></thead>
+          <thead><tr><th>{t('qw.cache.node')}</th><th>{t('qw.cache.type')}</th><th>{t('qw.cache.answer')}</th><th>{t('qw.cache.fresh')}</th><th class="num">{t('qw.cache.hits')}</th></tr></thead>
           <tbody>
             {#each found.entries as e, i (i)}
               <tr>
-                <td>{e.node ?? 'this node'}</td>
+                <td>{e.node ?? t('legacy.thisNode')}</td>
                 <td>{e.qtype}{#if e.dnssecOk}<span class="muted small"> (DO)</span>{/if}</td>
-                <td>{e.rcode} · {e.answers} answer{e.answers === 1 ? '' : 's'}{#if e.authentic}<span class="badge ok">validated</span>{/if}</td>
+                <td>{e.rcode} · {tn('qw.cache.answers', e.answers)}{#if e.authentic}<span class="badge ok">{t('qw.cache.validated')}</span>{/if}</td>
                 <td class="small">{ttl(e.ttlLeftSeconds)}</td>
                 <td class="num">{num(e.hits)}</td>
               </tr>
@@ -121,31 +125,30 @@
 
   {#if writable}
     <div class="row">
-      <label class="small"><input type="checkbox" bind:checked={subtree} /> and everything under it</label>
+      <label class="small"><input type="checkbox" bind:checked={subtree} /> {t('qw.cache.subtree')}</label>
       {#if stats.length > 1}
-        <select aria-label="Node" bind:value={node}>
-          <option value="">every node</option>
+        <select aria-label={t('qw.cache.node')} bind:value={node}>
+          <option value="">{t('qw.cache.everyNode')}</option>
           {#each stats as s, i (s.node ?? i)}<option value={s.node ?? ''}>{s.node}</option>{/each}
         </select>
       {/if}
-      <button disabled={busy || !name.trim()} onclick={() => flush(false)}>Flush this name</button>
+      <button disabled={busy || !name.trim()} onclick={() => flush(false)}>{t('qw.cache.flushName')}</button>
       {#if confirmAll}
-        <button class="danger" disabled={busy} onclick={() => flush(true)}>Yes, empty the cache</button>
-        <button class="link" onclick={() => (confirmAll = false)}>Cancel</button>
+        <button class="danger" disabled={busy} onclick={() => flush(true)}>{t('qw.cache.confirmAll')}</button>
+        <button class="link" onclick={() => (confirmAll = false)}>{t('common.cancel')}</button>
       {:else}
-        <button class="link" onclick={() => (confirmAll = true)}>Flush everything…</button>
+        <button class="link" onclick={() => (confirmAll = true)}>{t('qw.cache.flushAll')}</button>
       {/if}
     </div>
   {/if}
   {#if flushed}
     <p class="notice ok small" data-testid="cache-flushed">
-      Removed {num(flushed.totalRemoved)} {flushed.totalRemoved === 1 ? 'entry' : 'entries'}{#each flushed.nodes.filter((n) => n.error) as n (n.node)}{` · ${n.node}: ${n.error}`}{/each}.
+      {tn('qw.cache.flushed', flushed.totalRemoved, { n: num(flushed.totalRemoved) })}{#each flushed.nodes.filter((n) => n.error) as n (n.node)}{` · ${n.node}: ${n.error}`}{/each}.
     </p>
   {/if}
   <ErrorNote {error} />
   <p class="muted small">
-    Flushing doesn't clear devices' own caches. Blocked answers are never cached, so unblocking needs no flush. To change
-    what a name resolves to, use Names on my network.
+    {t('qw.cache.footnote')}
   </p>
 </section>
 
