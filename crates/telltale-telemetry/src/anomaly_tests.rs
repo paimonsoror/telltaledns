@@ -678,3 +678,265 @@ fn obs_038_replay_is_deterministic_and_history_is_kept() {
     );
     assert!(c.findings().iter().any(|f| f.muted_by.is_some()));
 }
+
+/// A wire name from raw labels (each at most 63 bytes).
+fn wire_of(labels: &[Vec<u8>]) -> Vec<u8> {
+    let mut w = Vec::new();
+    for l in labels {
+        w.push(u8::try_from(l.len()).unwrap());
+        w.extend_from_slice(l);
+    }
+    w.push(0);
+    w
+}
+
+/// REQ: OBS-009 — the NXDOMAIN samples a fresh engine keeps for `names` (asked in this order,
+/// 30 answers in one minute, so the minute is a storm), checked against the storm finding they
+/// end up in.
+fn storm_samples(names: &[&[u8]]) -> Vec<String> {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    for name in names.iter().cycle().take(30) {
+        e.observe_answer(t, ip(1), name, Some(3));
+    }
+    let kept = e.clients[&ip(1)].nx_samples.clone();
+    e.observe_answer(t + 3600, ip(3), &wire("x.example"), Some(0));
+    let storm = e
+        .findings()
+        .iter()
+        .find(|f| f.kind == Kind::NxdomainStorm)
+        .unwrap();
+    assert!(
+        storm.detail.ends_with(&format!("e.g. {}", kept.join(", "))),
+        "{}",
+        storm.detail
+    );
+    kept
+}
+
+/// REQ: OBS-009 — a sample name is cut at a character boundary, valid for any name: with a
+/// character of each width (a byte that shows as U+FFFD, and valid 2-, 3- and 4-byte ones) at
+/// every offset around the cut, the sample is the longest prefix of the dotted name that is at
+/// most [`MAX_DOMAIN`] bytes and ends on a character.
+#[test]
+fn obs_009_sample_name_cut_at_char_boundary_every_offset() {
+    // The bytes on the wire, and the text they show as.
+    let shapes: [(&[u8], &str); 4] = [
+        (b"\x80", "\u{fffd}"),
+        ("\u{e9}".as_bytes(), "\u{e9}"),
+        ("\u{20ac}".as_bytes(), "\u{20ac}"),
+        ("\u{1f600}".as_bytes(), "\u{1f600}"),
+    ];
+    for (bytes, shown) in shapes {
+        let per_label = 63 / bytes.len();
+        let run_wire = bytes.repeat(per_label);
+        let run_text = shown.repeat(per_label);
+        // Where the cut fell inside a character (bytes after its start).
+        let mut inside = std::collections::BTreeSet::new();
+        for filler in 0..=70usize {
+            let letters: Vec<u8> = (0..filler)
+                .map(|i| b'a' + u8::try_from(i % 26).unwrap())
+                .collect();
+            let mut labels: Vec<Vec<u8>> = letters.chunks(63).map(<[u8]>::to_vec).collect();
+            labels.push(run_wire.clone());
+            labels.push(run_wire.clone());
+            let w = wire_of(&labels);
+            let mut parts: Vec<String> = letters
+                .chunks(63)
+                .map(|c| std::str::from_utf8(c).unwrap().to_owned())
+                .collect();
+            parts.push(run_text.clone());
+            parts.push(run_text.clone());
+            let full = parts.join(".");
+            assert_eq!(crate::event::dotted(&w), full, "the test's own name");
+            assert!(full.len() > MAX_DOMAIN);
+            if !full.is_char_boundary(MAX_DOMAIN) {
+                let start = (0..MAX_DOMAIN)
+                    .rev()
+                    .find(|&b| full.is_char_boundary(b))
+                    .unwrap();
+                inside.insert(MAX_DOMAIN - start);
+            }
+            let samples = storm_samples(&[w.as_slice()]);
+            assert_eq!(samples.len(), 1, "{samples:?}");
+            let sample = &samples[0];
+            let case = format!("{shown:?} after {filler} letters: {sample:?}");
+            assert!(full.starts_with(sample.as_str()), "a prefix: {case}");
+            assert!(sample.len() <= MAX_DOMAIN, "at most the limit: {case}");
+            assert!(
+                full.is_char_boundary(sample.len()),
+                "on a character: {case}"
+            );
+            assert!(sample.len() + 3 >= MAX_DOMAIN, "the longest: {case}");
+            let longest = (0..=MAX_DOMAIN)
+                .rev()
+                .find(|&b| full.is_char_boundary(b))
+                .unwrap();
+            assert_eq!(sample.as_str(), &full[..longest], "the longest: {case}");
+        }
+        assert_eq!(
+            inside,
+            (1..shown.len()).collect::<std::collections::BTreeSet<_>>(),
+            "every offset inside {shown:?}"
+        );
+    }
+}
+
+/// REQ: OBS-009 — ASCII names are kept as before: whole up to [`MAX_DOMAIN`] bytes and cut at
+/// it when longer; the root shows as `.`; names that differ only after the cut give one sample.
+#[test]
+fn obs_009_sample_name_short_and_ascii_names_unchanged() {
+    let shorter = "a".repeat(62);
+    let label = "a".repeat(63);
+    let long = format!("{label}.{label}.{label}.bcd");
+    for (len, name, want) in [
+        (1, "a".to_owned(), "a".to_owned()),
+        (63, label.clone(), label.clone()),
+        (64, format!("{shorter}.b"), format!("{shorter}.b")),
+        (65, format!("{label}.b"), format!("{label}.")),
+        (66, format!("{label}.bc"), format!("{label}.")),
+        (195, long.clone(), long[..64].to_owned()),
+    ] {
+        assert_eq!(name.len(), len);
+        assert_eq!(storm_samples(&[wire(&name).as_slice()]), [want], "{name}");
+    }
+    assert_eq!(storm_samples(&[&[0]]), ["."], "the root");
+    assert_eq!(storm_samples(&[&[]]), [""], "no name");
+    let (one, two) = (wire(&format!("{label}.b")), wire(&format!("{label}.c")));
+    assert_eq!(
+        storm_samples(&[one.as_slice(), two.as_slice()]),
+        [format!("{label}.")],
+        "one sample after the cut"
+    );
+    let short = wire("q.example");
+    assert_eq!(
+        storm_samples(&[one.as_slice(), short.as_slice(), two.as_slice()]),
+        [format!("{label}."), "q.example".to_owned()],
+        "in the order asked"
+    );
+}
+
+/// Label bytes for the property test: mostly bytes of 0x80 and up, and pieces that aren't
+/// UTF-8 (lone continuation bytes, cut sequences, overlong forms, surrogates, 0xF8 and up).
+fn odd_label(rng: &mut Rng, len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len + 4);
+    while out.len() < len {
+        let r = rng.next();
+        let b = u8::try_from(r >> 56).unwrap();
+        match r % 8 {
+            0 => out.push(b'a' + b % 26),
+            1 => out.push(0x80 | (b & 0x3f)),
+            2 => out.push(0xc2 + b % 0x33),
+            3 => out.extend_from_slice(
+                ["\u{e9}", "\u{20ac}", "\u{1f600}"][usize::from(b % 3)].as_bytes(),
+            ),
+            4 => out.extend_from_slice(
+                [
+                    &[0xc0, 0x80][..],
+                    &[0xe0, 0x80, 0x80],
+                    &[0xed, 0xa0, 0x80],
+                    &[0xf8 | (b & 7)],
+                ][usize::from(b % 4)],
+            ),
+            5 => out.push(b),
+            6 => out.push([b'.', b',', b' ', 0, b'\\'][usize::from(b % 5)]),
+            _ => out.push(0x80 | b),
+        }
+    }
+    out.truncate(len);
+    out
+}
+
+/// A wire name for the property test: labels of 0 to 63 bytes (0 ends the name), at most 255
+/// bytes in all; sometimes bytes after the root, or bytes that aren't a name at all.
+fn odd_wire(rng: &mut Rng) -> Vec<u8> {
+    if rng.below(16) == 0 {
+        let n = usize::try_from(rng.below(300)).unwrap();
+        return (0..n)
+            .map(|_| u8::try_from(rng.next() >> 56).unwrap())
+            .collect();
+    }
+    let mut w = Vec::new();
+    loop {
+        let len = usize::try_from(rng.below(64)).unwrap();
+        if len == 0 || w.len() + len + 2 > 255 || rng.below(5) == 0 {
+            break;
+        }
+        w.push(u8::try_from(len).unwrap());
+        w.extend(odd_label(rng, len));
+    }
+    w.push(0);
+    if rng.below(16) == 0 {
+        w.extend(odd_label(rng, 8));
+    }
+    w
+}
+
+/// REQ: OBS-009 — the engine takes names with any bytes: 20 000 generated queries (names of
+/// mostly non-ASCII and non-UTF-8 bytes, raw bytes, known and new devices, every answer kind,
+/// times across minutes, an hour and a day, late events and a long gap) leave every NXDOMAIN
+/// sample within [`MAX_DOMAIN`] bytes and every domain text within [`MAX_DOMAIN`] characters.
+#[test]
+fn obs_009_observe_query_takes_any_wire_bytes() {
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut engine = Engine::new(Settings {
+        learning_days: 1,
+        max_clients: 64,
+        ..Settings::default()
+    });
+    // Just before a midnight: the run crosses minutes, an hour and a day.
+    let start_s = DAY0 + 3 * 86_400 - 150;
+    // Eight devices first seen a day earlier, so their first-seen domains are scored too.
+    for dev in 1..=8 {
+        engine.observe(start_s - 86_400 - 60, ip(dev), &wire("seed.example"));
+    }
+    let mut at_us = start_s * 1_000_000;
+    for i in 0..20_000u32 {
+        at_us += rng.below(60_000);
+        if i == 15_000 {
+            at_us += 3 * 86_400 * 1_000_000;
+        }
+        let when = if rng.below(500) == 0 {
+            at_us.saturating_sub(rng.below(7_200_000_000))
+        } else {
+            at_us
+        };
+        let client = if rng.below(10) == 0 {
+            let mut addr = [0u8; 16];
+            for byte in &mut addr {
+                *byte = u8::try_from(rng.next() >> 56).unwrap();
+            }
+            addr
+        } else {
+            ip(u8::try_from(1 + rng.below(8)).unwrap())
+        };
+        let rcode = match rng.below(10) {
+            0..=5 => Some(3),
+            6 => None,
+            _ => Some(u8::try_from(rng.below(6)).unwrap()),
+        };
+        let name = odd_wire(&mut rng);
+        engine.observe_query(when, client, &name, rcode);
+        if let Some(state) = engine.clients.get(&client) {
+            assert!(state.nx_samples.len() <= SAMPLES);
+            for sample in &state.nx_samples {
+                assert!(sample.len() <= MAX_DOMAIN, "{sample:?} from {name:?}");
+            }
+        }
+    }
+    engine.observe_answer(at_us / 1_000_000 + 7200, ip(9), &wire("x.example"), Some(0));
+    let storms = engine
+        .findings()
+        .iter()
+        .filter(|f| f.kind == Kind::NxdomainStorm)
+        .count();
+    assert!(storms > 0, "the run makes storms");
+    assert!(engine.new_domains().count() > 0, "and first-seen domains");
+    let within = |text: &str| text.chars().count() <= MAX_DOMAIN;
+    assert!(engine.new_domains().all(|d| within(&d.domain)));
+    for state in engine.clients.values() {
+        assert!(state.tracked.iter().all(|t| within(&t.domain)));
+        assert!(state.dga_samples.iter().all(|(text, _)| within(text)));
+        assert!(state.new_samples.iter().all(|text| within(text)));
+    }
+}
