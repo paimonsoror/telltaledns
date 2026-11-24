@@ -2925,6 +2925,278 @@ mod identity_tests {
 }
 
 #[cfg(test)]
+mod heatmap_read_tests {
+    use std::sync::Arc;
+
+    use telltale_api::Backend as _;
+    use telltale_api::heatmap::{KeyPart, KeyQuery, MAX_SLOTS, NetworkQuery};
+    use telltale_store::rollup::{Rollups, TopRow};
+    use telltale_telemetry::agg::Counts;
+    use telltale_telemetry::event::{Name, Record};
+
+    use super::{Read, answer};
+
+    /// 2020-09-14T00:00:00Z, a day boundary: every window below starts at or after it.
+    const DAY0: u64 = 1_600_041_600;
+    /// The node's current hour (one query in it), after every stored hour.
+    const LIVE: u64 = DAY0 + 500 * 86_400;
+
+    fn query(ts_s: u64) -> Record {
+        Record::Query(
+            telltale_telemetry::QueryEvent {
+                ts_us: ts_s * 1_000_000,
+                client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)
+                    .to_ipv6_mapped()
+                    .octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: telltale_telemetry::Status::Forwarded,
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 0,
+                t_total_us: 100,
+                t_upstream_us: 0,
+                resp_size: 64,
+                answers: 1,
+            },
+            Name::from_wire(b"\x07example\x03com\x00"),
+        )
+    }
+
+    fn row(key: &str, count: u64) -> TopRow {
+        TopRow {
+            key: key.into(),
+            count,
+            error: 0,
+        }
+    }
+
+    /// The hour `k` after `DAY0` has top lists when `k % 5 == 0`; `10.0.0.1` and `example.com`
+    /// are on them, with this count, unless `k % 10 == 0` too (then the lists lack them).
+    fn listed(k: u64) -> Option<Option<u64>> {
+        (k % 5 == 0).then(|| (k % 10 != 0).then_some(k % 50 + 1))
+    }
+
+    /// A node with two days of minutes, then a minute every three hours to day 401 (each with
+    /// blocked queries), the hours' top lists of [`listed`], and one live query at `LIVE`.
+    fn backend(dir: &std::path::Path) -> crate::api_backend::ApiBackend {
+        let mut s = crate::http::tests::sources_in(dir);
+        let db = Arc::new(Rollups::in_memory().unwrap());
+        let minute = |t: u64| {
+            let total = u32::try_from(t / 60 % 13 + 1).unwrap();
+            let mut c = Counts {
+                total,
+                ..Counts::default()
+            };
+            c.status.fill(total / 2 + 1);
+            (t, c)
+        };
+        let mut rows: Vec<(u64, Counts)> = (0..2 * 1440).map(|m| minute(DAY0 + m * 60)).collect();
+        rows.extend((16..401 * 8).map(|i| minute(DAY0 + i * 3 * 3600 + 420)));
+        db.put_minutes(&rows).unwrap();
+        for k in (0..9_700u64).filter(|k| listed(*k).is_some()) {
+            let (clients, domains) = match listed(k).flatten() {
+                Some(c) => (
+                    vec![row("10.0.0.1", c), row("10.0.0.2", 1)],
+                    vec![row("example.com", c), row("other.example", 1)],
+                ),
+                None => (vec![row("10.0.0.2", 1)], vec![row("other.example", 1)]),
+            };
+            db.put_hour_extras(
+                DAY0 + k * 3600,
+                &[("clients", clients), ("domains", domains)],
+                &[],
+            )
+            .unwrap();
+        }
+        s.rollups = Some(db);
+        s.pipeline.telemetry.aggregates().record(&query(LIVE));
+        crate::api_backend::ApiBackend { src: Arc::new(s) }
+    }
+
+    fn network(b: &crate::api_backend::ApiBackend, q: NetworkQuery) -> Vec<u64> {
+        serde_json::from_slice(&answer(b, Read::HeatmapNetwork { q }).unwrap()).unwrap()
+    }
+
+    fn key_part(
+        b: &crate::api_backend::ApiBackend,
+        from_s: u64,
+        to_s: u64,
+        kind: &str,
+        key: &str,
+    ) -> KeyPart {
+        let q = KeyQuery {
+            from_s,
+            to_s,
+            kind: kind.into(),
+            key: key.into(),
+            blocked: false,
+        };
+        serde_json::from_slice(&answer(b, Read::HeatmapKey { q }).unwrap()).unwrap()
+    }
+
+    /// REQ: OBS-029 — whatever window and slot a peer's read names, the answering node's part
+    /// has at most `MAX_SLOTS` slots: a window that doesn't end after it starts has none, a
+    /// zero slot counts as a minute (the finest grain the API asks for), and a window longer
+    /// than `MAX_SLOTS` slots is answered for its first `MAX_SLOTS`.
+    #[test]
+    fn obs_029_peer_heatmap_reads_use_bounded_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = backend(dir.path());
+        let net = |from_s, to_s, slot| {
+            network(
+                &b,
+                NetworkQuery {
+                    from_s,
+                    to_s,
+                    slot,
+                    blocked: false,
+                },
+            )
+        };
+        for slot in [1, 0, 60, 3600] {
+            assert_eq!(net(0, u64::MAX, slot).len(), MAX_SLOTS, "slot {slot}");
+        }
+        // No slot: minute slots, with the minutes' counts in them.
+        let by_minute = net(DAY0, DAY0 + 7200, 60);
+        assert_eq!(by_minute.len(), 120);
+        assert!(by_minute.iter().all(|v| *v > 0), "{by_minute:?}");
+        assert_eq!(net(DAY0, DAY0 + 7200, 0), by_minute);
+        // A window that ends before it starts, or where it starts: no slots.
+        assert!(net(DAY0 + 7200, DAY0, 60).is_empty());
+        assert!(net(u64::MAX, 0, 0).is_empty());
+        assert!(net(DAY0, DAY0, 60).is_empty());
+        // A slot longer than the window: one.
+        assert_eq!(net(DAY0, DAY0 + 7200, u64::MAX).len(), 1);
+        // A device's or a name's hours.
+        for (kind, k) in [
+            ("client", "10.0.0.1"),
+            ("name", "example.com"),
+            ("other", "x"),
+        ] {
+            for (from_s, to_s) in [(10, 0), (u64::MAX, 0), (DAY0, DAY0)] {
+                let part = key_part(&b, from_s, to_s, kind, k);
+                assert!(
+                    part.values.is_empty() && part.covered.is_empty(),
+                    "{kind} {from_s}..{to_s}"
+                );
+            }
+            for (from_s, to_s) in [(0, u64::MAX), (DAY0, u64::MAX)] {
+                let part = key_part(&b, from_s, to_s, kind, k);
+                assert_eq!(
+                    (part.values.len(), part.covered.len()),
+                    (MAX_SLOTS, MAX_SLOTS),
+                    "{kind} {from_s}..{to_s}"
+                );
+            }
+        }
+        // From DAY0 on, the first MAX_SLOTS hours are the stored ones.
+        let part = key_part(&b, DAY0, u64::MAX, "client", "10.0.0.1");
+        assert_eq!(part.values[5], listed(5).flatten().unwrap());
+        assert!(!part.covered[10]);
+    }
+
+    /// REQ: OBS-029 — for every window the API itself sends (its slot sizes, its windows of up
+    /// to `MAX_SLOTS` slots, aligned starts, any end), the answering node's part is exactly
+    /// what it was before parts were bounded: the slot count and the sums computed here the way
+    /// the node computed them, without a bound.
+    #[test]
+    fn obs_029_peer_heatmap_reads_match_the_api_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = backend(dir.path());
+        let unbounded_count = |from_s: u64, to_s: u64, slot: u64| {
+            usize::try_from(to_s.saturating_sub(from_s).div_ceil(slot.max(1))).unwrap_or(0)
+        };
+        let unbounded_slots = |points: &[(u64, u64)], from_s: u64, slot: u64, n: usize| {
+            let mut v = vec![0u64; n];
+            for &(start, value) in points {
+                if start < from_s {
+                    continue;
+                }
+                let i = usize::try_from((start - from_s) / slot).unwrap_or(usize::MAX);
+                if let Some(x) = v.get_mut(i) {
+                    *x += value;
+                }
+            }
+            v
+        };
+        let counts = [
+            1, 2, 3, 59, 60, 61, 96, 97, 168, 672, 673, 676, 1440, 9600, 9601, 10_079, 10_080,
+        ];
+        for (slot, max_days) in [(3600u64, 400u64), (900, 7), (60, 7)] {
+            // The API's own limit for the grain (`stats_heatmap`).
+            let api_max = ((max_days * 86_400 + 3600) / slot).min(MAX_SLOTS as u64);
+            for n in counts
+                .into_iter()
+                .filter(|n| *n <= api_max)
+                .chain([api_max])
+            {
+                // Aligned starts; ends anywhere in the last slot.
+                for (start, rest, blocked) in [(0, slot, false), (3, 1, true), (7, slot - 1, false)]
+                {
+                    let from_s = DAY0 + start * slot;
+                    let to_s = from_s + (n - 1) * slot + rest;
+                    let q = NetworkQuery {
+                        from_s,
+                        to_s,
+                        slot,
+                        blocked,
+                    };
+                    let what =
+                        format!("slot {slot}, {n} slots, {from_s}..{to_s}, blocked {blocked}");
+                    let got = network(&b, q.clone());
+                    let points: Vec<(u64, u64)> = b
+                        .timeseries(q.step(), from_s, to_s)
+                        .iter()
+                        .map(|x| {
+                            let v = if blocked {
+                                x.by_status.get("blocked").copied().unwrap_or(0)
+                            } else {
+                                x.total
+                            };
+                            (x.start_unix_seconds, u64::from(v))
+                        })
+                        .collect();
+                    let want =
+                        unbounded_slots(&points, from_s, slot, unbounded_count(from_s, to_s, slot));
+                    assert_eq!(got.len(), usize::try_from(n).unwrap(), "{what}");
+                    assert!(got == want, "{what}");
+                    assert_eq!(q.slot_count(), want.len(), "{what}");
+                }
+            }
+        }
+        // A device's or a name's hours (hour slots only, up to the API's 9,601).
+        for n in [1u64, 2, 5, 24, 168, 1000, 9600, 9601] {
+            for rest in [1, 3600] {
+                let from_s = DAY0 + 3 * 3600;
+                let to_s = from_s + (n - 1) * 3600 + rest;
+                let want_n = usize::try_from((to_s - from_s).div_ceil(3600)).unwrap();
+                for (kind, k) in [("client", "10.0.0.1"), ("name", "example.com")] {
+                    let what = format!("{kind}, {n} hours, {from_s}..{to_s}");
+                    let part = key_part(&b, from_s, to_s, kind, k);
+                    assert_eq!(part.values.len(), want_n, "{what}");
+                    assert_eq!(part.covered.len(), want_n, "{what}");
+                    for (i, (v, c)) in part.values.iter().zip(&part.covered).enumerate() {
+                        let hour = (from_s - DAY0) / 3600 + i as u64;
+                        let (want_v, want_c) = match listed(hour) {
+                            None => (0, true),
+                            Some(None) => (0, false),
+                            Some(Some(count)) => (count, true),
+                        };
+                        assert_eq!((*v, *c), (want_v, want_c), "{what}: hour {i}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod anomaly_tests {
     use super::*;
 
