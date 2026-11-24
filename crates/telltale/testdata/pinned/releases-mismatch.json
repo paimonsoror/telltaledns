@@ -1,0 +1,20 @@
+{
+  "channel": "stable",
+  "version": "9.9.9",
+  "commit": "abc1234",
+  "date": "2026-11-19T00:00:00Z",
+  "assets": {
+    "x86_64-unknown-linux-musl": {
+      "name": "telltale-x86_64-linux",
+      "sha256": "abababababababababababababababababababababababababababababababab"
+    },
+    "aarch64-unknown-linux-musl": {
+      "name": "telltale-aarch64-linux",
+      "sha256": "abababababababababababababababababababababababababababababababab"
+    },
+    "armv7-unknown-linux-musleabihf": {
+      "name": "telltale-armv7-linux",
+      "sha256": "abababababababababababababababababababababababababababababababab"
+    }
+  }
+}

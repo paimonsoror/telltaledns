@@ -751,6 +751,18 @@ fn span_text(span: &[u8]) -> String {
     out.chars().take(MAX_DOMAIN).collect()
 }
 
+/// A whole name as dotted text for a finding's samples: at most [`MAX_DOMAIN`] bytes, ending on
+/// a character.
+fn sample_text(wire: &[u8]) -> String {
+    let mut name = crate::event::dotted(wire);
+    let mut end = MAX_DOMAIN.min(name.len());
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
+    name
+}
+
 /// The fingerprint of a dotted domain (for `ignore_domains`), as [`span_fp`] computes it.
 fn text_fp(domain: &str) -> u64 {
     let mut wire = Vec::new();
@@ -979,8 +991,8 @@ impl Engine {
         if rcode == Some(3) {
             c.min_nx = c.min_nx.saturating_add(1);
             if c.nx_samples.len() < SAMPLES {
-                let mut name = crate::event::dotted(wire);
-                name.truncate(MAX_DOMAIN);
+                // REQ: OBS-009 — cut at a character boundary: a label may hold any bytes.
+                let name = sample_text(wire);
                 if !c.nx_samples.contains(&name) {
                     c.nx_samples.push(name);
                 }

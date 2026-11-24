@@ -867,7 +867,7 @@ async fn notify_peers(src: &Sources, id: &str, since_ms: u64, until_ms: u64) {
         return;
     };
     let mut calls = tokio::task::JoinSet::new();
-    for m in c.members().into_iter().filter(|m| m.up(now)) {
+    for m in serving(c).await.into_iter().filter(|m| m.up(now)) {
         let (c, body) = (Arc::clone(c), body.clone());
         calls.spawn(async move {
             let _ = c.call(&m.node_id, KIND, body, NOTICE_DEADLINE).await;
@@ -876,6 +876,18 @@ async fn notify_peers(src: &Sources, id: &str, since_ms: u64, until_ms: u64) {
     let relayed = via_primary(c, &op, NOTICE_DEADLINE);
     let direct = async { while calls.join_next().await.is_some() {} };
     let _ = tokio::join!(relayed, direct);
+}
+
+/// REQ: CLU-014, CLU-002 (ADR-056) — the members a drill call goes to: not the witnesses the
+/// registry names. A witness only votes: it records no window and keeps no drill, so asked, it was
+/// only listed as a node that didn't answer (and a finished drill's report waited the full retry
+/// for its part). The registry is a small file, read off the async task; if that fails, every
+/// member (a witness listed, never a node left out).
+async fn serving(cluster: &Arc<Cluster>) -> Vec<telltale_cluster::net::Member> {
+    let c = Arc::clone(cluster);
+    tokio::task::spawn_blocking(move || c.serving_members())
+        .await
+        .unwrap_or_else(|_| cluster.members())
 }
 
 /// REQ: CLU-014 — asks the primary to pass `op` on to the peers this node has no stream to.
@@ -923,8 +935,8 @@ async fn relay(
         return Relayed::default();
     };
     let mut calls = tokio::task::JoinSet::new();
-    for m in cluster
-        .members()
+    for m in serving(cluster)
+        .await
         .into_iter()
         .filter(|m| relays_to(&m.node_id, caller, skip))
     {
@@ -1276,7 +1288,7 @@ pub(crate) async fn ask_all(
         return (Vec::new(), Vec::new());
     };
     let mut calls = tokio::task::JoinSet::new();
-    for m in cluster.members() {
+    for m in serving(cluster).await {
         let (c, body) = (Arc::clone(cluster), body.clone());
         calls.spawn(async move {
             let label = member_label(&m);

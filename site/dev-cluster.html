@@ -33,6 +33,7 @@
     <li>The node that was asked is the <i>entry node</i>. For a federated read it asks each reachable peer over the cluster stream and merges the answers with its own.</li>
     <li>The request is one JSON value of the <code>Read</code> enum in <code>crates/telltale/src/federated.rs</code>, sent with kind <code>api.read</code>. The peer decodes it, answers from its own data in <code>answer()</code>, and replies with JSON.</li>
     <li>A peer that doesn't answer within two seconds, or errors, is left out and listed in the result's <code>missingNodes</code>: a dead node costs a read two seconds, never more (CLU-002).</li>
+    <li>A witness is never asked: it holds no data and answers only votes (ADR-056). Who is one is the signed registry's word, set by the primary at join, never a peer's own claim. <code>Cluster::serving_peers</code> and <code>serving_members</code> leave witnesses out of the reads, the cluster-wide pause and cache lists, drills, simulations, and support packages, so none lists a witness in <code>missingNodes</code> or as a node that didn't answer.</li>
     <li>Reads run on blocking threads, never on the DNS path (DNS never depends on the cluster).</li>
   </ul>
 </section>

@@ -406,6 +406,65 @@
           "clusterDns"
         ]
       }
+    },
+    "upgradeHook": {
+      "type": "object",
+      "description": "REQ: OPS-014 \u2014 the pre-upgrade hook that upgrades native nodes first.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "tokenSecret": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "url": {
+          "type": "string"
+        },
+        "caSecret": {
+          "type": "object",
+          "description": "REQ: OPS-014 (ADR-182) \u2014 the Secret with the PEM certificate an https:// upgradeHook.url is checked against (ctl --ca-file).",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+[smhd]?$"
+        },
+        "skipDown": {
+          "type": "boolean"
+        },
+        "whenUnavailable": {
+          "type": "string",
+          "description": "REQ: OPS-014 (ADR-182) — a native node that can no longer fetch the image's edge build: fail (keep the sync blocked) or skip (leave it, loudly).",
+          "enum": [
+            "fail",
+            "skip"
+          ]
+        },
+        "activeDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 60
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
     }
   }
 }

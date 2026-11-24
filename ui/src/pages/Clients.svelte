@@ -18,6 +18,7 @@
   import { mode } from '../lib/mode.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import { plainHttpPage } from '../lib/plainHttp';
+  import { listsMac } from '../lib/macKeys';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -86,7 +87,9 @@
   const plainHttpNotice = plainHttpPage(location)
     ? 'You are on a plain-HTTP page: a key you paste crosses the network unencrypted. Open this page over https first.'
     : null;
-  const named = (ip: string) => configured.some((c) => c.match.includes(ip));
+  // REQ: API-010, FLT-006 (ADR-183) — a discovered device is named when a configured device lists its
+  // address or its MAC address (a device named by its MAC follows it to whatever address it gets).
+  const named = (l: S['DhcpLease']) => configured.some((c) => c.match.includes(l.ip) || (!!l.mac && listsMac(c.match, l.mac)));
   // REQ: OBS-025 — what each device looks like, by address.
   let identities = $state<Record<string, S['DeviceIdentity']>>({});
   let error = $state<unknown>(null);
@@ -327,7 +330,7 @@
                   <td>{l.hostname ?? ''}</td>
                   <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
                   <td class="mono small">{l.mac}</td>
-                  <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
+                  <td class="small">{#if named(l)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
                 </tr>
               {/each}
             </tbody>

@@ -530,3 +530,80 @@ answer = "cdn.example"
         assert!(served(&p, name, "10.0.0.9").is_none(), "{name}");
     }
 }
+
+// REQ: FLT-013, FLT-006 (ADR-183) — the MAC a router (this node's, or another full member's)
+// reported for the client identifies it as the device named by that MAC, and the explanation says
+// so (`router_mac`) and where the MAC comes from: `router`, `peer`, or `neighbor` for the kernel's.
+#[test]
+fn flt_013_explain_says_a_router_mac_identified_the_client() {
+    use telltale_policy::MacTable;
+    let (p, sources) = setup();
+    let mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01];
+    let ip: IpAddr = "10.0.0.78".parse().unwrap();
+    let e = ask(&p, &sources, "social.example", "10.0.0.78");
+    assert_eq!(e.client.identified_by, "default");
+    assert_eq!((e.client.mac.as_deref(), e.client.mac_from), (None, None));
+    for (table, by, from) in [
+        (
+            MacTable::from_sources([], [(ip, mac)], [], 0),
+            "router_mac",
+            "router",
+        ),
+        (
+            MacTable::from_sources([], [], [(ip, mac)], 0),
+            "router_mac",
+            "peer",
+        ),
+        (
+            MacTable::from_sources([(ip, mac)], [], [], 0),
+            "neighbor_mac",
+            "neighbor",
+        ),
+    ] {
+        p.neighbors.swap(table);
+        let e = ask(&p, &sources, "social.example", "10.0.0.78");
+        assert_eq!(e.client.identified_by, by, "{from}");
+        assert_eq!(e.client.mac_from, Some(from), "{by}");
+        assert_eq!(e.client.mac.as_deref(), Some("aa:bb:cc:dd:ee:01"), "{from}");
+        assert_eq!(e.client.device.as_deref(), Some("tablet"), "{from}");
+        assert_eq!(
+            e.outcome,
+            Outcome::Blocked,
+            "the tablet's group applies: {from}"
+        );
+    }
+    // The command line's JSON names the source too.
+    let e = ask(&p, &sources, "social.example", "10.0.0.78");
+    assert_eq!(
+        serde_json::to_value(&e.client).unwrap()["mac_from"],
+        "neighbor"
+    );
+}
+
+// REQ: FLT-013 (ADR-183) — a MAC the caller gives is `given`: it identifies the client as before
+// (`neighbor_mac`, the table that explain makes for it), even where the node's own table holds
+// another MAC for the address.
+#[test]
+fn flt_013_a_given_mac_is_reported_as_given() {
+    use telltale_policy::MacTable;
+    let (p, sources) = setup();
+    let ip: IpAddr = "10.0.0.78".parse().unwrap();
+    p.neighbors.swap(MacTable::from_sources(
+        [],
+        [(ip, [0x02, 0, 0, 0, 0, 0x99])],
+        [],
+        0,
+    ));
+    let req = Request {
+        name: "social.example",
+        qtype: rtype::A,
+        client: ip,
+        mac: Some([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01]),
+        client_id: None,
+    };
+    let e = p.explain(&req, |n| sources.get(n).cloned()).unwrap();
+    assert_eq!(e.client.identified_by, "neighbor_mac");
+    assert_eq!(e.client.mac_from, Some("given"));
+    assert_eq!(e.client.mac.as_deref(), Some("aa:bb:cc:dd:ee:01"));
+    assert_eq!(e.client.device.as_deref(), Some("tablet"));
+}

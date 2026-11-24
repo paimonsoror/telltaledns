@@ -36,7 +36,7 @@
     <tbody>
       <tr><td><b>Primary</b></td><td>Created the cluster and holds its certificate authority. Publishes the configuration and the compiled blocklists; every version is signed.</td></tr>
       <tr><td><b>Replica</b></td><td>Follows the primary and answers DNS from the last version it received, even after a restart with the primary down. Joined with an <i>eligible</i> token, it can be promoted to primary; with a plain token, it only follows.</td></tr>
-      <tr><td><b>Witness</b></td><td>A tiny vote-only process (on a NAS, router, or small VM) that lets two nodes fail over automatically. It answers no DNS.</td></tr>
+      <tr><td><b>Witness</b></td><td>A tiny vote-only process (on a NAS, router, or small VM) that lets two nodes fail over automatically. It answers no DNS and holds no data, so the dashboard and the other views that cover the cluster never ask it, or list it as a node that didn't answer. The Cluster page still shows it.</td></tr>
       <tr><td><b>Resolver pod</b></td><td>On Kubernetes with <code>mode: scaled</code>: joins by itself, holds no state, and can't be promoted. See <a href="guide-kubernetes.html">Run on Kubernetes</a>.</td></tr>
     </tbody>
   </table></div>

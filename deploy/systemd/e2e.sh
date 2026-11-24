@@ -105,7 +105,8 @@ dig +short +tcp @127.0.0.1 example.com A | grep -qE '^[0-9.]+$' || { fail "TCP";
 /usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz
 
 echo "== runs as telltale, sandboxed"
-user="$(ps -o user= -C telltale | head -1)"
+# The service's own process (a stray `telltale` of someone else's on the machine isn't it).
+user="$(ps -o user= -p "$(systemctl show -p MainPID --value telltale)" | head -1)"
 [ "$user" = telltale ] || { fail "running as $user"; }
 systemd-analyze security telltale --no-pager | tail -1
 [ -f /var/lib/telltale/setup-token ] || { fail "no setup token in the data directory"; }
@@ -116,6 +117,98 @@ echo "# local edit" >> /etc/telltale/telltale.toml
 sh "$HERE/install.sh" --disable-resolved-stub >/dev/null
 grep -q "# local edit" /etc/telltale/telltale.toml || { fail "config overwritten"; }
 systemctl is-active --quiet telltale
+
+# REQ: OPS-014 (ADR-182) — the update service: installed and off, its units written for the data
+# directory and passing `systemd-analyze verify`. Its sandbox lets it restart the node, read the
+# node's health and write the binary's directory and <data_dir>/update/, and nothing else of the
+# data directory or of /etc. Once on, it picks up a request the telltale user writes (through a
+# temporary file and a rename, as the node does), removes it, refuses this build (a local build
+# never installs from a request), records the outcome where the node can read it, logs to the
+# journal, exits 0 for a refusal (the path unit stays on), and leaves the node running; a FIFO at
+# the request is refused and removed without blocking.
+echo "== the update service picks a request up"
+UPATH=/etc/systemd/system/telltale-update.path USVC=/etc/systemd/system/telltale-update.service
+UPD=/var/lib/telltale/update RESULT=/var/lib/telltale-update/result.json
+[ -f "$UPATH" ] && [ -f "$USVC" ] || { fail "the update units aren't installed"; }
+if systemctl is-enabled --quiet telltale-update.path; then fail "telltale-update.path is on by default"; fi
+grep -qx "PathExists=$UPD/request.json" "$UPATH" || { fail "the path unit watches $(grep PathExists "$UPATH")"; }
+grep -qx "ReadWritePaths=/usr/local/bin -$UPD" "$USVC" || { fail "the service writes $(grep ReadWritePaths "$USVC")"; }
+# REQ: OPS-014 (ADR-182) — the channel (in both units) and the health check's address (from the
+# config's [api] listen, 0.0.0.0:8053: asked at loopback), written by install.sh.
+grep -qx 'Environment=TELLTALE_UPDATE_CHANNEL=stable' "$USVC" \
+  && grep -qx 'Environment=TELLTALE_UPDATE_CHANNEL=stable' /etc/systemd/system/telltale.service \
+  || { fail "the update channel isn't in the units: $(grep -h CHANNEL "$USVC" /etc/systemd/system/telltale.service)"; }
+grep -qx 'Environment=TELLTALE_UPDATE_HEALTH_URL=http://127.0.0.1:8053/readyz?startup=1' "$USVC" \
+  || { fail "the health URL: $(grep HEALTH_URL "$USVC")"; }
+systemd-analyze verify "$UPATH" "$USVC" || { fail "systemd-analyze verify"; }
+echo "telltale-update.service: $(systemd-analyze security telltale-update.service --no-pager | tail -1)"
+# The sandbox as the service gets it (a drop-in with another command, removed afterwards).
+mkdir -p /etc/systemd/system/telltale-update.service.d
+before="$(systemctl show -p MainPID --value telltale)"
+cat > /etc/systemd/system/telltale-update.service.d/e2e.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=/bin/sh -c 'touch /usr/local/bin/.tt-e2e && rm /usr/local/bin/.tt-e2e && touch $UPD/.tt-e2e && rm $UPD/.tt-e2e && ! touch /var/lib/telltale/.tt-e2e 2>/dev/null && ! touch /etc/.tt-e2e 2>/dev/null'
+ExecStart=/usr/bin/systemctl restart telltale
+ExecStart=/bin/sh -c 'for i in \$\$(seq 1 40); do /usr/local/bin/telltale health --url "\${TELLTALE_UPDATE_HEALTH_URL}" && exit 0; sleep 0.5; done; exit 1'
+EOF
+sudo -u telltale mkdir -p -m 0750 "$UPD"
+systemctl daemon-reload
+systemctl start telltale-update.service || { journalctl -u telltale-update --no-pager | tail -20; fail "the update service's sandbox: a write, the restart, or the health check"; }
+[ "$(systemctl show -p MainPID --value telltale)" != "$before" ] || { fail "the node wasn't restarted"; }
+rm -rf /etc/systemd/system/telltale-update.service.d
+systemctl daemon-reload
+systemctl reset-failed telltale telltale-update.service 2>/dev/null || true
+systemctl enable --now telltale-update.path
+# As the node writes a request: a temporary file in the folder, then a rename.
+ask() { # json
+  printf '%s' "$1" | sudo -u telltale sh -c "cat > $UPD/.request.tmp && mv -f $UPD/.request.tmp $UPD/request.json"
+}
+outcome() { # pattern: waits for the service's result to match it
+  for _ in $(seq 1 40); do grep -q "$1" "$RESULT" 2>/dev/null && return 0; sleep 0.5; done
+  journalctl -u telltale-update --no-pager | tail -20
+  return 1
+}
+settled() { # the service has run and stopped; the path unit is still on
+  for _ in $(seq 1 40); do [ "$(systemctl show -p ActiveState --value telltale-update.service)" = inactive ] && break; sleep 0.5; done
+  [ "$(systemctl show -p Result --value telltale-update.service)" = success ] || { fail "a refusal failed the unit ($(systemctl show -p Result --value telltale-update.service))"; }
+  systemctl is-active --quiet telltale-update.path || { fail "the path unit stopped after a refusal"; }
+}
+rm -f "$RESULT"
+# A local build refuses every request before anything is fetched: the binary under test must be
+# one, or this request would start a real download.
+case " $(/usr/local/bin/telltale --version) " in
+  *" dev "*) ;;
+  *) fail "the binary under test isn't a local (dev) build: $(/usr/local/bin/telltale --version)" ;;
+esac
+# This run's journal lines only (a machine that ran the e2e before keeps the older ones).
+since="$(date '+%Y-%m-%d %H:%M:%S')"
+ask "{\"id\":\"1a-2b\",\"to\":\"9.9.9\",\"by\":\"e2e\",\"requestedMs\":$(( $(date +%s) * 1000 ))}"
+outcome '"id": "1a-2b"' || { fail "no outcome recorded for the request"; }
+result="$(sudo -u telltale cat "$RESULT" 2>&1)" || { fail "the node can't read the outcome: $result"; }
+grep -q '"state": "refused"' <<<"$result" || { fail "no refusal recorded: $result"; }
+[ ! -e "$UPD/request.json" ] || { fail "the request was left behind"; }
+settled
+# Read whole, then searched: `journalctl | grep -q` under pipefail fails when grep stops reading
+# early and journalctl, still writing, gets SIGPIPE (a long journal from earlier runs).
+journal="$(journalctl -u telltale-update --since "$since" --no-pager)"
+grep -q 'update: refused' <<<"$journal" || { fail "the refusal isn't in the journal"; }
+systemctl is-active --quiet telltale || { fail "the update service stopped the node"; }
+rm -f "$RESULT"
+sudo -u telltale mkfifo "$UPD/request.json"
+outcome 'regular file' || { fail "a FIFO at the request wasn't refused"; }
+[ ! -e "$UPD/request.json" ] || { fail "the FIFO was left behind"; }
+settled
+systemctl disable --now telltale-update.path
+# REQ: OPS-014 (ADR-182) — install.sh --cluster-updates turns it on only once the node answers
+# where the health check will ask, and says where that is.
+out="$(sh "$HERE/install.sh" --disable-resolved-stub --cluster-updates 2>&1)" \
+  || { echo "$out" | tail -20; fail "install.sh --cluster-updates"; }
+grep -q 'health check after each update asks http://127.0.0.1:8053/readyz?startup=1, which answers now' <<<"$out" \
+  || { echo "$out" | tail -10; fail "install.sh --cluster-updates didn't say where the health check asks"; }
+grep -q 'Update channel: stable' <<<"$out" || { echo "$out" | tail -10; fail "install.sh didn't say the update channel"; }
+systemctl is-enabled --quiet telltale-update.path || { fail "--cluster-updates left the path unit off"; }
+systemctl disable --now telltale-update.path
 
 # REQ: OPS-001 (T7.6) — the guided setup on a fresh machine: answers on stdin, the first admin
 # made from the answers (its drop-in removed once the service is up), the answers in the config.

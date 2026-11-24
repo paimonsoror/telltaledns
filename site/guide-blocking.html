@@ -134,7 +134,7 @@ ede_text = true             # name the list in the EDE text (false hides list na
 
     <div class="panel" id="quick-ui"><h3>Web UI</h3>
       <ul>
-        <li>In the <b>query log</b>, press <b>Why?</b> on a query and use <b>Make a quick rule</b>. The site, the device, and its group are filled in.</li>
+        <li>In the <b>query log</b>, press <b>Why?</b> on a query and use <b>Make a quick rule</b>. The site is filled in, and so is who it's for: the device TelltaleDNS recognizes at the address; when it recognizes none, a device you named that the log names, but only if its own IP or network holds the address or its MAC address could be this one (where TelltaleDNS can tell, a name that only matches another device's name doesn't count); otherwise the address itself. For a Kubernetes workload the rule starts for its group, as it is now, only when an operator placed the workload in one (a pod or namespace label, or a rule); otherwise it starts from the pod's address, and <b>Add to group…</b> on the workload's name puts all its pods in a group first.</li>
         <li>Or open the <b>Quick rules</b> page (Filtering &amp; DNS). It also lists the rules in effect with a countdown, who made each, and Edit and Remove buttons.</li>
       </ul>
     </div>
@@ -161,6 +161,8 @@ telltale ctl rules                     # what's in effect; `ctl unrule &lt;id&gt
     <li>Quick rules decide <b>before any list</b>, on the next query; nothing is recompiled. They also decide CNAME targets.</li>
     <li>A rule for the <b>device</b> beats one for its <b>group</b>, which beats one for <b>everyone</b>. Within those, the more specific site wins, then allow over block.</li>
     <li>A rule with an end time stops at that moment on every node. The query log shows <b>quick allow</b> or <b>quick block</b> with the rule's note.</li>
+    <li>A rule can be for a <b>named device</b> (a <code>[[client]]</code>, or one you named with <b>Name this device…</b>), an <b>IP address</b>, a <b>network</b>, or a group. The name the query log shows for a device nobody named here (what your router or the device itself calls it, like <code>LGwebOSTV</code>) isn't a device TelltaleDNS knows: the form fills in the address and shows that name beside it, and the API refuses the name with a hint that says which address it is.</li>
+    <li>A rule for an address stops matching when the address changes. Give the device a fixed address in your router (a DHCP reservation), or name the device and make the rule for the name: naming recognizes the device by the address it has now, unless you name it by its MAC address, which follows the device when your router or the neighbor table sees it (<b>Name this device…</b> offers it when it knows the MAC). You then change the device's <code>match</code> list once instead of every rule, and a device recognized by its MAC address (<code>match = ["aa:bb:cc:dd:ee:ff"]</code>) keeps its rules when its address changes, where TelltaleDNS can see MAC addresses.</li>
   </ul>
   <p class="muted">Quick rules aren't parental controls: there's no screen time and no content categories. Before saving, <b>What would this have done?</b> replays recent queries with the change.</p>
 </section>

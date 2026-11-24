@@ -215,6 +215,9 @@ jobs:
       # REQ: OPS-003 (GitHub issue #2) — the install notes warn about alsoServe next to resolver pods.
       - name: Install notes warn about alsoServe
         run: bash deploy/helm/notes-test.sh
+      # REQ: OPS-014 — the upgrade hook renders as a pre-upgrade Job only when asked for.
+      - name: Upgrade hook
+        run: bash deploy/helm/upgrade-hook-test.sh
       # REQ: OBS-016 — the standalone SLO rules file is rendered from the chart.
       - name: Standalone SLO rules are current
         # Its own virtualenv: chart-testing-action 2.9 leaves one active that has no pip.
@@ -265,11 +268,19 @@ jobs:
         run: bash deploy/systemd/guided-e2e.sh target/bench-fast/telltale
       - name: install.sh + systemd unit
         run: sudo bash deploy/systemd/e2e.sh target/bench-fast/telltale
+      # REQ: OPS-014 (ADR-182) — install.sh writes the node's data directory into the update units.
+      - name: install.sh's update units (the data directory)
+        run: bash deploy/systemd/update-units-test.sh target/bench-fast/telltale
       # REQ: CLU-003, CLU-004 (T5.2/T5.3 AC) — a primary and a replica as real processes:
       # replication, propagation, 100% answers while the primary is killed, cold start ≤ 500 ms;
       # OPS-010 (T13.4): maintenance on the replica from the primary, restarts, a stopped node.
       - name: Cluster (two processes)
         run: bash deploy/cluster/e2e.sh target/bench-fast/telltale
+      # REQ: FLT-006, CLU-002 (ADR-183) — a device named by a MAC is recognized from the router's list
+      # on the primary (which reads a fake router) and on a replica (which doesn't), and followed to
+      # a new address; the primary keeps its last answer when the router goes quiet (about 85 s).
+      - name: Cluster router MACs
+        run: bash deploy/cluster/router-macs-e2e.sh target/bench-fast/telltale
       # REQ: CLU-005 (T5.4b AC) — automatic failover with a witness: the replica is elected
       # within 30 s of the primary's death with 100% of DNS answered; the old primary follows.
       # OPS-010 (T13.4): a node in maintenance isn't elected; the primary hands over.

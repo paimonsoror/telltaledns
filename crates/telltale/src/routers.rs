@@ -7,7 +7,7 @@
 //!   An API key (`X-API-KEY`), or a local username and password.
 //! - **OPNsense**: the DHCP leases (Dnsmasq, Kea, or ISC, whichever the box runs), with an
 //!   API key and secret.
-//! - **MikroTik** (RouterOS v7, ADR-182): the DHCP server's leases over the REST API
+//! - **MikroTik** (RouterOS v7, ADR-185): the DHCP server's leases over the REST API
 //!   (`/rest/ip/dhcp-server/lease`), with a (read-only) RouterOS user. The bound leases are the
 //!   connected devices; a static lease that isn't bound now is an offline one, named by its
 //!   comment, else the host name the device last sent.
@@ -16,7 +16,8 @@
 //! the naming falls back to (after configured device names and TelltaleDNS's own DHCP).
 //! Never on the DNS path; a router that's down keeps its last answer and is logged.
 
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,6 +51,10 @@ pub(crate) const OFFLINE_MAX: usize = 1024;
 pub(crate) struct Polled {
     pub(crate) now: Seen,
     pub(crate) offline: Seen,
+    /// REQ: FLT-006 (ADR-183) — UniFi: the MACs of connected clients whose address isn't
+    /// `ip` (UniFi gave `last_ip` or `fixed_ip`): the client is connected, but where it is now
+    /// isn't known, so that address can't identify a device. Empty for other routers.
+    pub(crate) not_current: HashSet<String>,
 }
 
 impl Polled {
@@ -58,8 +63,53 @@ impl Polled {
         Self {
             now,
             offline: Seen::new(),
+            not_current: HashSet::new(),
         }
     }
+}
+
+/// REQ: FLT-006 (ADR-183) — a router that hasn't answered for more than this many seconds
+/// (on the node's monotonic clock) has its bindings marked `unsure`: its last answer may no
+/// longer say who holds an address.
+pub(crate) const STALE_AFTER_S: u64 = 900;
+
+/// REQ: FLT-006 (ADR-183) — the longest a router that feeds identification waits between reads,
+/// in seconds: 10 minutes, so what an answer says is never more than about that old when the next
+/// one replaces it (silence alone doesn't bound the age of an answer from a router read once an
+/// hour), and a read that fails (asked again every 15 s) has the rest of the 15 minutes of
+/// [`STALE_AFTER_S`] to succeed before the router counts as silent and every address it gave is
+/// withheld on this node and on the members.
+pub(crate) const IDENTIFY_POLL_MAX_S: u32 = 600;
+
+/// REQ: FLT-006 (ADR-183) — how long to wait before reading the routers again: `interval` (the
+/// shortest `interval_secs`, at least 30), or 15 s while one is failing, and, while the routers
+/// feed identification (`identifies`: a device is named by its MAC and `router_macs` is on), at
+/// most [`IDENTIFY_POLL_MAX_S`].
+pub(crate) fn next_poll_secs(failing: bool, interval: u32, identifies: bool) -> u32 {
+    let base = if failing { interval.min(15) } else { interval };
+    if identifies {
+        base.min(IDENTIFY_POLL_MAX_S)
+    } else {
+        base
+    }
+}
+
+/// REQ: FLT-006 (ADR-183) — whether this node's routers feed identification now: a device is
+/// named by its MAC and `[clients] router_macs` is on.
+fn feeds_identification(sources: &crate::http::Sources) -> bool {
+    let state = sources.pipeline.current();
+    state.policy.clients.router_macs() && state.policy.clients.uses_macs()
+}
+
+/// REQ: FLT-006 (ADR-183) — the routers silent for more than [`STALE_AFTER_S`] seconds at `now`,
+/// given when each last answered (both on the monotonic clock, in seconds). Saturating: a
+/// `last` after `now` is not stale, and never panics.
+pub(crate) fn stale_routers(last_ok: &HashMap<String, u64>, now: u64) -> HashSet<String> {
+    last_ok
+        .iter()
+        .filter(|(_, last)| now.saturating_sub(**last) > STALE_AFTER_S)
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 fn secret(path: Option<&telltale_config::SafeString>) -> Result<Option<String>, String> {
@@ -245,7 +295,30 @@ pub(crate) fn split_known(active: Seen, known: Seen) -> Polled {
     let connected = active.len();
     let mut now = merge_known(active, known);
     let offline = now.split_off(connected);
-    Polled { now, offline }
+    Polled {
+        now,
+        offline,
+        not_current: HashSet::new(),
+    }
+}
+
+/// REQ: FLT-006 (ADR-183) — the MACs (lower case) of the clients in a `stat/sta` answer that have
+/// no current IPv4 address: a row with a `mac` whose `ip` is missing or isn't an IPv4 address.
+/// [`unifi_client`] still gives such a client the address from `last_ip` (or a reservation), which
+/// is where it was, not necessarily where it is, so it can name that address but not identify
+/// a device there.
+pub(crate) fn unifi_not_current(v: &Value) -> HashSet<String> {
+    unifi_rows(v)
+        .iter()
+        .filter_map(|c| {
+            let mac = c.get("mac")?.as_str()?.to_ascii_lowercase();
+            let current = c
+                .get("ip")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.parse::<Ipv4Addr>().is_ok());
+            (!current).then_some(mac)
+        })
+        .collect()
 }
 
 /// OPNsense leases in a search answer (Dnsmasq, Kea, or ISC field names).
@@ -329,9 +402,15 @@ impl UnifiSession<'_> {
     /// are best effort: a console that can't list them (an older Network application has no v2
     /// API) gives just the connected ones.
     async fn clients(&self, client: &telltale_filter::fetch::Client) -> Result<Polled, String> {
-        let active = unifi_clients(&self.get(client, "/api/s/{site}/stat/sta").await?);
+        let sta = self.get(client, "/api/s/{site}/stat/sta").await?;
+        let active = unifi_clients(&sta);
+        // REQ: FLT-006 (ADR-183) — which of them have no current address.
+        let not_current = unifi_not_current(&sta);
         if self.offline_days == 0 {
-            return Ok(Polled::now(active));
+            return Ok(Polled {
+                not_current,
+                ..Polled::now(active)
+            });
         }
         // REQ: T8.2 (ADR-166) — the window goes to the console (it filters the history before
         // answering) and is applied to every row that has a date.
@@ -353,7 +432,10 @@ impl UnifiSession<'_> {
                 Err(e) => debug!(error = %e, "router integration: UniFi known clients"),
             }
         }
-        Ok(split_known(active, known))
+        Ok(Polled {
+            not_current,
+            ..split_known(active, known)
+        })
     }
 }
 
@@ -489,7 +571,7 @@ fn ros<'a>(l: &'a Value, k: &str) -> Option<&'a str> {
     l.get(k).and_then(Value::as_str)
 }
 
-/// REQ: T8.2 (ADR-182) — MikroTik's DHCP leases (`GET /rest/ip/dhcp-server/lease`, a bare array):
+/// REQ: T8.2 (ADR-185) — MikroTik's DHCP leases (`GET /rest/ip/dhcp-server/lease`, a bare array):
 /// the bound ones are connected; the static ones that aren't bound, with a name, last seen within
 /// `max_age` seconds (`None`: none of them), are the offline devices it knows, most recently seen
 /// first, at most [`OFFLINE_MAX`]. Disabled leases are skipped. A lease is named by its comment
@@ -597,24 +679,132 @@ async fn poll_mikrotik(
     Ok(mikrotik_leases(&v, max_age))
 }
 
+/// REQ: FLT-006 (ADR-183) — the addresses whose binding to a MAC can't be trusted to identify a
+/// device, from the fresh routers' connected clients, MACs compared as parsed bytes:
+/// - an address that more than one MAC is reported at (by two routers, or two rows of one);
+/// - every address of a MAC that is reported at two or more addresses (a range extender or a
+///   bridge that shares its MAC);
+/// - an address UniFi gave a connected client from its last-known address (`not_current`).
+///
+/// A stale router's data marks nothing (it is no longer trusted at all: see `rebuild`).
+fn unsure_addresses(
+    parts: &HashMap<String, Polled>,
+    order: &[&String],
+    stale: &HashSet<String>,
+) -> HashSet<Ipv4Addr> {
+    use crate::identify::oui::parse_mac;
+    let fresh = || order.iter().filter(|n| !stale.contains(n.as_str()));
+    // Per address: the first MAC reported (one that doesn't parse counts as its own text, so it
+    // still disagrees with another MAC) and whether a different one was reported too. Per MAC: its
+    // first address and whether it was reported at another. One small entry each, not a set.
+    let mut at: HashMap<Ipv4Addr, (Result<[u8; 6], String>, bool)> = HashMap::new();
+    let mut of: HashMap<[u8; 6], (Ipv4Addr, bool)> = HashMap::new();
+    let mut unsure = HashSet::new();
+    for name in fresh() {
+        let p = &parts[*name];
+        let not_current: HashSet<[u8; 6]> =
+            p.not_current.iter().filter_map(|m| parse_mac(m)).collect();
+        for d in &p.now {
+            let parsed = parse_mac(&d.0);
+            let key = parsed.ok_or_else(|| d.0.trim().to_ascii_lowercase());
+            match at.entry(d.1) {
+                Entry::Occupied(mut e) => {
+                    if e.get().0 != key {
+                        e.get_mut().1 = true;
+                    }
+                }
+                Entry::Vacant(e) => {
+                    e.insert((key, false));
+                }
+            }
+            if let Some(mac) = parsed {
+                match of.entry(mac) {
+                    Entry::Occupied(mut e) => {
+                        if e.get().0 != d.1 {
+                            e.get_mut().1 = true;
+                        }
+                    }
+                    Entry::Vacant(e) => {
+                        e.insert((d.1, false));
+                    }
+                }
+                if not_current.contains(&mac) {
+                    unsure.insert(d.1);
+                }
+            }
+        }
+    }
+    unsure.extend(
+        at.iter()
+            .filter(|(_, (_, differs))| *differs)
+            .map(|(ip, _)| *ip),
+    );
+    for name in fresh() {
+        for d in &parts[*name].now {
+            if parse_mac(&d.0).is_some_and(|mac| of.get(&mac).is_some_and(|(_, many)| *many)) {
+                unsure.insert(d.1);
+            }
+        }
+    }
+    unsure
+}
+
+/// REQ: FLT-006 (ADR-183) — how many of a router's rows carry a MAC that can't identify a device
+/// (empty, all zero, multicast, or in a form that isn't read): such an address is withheld from
+/// identification, and the device falls back to its address, by design.
+pub(crate) fn unusable_macs(seen: &[Device]) -> usize {
+    seen.iter()
+        .filter(|d| crate::devices::usable_mac(&d.0).is_none())
+        .count()
+}
+
 /// The leases view from every router's last answer. REQ: T8.2 (ADR-166) — an offline client
 /// only names an address no router reports as connected, and is marked, so it isn't "seen".
-fn rebuild(parts: &HashMap<String, Polled>, view: &ArcSwap<Leases>) {
+///
+/// REQ: FLT-006 (ADR-183) — the order between routers is fixed, not the `HashMap`'s: stale
+/// routers (silent more than [`STALE_AFTER_S`]) by name, then fresh ones by name, and a later
+/// router names an address over an earlier one (within one router a later row still does for a
+/// connected client, and the first for an offline one, the most recently seen). A binding is
+/// marked `unsure` when [`unsure_addresses`] says so, and every connected lease a stale router
+/// gives is (and is marked `stale` too): it still names the address, but a device there is not
+/// identified by it, and the MAC it names is not counted at that address by anything fresh.
+fn rebuild(parts: &HashMap<String, Polled>, view: &ArcSwap<Leases>, stale: &HashSet<String>) {
     let lease = |d: &Device, offline: bool| Lease {
         mac: d.0.clone(),
         ip: d.1,
         hostname: d.2.clone(),
         expires: 0,
         offline,
+        unsure: false,
+        stale: false,
     };
+    let mut order: Vec<&String> = parts.keys().collect();
+    order.sort_by(|a, b| (!stale.contains(*a), *a).cmp(&(!stale.contains(*b), *b)));
     let mut m = Leases::new();
-    for p in parts.values() {
-        for d in &p.now {
+    // Addresses whose winning (last) connected row is a stale router's.
+    let mut from_stale: HashSet<Ipv4Addr> = HashSet::new();
+    for name in &order {
+        let is_stale = stale.contains(name.as_str());
+        for d in &parts[*name].now {
             m.insert(d.1, lease(d, false));
+            if is_stale {
+                from_stale.insert(d.1);
+            } else {
+                from_stale.remove(&d.1);
+            }
         }
     }
-    for p in parts.values() {
-        for d in &p.offline {
+    let unsure = unsure_addresses(parts, &order, stale);
+    for (ip, l) in &mut m {
+        // A stale router's row is `stale` as well as `unsure`: still withheld on this node, but a
+        // MAC seen only there is not "a MAC at another address" for anything fresh (D5).
+        l.stale = from_stale.contains(ip);
+        l.unsure = unsure.contains(ip) || l.stale;
+    }
+    // Offline clients name only an address no router has connected; the router that comes last
+    // in `order` wins, as for connected ones, and within one router the first row does.
+    for name in order.iter().rev() {
+        for d in &parts[*name].offline {
             m.entry(d.1).or_insert_with(|| lease(d, true));
         }
     }
@@ -635,8 +825,15 @@ pub(crate) async fn run(
     let resolver: Arc<dyn telltale_filter::fetch::Resolve> =
         Arc::new(telltale_filter::fetch::SystemResolver);
     let mut parts: HashMap<String, Polled> = HashMap::new();
+    // REQ: FLT-006 (ADR-183) — when each router last answered, in seconds on this task's
+    // monotonic clock (never the wall clock, which can step), and how stale that makes it.
+    let started = std::time::Instant::now();
+    let mono = || started.elapsed().as_secs();
+    let mut last_ok: HashMap<String, u64> = HashMap::new();
     let mut failing: HashMap<String, bool> = HashMap::new();
     let mut held: HashMap<String, String> = HashMap::new();
+    let mut warned_tls: HashSet<String> = HashSet::new();
+    let mut warned_junk: HashSet<String> = HashSet::new();
     // REQ: API-002, T8.2 (ADR-181) — F5: the routers the last sweep of key files saw.
     let mut swept_for: Option<Vec<RouterConfig>> = None;
     // The routers last read: one removed, or now pointing at another device (type, address,
@@ -661,6 +858,7 @@ pub(crate) async fn run(
                 .any(|r| r.name.as_str() == n && read_with.iter().any(|w| same_device(w, r)))
         };
         parts.retain(|n, _| kept(n));
+        last_ok.retain(|n, _| kept(n));
         failing.retain(|n, _| kept(n));
         read_with.clone_from(&routers);
         let interval = routers
@@ -694,6 +892,7 @@ pub(crate) async fn run(
         for r in &routers {
             if held.contains_key(r.name.as_str()) {
                 parts.remove(r.name.as_str());
+                last_ok.remove(r.name.as_str());
                 failing.remove(r.name.as_str());
                 continue;
             }
@@ -737,7 +936,29 @@ pub(crate) async fn run(
                     if was_failing || !parts.contains_key(r.name.as_str()) {
                         info!(router = %r.name, devices = seen.now.len(), offline = seen.offline.len(), "router integration: devices read");
                     }
+                    // REQ: FLT-006 (ADR-183) — a router whose certificate isn't checked now
+                    // decides which named device an address is: said once per router.
+                    if r.tls_insecure_skip_verify {
+                        let current = sources.pipeline.current();
+                        let clients = &current.policy.clients;
+                        if clients.router_macs()
+                            && clients.uses_macs()
+                            && warned_tls.insert(r.name.to_string())
+                        {
+                            warn!(router = %r.name, "router integration: this router's certificate isn't checked (tls_insecure_skip_verify), and its client list now decides which named device an address is, so anything posing as it could give a device another's rules; set tls_ca (and tls_server_name), or `[clients] router_macs = false`");
+                        }
+                    }
+                    // REQ: FLT-006 (ADR-183) — rows whose MAC can't identify a device withhold
+                    // their address: said once per router, so the fallback can be explained.
+                    if feeds_identification(&sources) && !warned_junk.contains(r.name.as_str()) {
+                        let unusable = unusable_macs(&seen.now);
+                        if unusable > 0 {
+                            warned_junk.insert(r.name.to_string());
+                            info!(router = %r.name, rows = unusable, of = seen.now.len(), "router integration: some devices have a MAC address that can't identify a device (empty, all zero, multicast, or in a form TelltaleDNS doesn't read); those addresses are not recognized by MAC, by design: a device there is recognized by its address or network instead");
+                        }
+                    }
                     parts.insert(r.name.to_string(), seen);
+                    last_ok.insert(r.name.to_string(), mono());
                     failing.insert(r.name.to_string(), false);
                 }
                 Err(e) => {
@@ -752,19 +973,27 @@ pub(crate) async fn run(
                 }
             }
         }
-        rebuild(&parts, &view);
+        rebuild(&parts, &view, &stale_routers(&last_ok, mono()));
         // A router that failed (it may still be booting) is asked again soon.
-        let wait = if failing.values().any(|f| *f) {
-            interval.min(15)
-        } else {
-            interval
-        };
+        let any_failing = failing.values().any(|f| *f);
         // REQ: T8.2 (ADR-181) — until the next read, or sooner when the routers change.
-        let until = tokio::time::Instant::now() + Duration::from_secs(u64::from(wait));
-        while tokio::time::Instant::now() < until {
+        // REQ: FLT-006 (ADR-183) — and, while this node's routers feed identification, within 15
+        // minutes whatever `interval_secs` says (also when a device named by its MAC appears
+        // during a long wait): an answer older than that doesn't say who holds an address.
+        let waited_from = tokio::time::Instant::now();
+        loop {
+            let wait = Duration::from_secs(u64::from(next_poll_secs(
+                any_failing,
+                interval,
+                feeds_identification(&sources),
+            )));
+            let left = (waited_from + wait).saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
             tokio::select! {
                 _ = stop.changed() => return,
-                () = tokio::time::sleep(CHANGE_CHECK.min(until - tokio::time::Instant::now())) => {}
+                () = tokio::time::sleep(CHANGE_CHECK.min(left)) => {}
             }
             // A sweep that couldn't run yet is tried again at each check, without a new round of
             // polls (correctness F3; cheap while the state database isn't open).
@@ -947,6 +1176,7 @@ mod tests {
             Polled {
                 now: vec![dev("aa:00:00:00:00:01", [10, 0, 0, 5], "Desk")],
                 offline: vec![dev("aa:00:00:00:00:02", [10, 0, 0, 9], "Old phone")],
+                not_current: HashSet::new(),
             },
         );
         parts.insert(
@@ -954,10 +1184,11 @@ mod tests {
             Polled {
                 now: Seen::new(),
                 offline: vec![dev("aa:00:00:00:00:03", [10, 0, 0, 5], "Gone laptop")],
+                not_current: HashSet::new(),
             },
         );
         let view = ArcSwap::from_pointee(Leases::new());
-        rebuild(&parts, &view);
+        rebuild(&parts, &view, &HashSet::new());
         let leases = view.load_full();
         let desk = &leases[&Ipv4Addr::new(10, 0, 0, 5)];
         assert_eq!(
@@ -999,7 +1230,7 @@ mod tests {
         );
     }
 
-    /// REQ: T8.2 (ADR-182) — RouterOS durations, both spellings; `never` is no date.
+    /// REQ: T8.2 (ADR-185) — RouterOS durations, both spellings; `never` is no date.
     #[test]
     fn routeros_durations() {
         assert_eq!(
@@ -1014,7 +1245,7 @@ mod tests {
         assert_eq!(routeros_secs("5"), None);
     }
 
-    /// REQ: T8.2 (ADR-182) — MikroTik leases: bound ones are connected (their active address and
+    /// REQ: T8.2 (ADR-185) — MikroTik leases: bound ones are connected (their active address and
     /// MAC), named by the comment over the host name; a static lease not bound now is offline,
     /// kept when named and seen within the window (or never seen), never over a connected
     /// device's address; dynamic leases that aren't bound, and disabled ones, are skipped.
@@ -1093,5 +1324,419 @@ mod tests {
             vec![("00:11:22:33:44:66".into(), Ipv4Addr::new(10, 0, 0, 6), None)]
         );
         assert_eq!(base64(b"key:secret"), "a2V5OnNlY3JldA==");
+    }
+
+    fn dev(mac: &str, ip: [u8; 4], name: &str) -> Device {
+        (mac.to_owned(), Ipv4Addr::from(ip), Some(name.to_owned()))
+    }
+
+    fn polled(now: Vec<Device>) -> Polled {
+        Polled {
+            now,
+            offline: Seen::new(),
+            not_current: HashSet::new(),
+        }
+    }
+
+    fn parts(routers: Vec<(&str, Polled)>) -> HashMap<String, Polled> {
+        routers
+            .into_iter()
+            .map(|(name, p)| (name.to_owned(), p))
+            .collect()
+    }
+
+    /// The view `rebuild` makes of `parts`, with `stale` routers.
+    fn view_of(parts: &HashMap<String, Polled>, stale: &[&str]) -> Leases {
+        let view = ArcSwap::from_pointee(Leases::new());
+        let stale: HashSet<String> = stale.iter().map(|s| (*s).to_owned()).collect();
+        rebuild(parts, &view, &stale);
+        (**view.load()).clone()
+    }
+
+    /// The lease at `ip` and whether it can identify a device.
+    fn at(v: &Leases, ip: [u8; 4]) -> (Option<String>, bool, bool) {
+        let l = &v[&Ipv4Addr::from(ip)];
+        (
+            l.hostname.clone(),
+            l.unsure,
+            crate::devices::eligible(l).is_some(),
+        )
+    }
+
+    /// REQ: FLT-006 (ADR-183) — routers that give one address different MACs (or two rows of one
+    /// router that do) leave it `unsure`: it still names the address, and identifies nothing.
+    /// The same MAC written two ways (`:` and `-`, any case) is the same MAC.
+    #[test]
+    fn flt_006_routers_disagreeing_on_an_address_mark_it_unsure() {
+        let p = parts(vec![
+            (
+                "udm",
+                polled(vec![
+                    dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "Desk"),
+                    dev("aa:bb:cc:00:00:02", [10, 0, 0, 6], "Phone"),
+                    dev("aa:bb:cc:00:00:03", [10, 0, 0, 7], "TV"),
+                    dev("aa:bb:cc:00:00:04", [10, 0, 0, 8], "Old"),
+                    dev("aa:bb:cc:00:00:05", [10, 0, 0, 8], "New"),
+                ]),
+            ),
+            (
+                "opn",
+                polled(vec![
+                    dev("aa:bb:cc:00:00:09", [10, 0, 0, 5], "Other"),
+                    dev("aa-bb-cc-00-00-03", [10, 0, 0, 7], "TV"),
+                ]),
+            ),
+        ]);
+        let v = view_of(&p, &[]);
+        // Two routers, two MACs.
+        assert!(at(&v, [10, 0, 0, 5]).1);
+        assert!(!at(&v, [10, 0, 0, 5]).2);
+        // One MAC, one address: sure.
+        assert_eq!(at(&v, [10, 0, 0, 6]), (Some("Phone".into()), false, true));
+        // The same MAC in two spellings is not a disagreement.
+        assert_eq!(at(&v, [10, 0, 0, 7]), (Some("TV".into()), false, true));
+        // Two rows of one router.
+        assert!(at(&v, [10, 0, 0, 8]).1);
+        assert!(!at(&v, [10, 0, 0, 8]).2);
+    }
+
+    /// REQ: FLT-006 (ADR-183) — UniFi gives a connected client without a current `ip` the address
+    /// it had (`last_ip`): that names the address, but a device there can't be identified by it.
+    #[test]
+    fn flt_006_unifi_client_without_a_current_address_is_unsure() {
+        let sta = serde_json::json!({"data": [
+            {"mac": "AA:BB:CC:00:00:01", "ip": "192.168.1.20", "name": "Desk"},
+            {"mac": "AA:BB:CC:00:00:02", "last_ip": "192.168.1.21", "name": "Phone"},
+            {"mac": "aa:bb:cc:00:00:03", "ip": "", "last_ip": "192.168.1.22", "name": "TV"},
+            {"mac": "aa:bb:cc:00:00:04", "ip": "fe80::1", "fixed_ip": "192.168.1.23",
+             "use_fixedip": true, "name": "NAS"}
+        ]});
+        let not_current = unifi_not_current(&sta);
+        let mut listed: Vec<&str> = not_current.iter().map(String::as_str).collect();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            [
+                "aa:bb:cc:00:00:02",
+                "aa:bb:cc:00:00:03",
+                "aa:bb:cc:00:00:04"
+            ]
+        );
+        let p = parts(vec![(
+            "udm",
+            Polled {
+                now: unifi_clients(&sta),
+                offline: Seen::new(),
+                not_current,
+            },
+        )]);
+        let v = view_of(&p, &[]);
+        assert_eq!(
+            at(&v, [192, 168, 1, 20]),
+            (Some("Desk".into()), false, true),
+            "a client with a current address"
+        );
+        for (ip, name) in [(21, "Phone"), (22, "TV"), (23, "NAS")] {
+            assert_eq!(
+                at(&v, [192, 168, 1, ip]),
+                (Some(name.into()), true, false),
+                "{name} names its address, and identifies nothing there"
+            );
+        }
+    }
+
+    /// REQ: FLT-006, CLU-002 (ADR-183) — the rows a silent router still lists say so, on this node
+    /// and, in the answer a member gives, on the others: `stale` (written only when true, so an
+    /// earlier node reads the old form plus a field it ignores) next to `unsure`. A node that
+    /// reads it counts them toward nothing and withholds nothing for them; the node that owns the
+    /// router keeps the address withheld.
+    #[test]
+    fn flt_006_a_stale_routers_rows_say_so_on_the_wire() {
+        let p = parts(vec![
+            (
+                "udm",
+                polled(vec![dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "Desk")]),
+            ),
+            (
+                "opn",
+                polled(vec![dev("aa:bb:cc:00:00:02", [10, 0, 0, 6], "Phone")]),
+            ),
+        ]);
+        let v = view_of(&p, &["udm"]);
+        let wire = |ip: [u8; 4]| serde_json::to_value(&v[&Ipv4Addr::from(ip)]).unwrap();
+        let stale = wire([10, 0, 0, 5]);
+        assert_eq!(stale["unsure"], true, "{stale}");
+        assert_eq!(stale["stale"], true, "{stale}");
+        let fresh = wire([10, 0, 0, 6]);
+        assert!(
+            fresh.get("stale").is_none() && fresh.get("unsure").is_none(),
+            "{fresh}"
+        );
+    }
+
+    /// REQ: FLT-006 (ADR-183) — a router silent for more than 900 seconds is stale: its bindings
+    /// are `unsure`, and an address another (fresh) router reports is the fresh one's.
+    #[test]
+    fn flt_006_a_router_silent_for_15_minutes_is_unsure() {
+        let last_ok: HashMap<String, u64> =
+            [("udm".to_owned(), 100), ("opn".to_owned(), 900)].into();
+        assert!(stale_routers(&last_ok, 100 + STALE_AFTER_S).is_empty());
+        assert_eq!(
+            stale_routers(&last_ok, 100 + STALE_AFTER_S + 1),
+            HashSet::from(["udm".to_owned()])
+        );
+        assert_eq!(
+            stale_routers(&last_ok, 900 + STALE_AFTER_S + 1).len(),
+            2,
+            "both, later"
+        );
+
+        let p = parts(vec![
+            (
+                "udm",
+                polled(vec![
+                    dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "Desk (stale)"),
+                    dev("aa:bb:cc:00:00:02", [10, 0, 0, 6], "Phone"),
+                ]),
+            ),
+            (
+                "opn",
+                polled(vec![dev(
+                    "aa:bb:cc:00:00:07",
+                    [10, 0, 0, 5],
+                    "Desk (fresh)",
+                )]),
+            ),
+        ]);
+        // Both fresh: .6 is sure (the two routers disagree about .5, which is not this test's).
+        let fresh = view_of(&p, &[]);
+        assert_eq!(
+            at(&fresh, [10, 0, 0, 6]),
+            (Some("Phone".into()), false, true)
+        );
+        assert!(at(&fresh, [10, 0, 0, 5]).1);
+        // udm silent: its lease at .6 is unsure; .5 is the fresh router's, and sure.
+        let stale = view_of(&p, &["udm"]);
+        assert_eq!(
+            at(&stale, [10, 0, 0, 6]),
+            (Some("Phone".into()), true, false)
+        );
+        assert_eq!(
+            at(&stale, [10, 0, 0, 5]),
+            (Some("Desk (fresh)".into()), false, true),
+            "a fresh router's binding for the same address is the one shown, and sure"
+        );
+        // The stale router's other MAC at .5 is no disagreement: stale data marks nothing.
+        let alone = parts(vec![(
+            "udm",
+            polled(vec![dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "Desk")]),
+        )]);
+        assert!(at(&view_of(&alone, &["udm"]), [10, 0, 0, 5]).1);
+        assert!(!at(&view_of(&alone, &[]), [10, 0, 0, 5]).1);
+    }
+
+    /// REQ: FLT-006 (ADR-183) — silence is counted on a monotonic clock with saturating
+    /// arithmetic: a "last answer" after "now" (a clock that stepped) neither panics nor makes a
+    /// router stale.
+    #[test]
+    fn flt_006_silence_survives_a_clock_step() {
+        let last_ok: HashMap<String, u64> = [
+            ("a".to_owned(), 5_000),
+            ("b".to_owned(), u64::MAX),
+            ("c".to_owned(), 0),
+        ]
+        .into();
+        let at_1000 = stale_routers(&last_ok, 1_000);
+        assert!(at_1000.contains("c"), "silent since 0");
+        assert!(!at_1000.contains("a"), "a last answered after now");
+        assert!(!at_1000.contains("b"), "b last answered far after now");
+        assert!(stale_routers(&last_ok, 0).is_empty());
+        assert_eq!(
+            stale_routers(&last_ok, u64::MAX),
+            HashSet::from(["a".to_owned(), "c".to_owned()]),
+            "only the routers that really are silent"
+        );
+    }
+
+    /// REQ: FLT-006 (ADR-183) — what the view says doesn't depend on the order a `HashMap` of
+    /// routers happens to iterate in: stale routers by name, then fresh ones by name, a later
+    /// router naming an address over an earlier one (and, within one router, a later row for a
+    /// connected client, the first for an offline one, as before).
+    #[test]
+    fn flt_006_rebuild_is_deterministic() {
+        for round in 0..32 {
+            // A fresh map each time, with its own random hasher; the insertion order varies too.
+            let mut routers = vec![
+                (
+                    "a-fresh",
+                    Polled {
+                        now: vec![dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "from a")],
+                        offline: vec![
+                            dev("aa:bb:cc:00:00:11", [10, 0, 0, 9], "a first"),
+                            dev("aa:bb:cc:00:00:12", [10, 0, 0, 9], "a second"),
+                        ],
+                        not_current: HashSet::new(),
+                    },
+                ),
+                (
+                    "b-fresh",
+                    Polled {
+                        now: vec![
+                            dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "from b first"),
+                            dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "from b last"),
+                        ],
+                        offline: vec![dev("aa:bb:cc:00:00:13", [10, 0, 0, 9], "b offline")],
+                        not_current: HashSet::new(),
+                    },
+                ),
+                (
+                    "z-stale",
+                    polled(vec![dev(
+                        "aa:bb:cc:00:00:01",
+                        [10, 0, 0, 5],
+                        "from z (stale)",
+                    )]),
+                ),
+            ];
+            if round % 2 == 1 {
+                routers.reverse();
+            }
+            let p: HashMap<String, Polled> = parts(routers);
+            let v = view_of(&p, &["z-stale"]);
+            assert_eq!(
+                v[&Ipv4Addr::new(10, 0, 0, 5)].hostname.as_deref(),
+                Some("from b last"),
+                "round {round}: a fresh router beats a stale one, the later name the earlier, the last row the first"
+            );
+            let off = &v[&Ipv4Addr::new(10, 0, 0, 9)];
+            assert_eq!(
+                (off.hostname.as_deref(), off.offline),
+                (Some("b offline"), true),
+                "round {round}"
+            );
+        }
+        // Within one router the first offline row (the most recently seen) names the address.
+        let one = parts(vec![(
+            "a",
+            Polled {
+                now: Seen::new(),
+                offline: vec![
+                    dev("aa:bb:cc:00:00:11", [10, 0, 0, 9], "newest"),
+                    dev("aa:bb:cc:00:00:12", [10, 0, 0, 9], "older"),
+                ],
+                not_current: HashSet::new(),
+            },
+        )]);
+        assert_eq!(
+            view_of(&one, &[])[&Ipv4Addr::new(10, 0, 0, 9)]
+                .hostname
+                .as_deref(),
+            Some("newest")
+        );
+    }
+
+    /// REQ: FLT-006 (ADR-183) — one MAC at two or more addresses (a range extender or a bridge
+    /// shares its MAC) identifies a device at none of them: every one of its addresses is
+    /// `unsure`, across rows and across fresh routers; another device's address is not.
+    #[test]
+    fn flt_006_one_mac_at_two_addresses_does_not_identify() {
+        let p = parts(vec![
+            (
+                "udm",
+                polled(vec![
+                    dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "Extender"),
+                    dev("AA:BB:CC:00:00:01", [10, 0, 0, 6], "Behind it"),
+                    dev("aa:bb:cc:00:00:02", [10, 0, 0, 7], "Phone"),
+                    dev("aa:bb:cc:00:00:03", [10, 0, 0, 8], "Moved"),
+                ]),
+            ),
+            (
+                "opn",
+                polled(vec![dev("aa-bb-cc-00-00-03", [10, 0, 0, 9], "Moved (opn)")]),
+            ),
+        ]);
+        let v = view_of(&p, &[]);
+        for ip in [5, 6, 8, 9] {
+            let (_, unsure, can) = at(&v, [10, 0, 0, ip]);
+            assert!(unsure && !can, "10.0.0.{ip}");
+        }
+        assert_eq!(at(&v, [10, 0, 0, 7]), (Some("Phone".into()), false, true));
+        // A stale router's second address for a MAC isn't counted against a fresh router.
+        let mixed = parts(vec![
+            (
+                "udm",
+                polled(vec![dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "old address")]),
+            ),
+            (
+                "opn",
+                polled(vec![dev("aa:bb:cc:00:00:01", [10, 0, 0, 6], "new address")]),
+            ),
+        ]);
+        let v = view_of(&mixed, &["udm"]);
+        assert_eq!(
+            at(&v, [10, 0, 0, 6]),
+            (Some("new address".into()), false, true)
+        );
+        assert!(
+            at(&v, [10, 0, 0, 5]).1,
+            "and the stale one is unsure by itself"
+        );
+    }
+
+    /// REQ: FLT-006 (ADR-183) — silence isn't age: a router read once an hour is never silent, yet
+    /// what it says can be an hour old. So while the routers feed identification they are read at
+    /// least every 10 minutes (600 s), whatever `interval_secs` is (and only then: a node that
+    /// identifies no device by MAC reads at the configured pace), so that a read that fails is asked
+    /// again, every 15 s, well inside the 15 minutes (900 s) after which an answer is stale.
+    #[test]
+    fn flt_006_a_router_read_less_often_than_15_minutes_does_not_identify() {
+        // `interval_secs = 3600`: the effective pace is 600 s while they identify, 3600 s otherwise.
+        assert_eq!(next_poll_secs(false, 3600, true), 600);
+        assert_eq!(next_poll_secs(false, 3600, false), 3600);
+        // A shorter interval is kept; a failing router is still asked again at once.
+        assert_eq!(next_poll_secs(false, 300, true), 300);
+        assert_eq!(next_poll_secs(false, 900, true), 600);
+        assert_eq!(next_poll_secs(true, 3600, true), 15);
+        assert_eq!(next_poll_secs(true, 3600, false), 15);
+        assert_eq!(u64::from(IDENTIFY_POLL_MAX_S), 600);
+        assert_eq!(STALE_AFTER_S, 900, "the staleness bound is unchanged");
+        assert!(
+            u64::from(IDENTIFY_POLL_MAX_S) + 15 * 5 <= STALE_AFTER_S,
+            "at least five retries fit between the longest wait and the bound"
+        );
+        // And a binding older than that is unsure: the router that gave it is stale at 901 s.
+        let last_ok: HashMap<String, u64> = [("udm".to_owned(), 0)].into();
+        assert!(stale_routers(&last_ok, STALE_AFTER_S).is_empty());
+        assert!(stale_routers(&last_ok, STALE_AFTER_S + 1).contains("udm"));
+        let p = parts(vec![(
+            "udm",
+            polled(vec![dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "Desk")]),
+        )]);
+        assert_eq!(
+            at(&view_of(&p, &[]), [10, 0, 0, 5]),
+            (Some("Desk".into()), false, true)
+        );
+        assert_eq!(
+            at(&view_of(&p, &["udm"]), [10, 0, 0, 5]),
+            (Some("Desk".into()), true, false)
+        );
+    }
+
+    /// REQ: FLT-006 (ADR-183) — a router's rows whose MAC can't identify a device (empty, all zero,
+    /// multicast, a form that isn't read) are counted, for the log line that says once per router
+    /// why those addresses fall back.
+    #[test]
+    fn flt_006_rows_whose_mac_cannot_identify_are_counted() {
+        let rows = vec![
+            dev("aa:bb:cc:00:00:01", [10, 0, 0, 5], "ok"),
+            dev("AA-BB-CC-00-00-02", [10, 0, 0, 6], "ok too"),
+            dev("", [10, 0, 0, 7], "empty"),
+            dev("00:00:00:00:00:00", [10, 0, 0, 8], "zero"),
+            dev("01:00:5e:00:00:01", [10, 0, 0, 9], "multicast"),
+            dev("aabb.ccdd.eeff", [10, 0, 0, 10], "dotted"),
+        ];
+        assert_eq!(unusable_macs(&rows), 4);
+        assert_eq!(unusable_macs(&rows[..2]), 0);
+        assert_eq!(unusable_macs(&Seen::new()), 0);
     }
 }

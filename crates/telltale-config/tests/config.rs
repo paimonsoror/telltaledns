@@ -543,6 +543,41 @@ expires = "tomorrow"
     }
 }
 
+/// REQ: FLT-005 (GitHub issue #73) — a rule's device is a configured device's name (any case), an
+/// IP, or a CIDR; the refusal says exactly that, in words that tell a named device (`[[client]]`)
+/// from a name a router gives an address.
+#[test]
+fn flt_005_rule_device_refusal_says_what_a_rule_can_name() {
+    let base = r#"
+[[client]]
+name = "Mom phone"
+match = ["192.168.1.20"]
+[[rule]]
+id = "r1"
+action = "block"
+domain = "scan.example.com"
+"#;
+    for ok in [
+        "Mom phone",
+        "mom PHONE",
+        "192.168.1.20",
+        "192.168.1.0/24",
+        "fd00::1",
+    ] {
+        let cfg = format!("{base}devices = [\"{ok}\"]\n");
+        assert!(load_str(&cfg).is_ok(), "{ok} is a rule target");
+    }
+    let errs = load_str(&format!("{base}devices = [\"LGwebOSTV\"]\n")).unwrap_err();
+    let e = errs
+        .iter()
+        .find(|e| e.path == "rule[0].devices[0]")
+        .unwrap_or_else(|| panic!("the device is refused at its path: {errs:?}"));
+    assert_eq!(
+        e.message,
+        "`LGwebOSTV` isn't a named device (`[[client]]`), an IP, or a CIDR"
+    );
+}
+
 /// REQ: OPS-012 (ADR-163) — the watchdog is on by default (60 s, restart, six an hour), and its
 /// limits are checked at their paths.
 #[test]
@@ -1159,7 +1194,7 @@ fn t8_2_routers_are_validated() {
     );
 }
 
-/// REQ: T8.2 (ADR-182) — a MikroTik router needs a username and a password file; over plain
+/// REQ: T8.2 (ADR-185) — a MikroTik router needs a username and a password file; over plain
 /// http it loads, with a warning that the password travels unencrypted.
 #[test]
 fn t8_2_mikrotik_router_is_validated() {
@@ -1488,4 +1523,48 @@ fn api_004_config_check_warns_on_an_empty_break_glass_list() {
         warns("allowed_admin_networks = []").is_empty(),
         "with the flag off the list is not used"
     );
+}
+
+/// REQ: FLT-006, CLU-010 (ADR-183) — `[clients] router_macs`: on unless set, `false` is read and
+/// written, and the default is not written back, so a node on an older build (the section
+/// refuses fields it doesn't know) still reads the shared configuration.
+#[test]
+fn flt_006_router_macs_default_on_and_not_written() {
+    let clients = |toml: &str| load_str(toml).unwrap().config.clients;
+    let written = |c: &telltale_config::ClientsConfig| serde_json::to_value(c).unwrap();
+
+    let default = clients("");
+    assert!(default.router_macs);
+    assert!(
+        written(&default).get("router_macs").is_none(),
+        "{default:?}"
+    );
+    assert!(
+        serde_json::to_value(Config::default()).unwrap()["clients"]
+            .get("router_macs")
+            .is_none()
+    );
+
+    // Other `[clients]` settings leave it on, and still don't write it.
+    let other = clients("[clients]\nmdns = true\n");
+    assert!(other.router_macs);
+    assert!(written(&other).get("router_macs").is_none());
+    let on = clients("[clients]\nrouter_macs = true\n");
+    assert!(on.router_macs);
+    assert!(
+        written(&on).get("router_macs").is_none(),
+        "on is the default"
+    );
+
+    // Off is written, and reads back as off.
+    let off = clients("[clients]\nrouter_macs = false\n");
+    assert!(!off.router_macs);
+    let text = written(&off);
+    assert_eq!(text["router_macs"], false);
+    let back: telltale_config::ClientsConfig = serde_json::from_value(text).unwrap();
+    assert!(!back.router_macs);
+
+    // A typo is still an error with its path.
+    let errs = load_str("[clients]\nrouter_mac = false\n").unwrap_err();
+    assert_eq!(errs.len(), 1, "{errs:?}");
 }

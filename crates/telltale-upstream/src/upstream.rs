@@ -790,13 +790,15 @@ impl Upstream {
         self.timeout.min(adaptive).min(Duration::from_secs(1))
     }
 
-    /// REQ: UPS-006 (ADR-165) — the timeout of an attempt; `patient` for the last healthy
-    /// member a query tries. The adaptive bound in [`Self::attempt_timeout`] exists to give up
-    /// on one member and try another; with none left to try, it would only turn a slow answer
-    /// (a name the upstream had to resolve itself, often several hundred milliseconds to over a
-    /// second) into SERVFAIL. So that attempt may use the query's whole budget, like a
-    /// recursive upstream's; the caller bounds it by what's left. `timeout_ms` (400 ms by
-    /// default) still bounds the attempts that have a member to hand over to.
+    /// REQ: UPS-006 (ADR-165) — the timeout of an attempt; `patient` for an attempt with no
+    /// member to hand over to: the last healthy member a query tries, and with `parallel` each
+    /// healthy member it starts at once. The adaptive bound in [`Self::attempt_timeout`] exists
+    /// to give up on one member and try another; with none to hand over to, it would only turn
+    /// a slow answer (a name the upstream had to resolve itself, often several hundred
+    /// milliseconds to over a second) into SERVFAIL, or throw away the answer of a member that
+    /// races another. So that attempt may use the query's whole budget, like a recursive
+    /// upstream's; the caller bounds it by what's left. `timeout_ms` (400 ms by default) still
+    /// bounds the attempts that have a member to hand over to.
     pub fn timeout_for(&self, patient: bool) -> Duration {
         if patient {
             self.attempt_timeout().max(crate::DEFAULT_BUDGET)
@@ -806,12 +808,14 @@ impl Upstream {
     }
 
     /// How long to wait before hedging to the next upstream (ADR-013): about 3 × EWMA,
-    /// bounded to [20 ms, attempt timeout]; 100 ms until there is data.
+    /// bounded to [20 ms, attempt timeout]; 100 ms until there is data. The attempt timeout
+    /// wins: with a `timeout_ms` under 20 ms, the hedge delay is the attempt timeout.
     pub fn hedge_delay(&self) -> Duration {
         let d = self.health.ewma().map_or(Duration::from_millis(100), |e| {
             e * 3 + Duration::from_millis(10)
         });
-        d.clamp(Duration::from_millis(20), self.attempt_timeout())
+        // REQ: UPS-006 — the floor first, then the attempt timeout, which wins if it's lower.
+        d.max(Duration::from_millis(20)).min(self.attempt_timeout())
     }
 
     /// Open pooled connections (TCP/DoT), for tests and metrics.
@@ -1115,6 +1119,29 @@ mod tests {
         let len = encode_query(&q, 7, &mut buf).unwrap();
         let parsed = telltale_proto::parse_query(&buf[..len]).unwrap();
         assert!(parsed.edns.unwrap().client_subnet().is_none());
+    }
+
+    /// REQ: UPS-006 (ADR-013) — the hedge delay stays within [20 ms, attempt timeout] for every
+    /// `timeout_ms` the config accepts; under 20 ms the attempt timeout is the bound that holds.
+    #[test]
+    fn ups_006_hedge_delay_stays_within_the_attempt_timeout() {
+        const MS: Duration = Duration::from_millis(1);
+        for ms in [1, 10, 19, 20, 21] {
+            // TEST-NET-1 (RFC 5737): nothing is sent to it.
+            let ep = Endpoint::parse("udp://192.0.2.1:53").unwrap();
+            let up = Upstream::new(1, "short", ep, ms * MS, 1).unwrap();
+            // No latency measured yet: 100 ms, bounded by the attempt timeout (`timeout_ms`).
+            assert_eq!(up.attempt_timeout(), ms * MS);
+            assert_eq!(up.hedge_delay(), ms * MS, "timeout_ms = {ms}, no data");
+            // Measured at 1 ms: 3 × 1 + 10 = 13 ms, raised to 20 ms, then bounded by the
+            // attempt timeout.
+            up.health.record(true, MS, Instant::now());
+            assert_eq!(
+                up.hedge_delay(),
+                (20 * MS).min(ms * MS),
+                "timeout_ms = {ms}, measured"
+            );
+        }
     }
 
     /// REQ: OBS-020 (T11.3) — a self-probe carries no loop tag, so this node's own listener

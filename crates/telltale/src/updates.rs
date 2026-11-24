@@ -26,6 +26,16 @@ pub(crate) struct Index {
     pub date: String,
     #[serde(default)]
     pub notes: Option<String>,
+    /// Per target: the asset's name and SHA-256 (REQ: OPS-014 — a pinned install checks it).
+    #[serde(default)]
+    pub assets: std::collections::BTreeMap<String, IndexAsset>,
+}
+
+/// One architecture's binary in [`Index`].
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct IndexAsset {
+    pub name: String,
+    pub sha256: String,
 }
 
 /// Where this build's channel publishes its index (`[updates] index_url` overrides, e.g. a
@@ -41,17 +51,10 @@ fn index_url(override_url: Option<&str>) -> String {
     }
 }
 
-/// `(major, minor, patch, edge run)`; a release sorts after every edge build of its version.
+/// `(major, minor, patch, edge run)`; a release sorts after every edge build of its version
+/// (the same order the cluster's upgrades use, OPS-014).
 fn key(v: &str) -> Option<(u64, u64, u64, u64)> {
-    let (core, pre) = v.split_once('-').unwrap_or((v, ""));
-    let mut it = core.split('.').map(|p| p.parse::<u64>().ok());
-    let (a, b, c) = (it.next()??, it.next()??, it.next()??);
-    let run = if pre.is_empty() {
-        u64::MAX
-    } else {
-        pre.strip_prefix("edge.")?.parse().ok()?
-    };
-    Some((a, b, c, run))
+    telltale_api::update_api::version_key(v)
 }
 
 /// `up_to_date`, `available`, or `newer` for this build against the index's latest.

@@ -1709,7 +1709,7 @@ pub(crate) async fn simulate(
         let body = serde_json::to_vec(&req).unwrap_or_default();
         let deadline = Duration::from_secs(u64::from(w.max_secs)) + PEER_SLACK;
         let calls: Vec<_> = cluster
-            .reachable_peers()
+            .serving_peers()
             .into_iter()
             .map(|peer| {
                 let (c, body) = (Arc::clone(cluster), body.clone());
@@ -1740,7 +1740,16 @@ pub(crate) async fn simulate(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| id.to_owned())
         };
-        for m in cluster.members() {
+        // REQ: CLU-002 (ADR-056) — a witness runs no simulation: one that isn't connected isn't
+        // missing either. The registry is a small file, read off the async task (on failure,
+        // every member: a witness listed, never a node left out).
+        let serving = {
+            let c = Arc::clone(&cluster);
+            tokio::task::spawn_blocking(move || c.serving_members())
+                .await
+                .unwrap_or_else(|_| cluster.members())
+        };
+        for m in serving {
             if !m.connected {
                 missing.push(label(&m.node_id));
             }

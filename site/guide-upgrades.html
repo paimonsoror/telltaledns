@@ -78,7 +78,8 @@ telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge
       <p>For an install made with <code>install.sh</code>:</p>
 <pre><code>sudo telltale self-update --check                 # only look
 sudo telltale self-update --restart               # upgrade and restart
-sudo telltale self-update --channel edge --restart  # builds from main</code></pre>
+sudo telltale self-update --channel edge --restart  # builds from main
+sudo telltale self-update --to 0.8.0 --restart    # one version (older ones too)</code></pre>
       <ul>
         <li>It verifies the signature with the release key built into the binary and checks the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as <code>telltale.old</code>.</li>
         <li><b>Or re-run the installer:</b> <code>sudo sh install.sh</code> upgrades the binary in place. When <code>/etc/telltale/telltale.toml</code> already exists it asks no guided questions and upgrades; your config is kept. One question can still come, in a terminal: if systemd-resolved is running with its stub listener on, it asks whether to turn the stub off (<code>--disable-resolved-stub</code> answers it in advance; without a terminal systemd-resolved is left as it is).</li>
@@ -111,7 +112,22 @@ sudo telltale self-update --channel edge --restart  # builds from main</code></p
     <li><b>A half-upgraded cluster is fine.</b> Versions one cluster protocol apart work together (N and N−1, either way round).</li>
     <li><b>A replica older than its primary keeps working</b>, unless the primary starts using settings the older version doesn't know. Then the replica keeps serving its last version, and its sync status says to upgrade it.</li>
   </ul>
-  <p class="muted">More in <a href="guide-cluster.html#upgrade">Build a cluster</a> and the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
+  <h3 id="from-the-cluster">Let the cluster do it</h3>
+  <p>Native nodes (installed with <code>install.sh</code>) can be upgraded by the cluster, in that order, one at a time. It is off by default: treat it as experimental until you have watched it upgrade a node of yours. Turn on each node's update service once, on its own channel:</p>
+<pre><code>sudo sh install.sh --cluster-updates           # a node on releases
+sudo sh install.sh --edge --cluster-updates    # a node on edge builds (or --stable to move it to releases)</code></pre>
+  <p>Then, with an admin's token:</p>
+<pre><code>telltale ctl --url https://dns.example.com upgrade --to 0.8.0 --dry-run   # the order
+telltale ctl --url https://dns.example.com upgrade --to 0.8.0</code></pre>
+  <ul>
+    <li><b>Every node is checked first</b> (update service on, nothing already running, on a channel that takes the version); then <b>replicas first, the primary last</b>, each done once its update service says it installed the version and passed its health check, and it is back, ready, and in sync. The first failure stops it, and the error is the node's own. Witnesses and containers are left to you, pods to the chart.</li>
+    <li><b>The node's service never gets root.</b> It writes a request; a root update service checks it, installs only a newer build of the node's channel carrying the release signature, restarts the node, and puts the previous binary back if the new one doesn't answer ready within two minutes at the node's API address (<code>install.sh</code> writes it into the service; with the API off the feature isn't available). It never downgrades, and never moves a node to edge builds; an edge node that takes a release stays on edge.</li>
+    <li><b>A rollback is an incident:</b> look at the node before asking again. It refuses that version for 24 hours from that run (and says until when); <code>sudo telltale self-update --to &lt;version&gt; --restart</code> by hand still works. A failure in the downloads (an outage) holds nothing back.</li>
+    <li><b>No maintenance window:</b> the node just restarts, so a node-down alert can fire for a moment.</li>
+    <li><b>With the Helm chart</b>, set <code>upgradeHook.enabled</code>, pin <code>image.tag</code> to a build, and name a token Secret (an agent token with <code>analytics:read</code> and <code>cluster:upgrade</code>): a bump of the chart (or a merged Renovate pull request) upgrades the native nodes first, then the pods. The hook runs on every sync, so a token that expires or is revoked blocks every sync: make it without an expiry, or rotate it in time. Run <code>helm upgrade --timeout 45m</code>.</li>
+    <li><b>Edge builds</b> can be installed this way only while they are the newest on the edge channel. Under Argo CD, a pin that main has passed blocks the sync while a native node is behind it (<code>upgradeHook.whenUnavailable: fail</code>, the default), or leaves that node on its version (<code>skip</code>). Pin a release to avoid both.</li>
+  </ul>
+  <p class="muted">More in <a href="guide-cluster.html#upgrade">Build a cluster</a> and the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#upgrading-from-the-cluster">running guide</a>.</p>
 </section>
 
 <section id="backup">

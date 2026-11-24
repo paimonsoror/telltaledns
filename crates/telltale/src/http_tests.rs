@@ -574,16 +574,63 @@ fn clu_002_device_names_fall_back_to_the_peers() {
         hostname: Some(name.into()),
         expires: 0,
         offline: false,
+        unsure: false,
+        stale: false,
     };
     let name = || crate::api_backend::device_name(&src, ip.to_ipv6_mapped().octets());
     assert_eq!(name(), None);
     src.pipeline.peer_names.store(Arc::new(Names {
         routers: [(ip, lease("k8s"))].into(),
         mdns: std::collections::HashMap::new(),
+        vetted: false,
     }));
     assert_eq!(name().as_deref(), Some("k8s"));
     src.pipeline
         .mdns_names
         .store(Arc::new([(ip, lease("k8s-local"))].into()));
     assert_eq!(name().as_deref(), Some("k8s-local"), "own sources first");
+}
+
+// REQ: FLT-006, OBS-005 (ADR-183) — `telltale_neighbors` counts the kernel's entries only (the
+// routers' and members' are counted apart, by whose router), and the bindings withheld have a
+// gauge of their own.
+#[test]
+fn flt_006_router_macs_metrics() {
+    use telltale_policy::MacTable;
+    let src = sources();
+    let ip = |last: u8| std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, last));
+    let mac = |n: u8| [0x02, 0, 0, 0, 0, n];
+    let before = render(&src);
+    for line in [
+        "telltale_neighbors 0\n",
+        "telltale_router_macs{source=\"router\"} 0\n",
+        "telltale_router_macs{source=\"peer\"} 0\n",
+        "telltale_router_macs_unsure 0\n",
+    ] {
+        assert!(before.contains(line), "{line}: {before}");
+    }
+    src.pipeline.neighbors.swap(MacTable::from_sources(
+        [(ip(1), mac(1)), (ip(2), mac(2)), (ip(3), mac(3))],
+        [(ip(4), mac(4)), (ip(5), mac(5))],
+        [(ip(6), mac(6))],
+        4,
+    ));
+    let text = render(&src);
+    for line in [
+        "telltale_neighbors 3\n",
+        "telltale_router_macs{source=\"router\"} 2\n",
+        "telltale_router_macs{source=\"peer\"} 1\n",
+        "telltale_router_macs_unsure 4\n",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+    assert!(
+        text.contains("# TYPE telltale_router_macs gauge\n")
+            && text.contains("# TYPE telltale_router_macs_unsure gauge\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("0 is normal"),
+        "the neighbor table is read whenever it is on, so 0 is no longer normal: {text}"
+    );
 }

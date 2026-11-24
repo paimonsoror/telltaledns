@@ -15,8 +15,9 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
   `Cargo.toml` and `version` in `deploy/helm/telltale/Chart.yaml` (always equal). `N` is the
   image workflow's run number.
 - Semver sorts `X.Y.Z-edge.N` **below** `X.Y.Z`. So the moment `X.Y.Z` is released, `main`
-  moves to the next version (`X.Y+1.0` by default). Otherwise edge builds would look older than
-  the release, and `helm --devel` and update checks would never offer them.
+  moves to the next version (`X.Y+1.0` by default), through a pull request the release workflow
+  opens (`main` allows changes only through pull requests). Otherwise edge builds would look
+  older than the release, and `helm --devel` and update checks would never offer them.
 - `install.sh` and `telltale self-update` take the **latest release** for `stable` (GitHub's
   `releases/latest`, which skips prereleases) and the `edge` prerelease for `--edge` /
   `--channel edge`. Both verify `SHA256SUMS` against the release key; an unsigned release
@@ -33,12 +34,23 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 2. **Run the workflow:** GitHub → Actions → **release** → Run workflow, version `X.Y.Z`
    (`next` is optional; the default is `X.Y+1.0`).
 3. **Watch two runs:**
-   - **release** (about a minute): preflight, tag, start the tag's build, move `main` on.
+   - **release** (about a minute): preflight, tag, start the tag's build, then open a pull
+     request (branch `release/start-<next>`) that moves `main` on, with CI running on the
+     branch.
    - **image** on ref `vX.Y.Z` (about 30 minutes): build and test every architecture, push
      the image tags, publish the chart, sign and publish the GitHub release, then
      **verify**. The release is done when `verify` is green.
-4. **After:** the README's release badge updates itself. Deployments that follow edge pin
+4. **Merge the pull request** the workflow opened ("chore: start `<next>` development (after
+   vX.Y.Z)"). It can be merged while the tag's build is still running (that build is of the
+   tag, not of `main`). It needs a code owner's approval or an administrator's bypass, like
+   any change to `main`. Once it is merged, CI and the edge build start by themselves and
+   edge builds are named `<next>-edge.N`.
+5. **After:** the README's release badge updates itself. Deployments that follow edge pin
    the next edge chart as usual.
+
+The workflow opens the pull request with its own token, which needs **Settings → Actions →
+General → Allow GitHub Actions to create and approve pull requests**. Without it the branch is
+still pushed and the job fails with a link to open the pull request by hand.
 
 ### What preflight checks
 
@@ -66,9 +78,13 @@ the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `
 - **The tag needs a code fix:** never move or reuse a published tag. Fix on `main`, set the
   version to the patch release (`deploy/release/bump.sh X.Y.Z+1`, commit, push, wait for CI),
   write `notes/vX.Y.Z+1.md`, and release `X.Y.Z+1`. The workflow moves `main` on again.
-- **Moving `main` on fails** (for example, branch protection refuses the workflow's push):
-  the release itself is fine. Run `deploy/release/bump.sh <next>` locally, commit
-  (`chore: start <next> development (after vX.Y.Z)`), and push.
+- **The pull request that moves `main` on isn't opened** (the job's last step fails: usually
+  the setting above is off): the release itself is fine, and the branch `release/start-<next>`
+  is already pushed. Open the pull request from the link in the job's error (or enable the
+  setting and re-run the job). If that isn't possible either, run
+  `deploy/release/bump.sh <next>` locally, commit
+  (`chore: start <next> development (after vX.Y.Z) [OPS-004]`), and push it the way you push
+  to `main` (branch protection's bypass) or through a pull request of your own.
 - **Verify fails:** it prints each check as `ok` or `FAIL`. Registry or "latest" lag gets
   three tries; anything else is a real problem: fix it, then re-run the `verify` job.
 
@@ -76,8 +92,9 @@ the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `
 
 From a machine with push access: `git tag -a vX.Y.Z -m "TelltaleDNS X.Y.Z"` on a commit
 whose CI passed, then `git push origin vX.Y.Z`. A tag pushed by a person starts the image
-workflow by itself. Then run `deploy/release/bump.sh <next>` on `main`, commit, push, and
-check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
+workflow by itself. Then run `deploy/release/bump.sh <next>` on a branch, commit, and open a
+pull request into `main` (or push to `main` as an administrator), and check with
+`deploy/release/verify.sh X.Y.Z` once the tag's build is green.
 
 ## Things that aren't obvious
 

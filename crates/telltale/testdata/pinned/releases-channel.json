@@ -1,0 +1,20 @@
+{
+  "channel": "edge",
+  "version": "9.9.9",
+  "commit": "abc1234",
+  "date": "2026-11-19T00:00:00Z",
+  "assets": {
+    "x86_64-unknown-linux-musl": {
+      "name": "telltale-x86_64-linux",
+      "sha256": "7f312156afb3b05b1f1d9f72e0a5c6bf7b5bb9f6814d64b04dc1afe6137d2ff8"
+    },
+    "aarch64-unknown-linux-musl": {
+      "name": "telltale-aarch64-linux",
+      "sha256": "7f312156afb3b05b1f1d9f72e0a5c6bf7b5bb9f6814d64b04dc1afe6137d2ff8"
+    },
+    "armv7-unknown-linux-musleabihf": {
+      "name": "telltale-armv7-linux",
+      "sha256": "7f312156afb3b05b1f1d9f72e0a5c6bf7b5bb9f6814d64b04dc1afe6137d2ff8"
+    }
+  }
+}

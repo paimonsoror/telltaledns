@@ -1013,6 +1013,16 @@ fn services(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: FLT-005 (T6.12, ADR-067; GitHub issue #73) — can a quick rule name `dev`? A configured
+/// device (`[[client]]`) by its name in any case, or an IP or CIDR; `names` are the configured
+/// devices' names, lowercased. Nothing else is a target, and the answer comes from the
+/// configuration alone, so every node gives the same one: a name a router, mDNS, or another node
+/// gives an address (what the query log shows for a device nobody named) is not a device here.
+#[must_use]
+pub fn rule_device_known<S: std::hash::BuildHasher>(names: &HashSet<String, S>, dev: &str) -> bool {
+    names.contains(&dev.to_ascii_lowercase()) || crate::Cidr::parse(dev).is_ok()
+}
+
 // REQ: FLT-005 (T6.12, ADR-067) — quick rules: a real domain, known groups, devices that are
 // named devices or addresses, a readable expiry, unique IDs, and at most MAX_RULES.
 fn rules(cfg: &Config, r: &mut Report<'_>) {
@@ -1057,12 +1067,10 @@ fn rules(cfg: &Config, r: &mut Report<'_>) {
             );
         }
         for (j, dev) in rule.devices.iter().enumerate() {
-            let known = devices.contains(&dev.to_ascii_lowercase());
-            let address = crate::Cidr::parse(dev).is_ok();
-            if !known && !address {
+            if !rule_device_known(&devices, dev) {
                 r.err(
                     format!("{p}.devices[{j}]"),
-                    format!("`{dev}` is neither a device name nor an IP or CIDR"),
+                    format!("`{dev}` isn't a named device (`[[client]]`), an IP, or a CIDR"),
                 );
             }
         }

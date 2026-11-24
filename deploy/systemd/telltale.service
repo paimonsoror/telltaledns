@@ -18,6 +18,8 @@ TimeoutStopSec=30
 Environment=TELLTALE_LOG=info
 # REQ: OPS-004 (ADR-046) — how this node updates (self-update).
 Environment=TELLTALE_INSTALL=native
+# REQ: OPS-014 (ADR-182) — the update channel it follows (edge or stable), written by install.sh.
+Environment=TELLTALE_UPDATE_CHANNEL=stable
 
 # Port 53 without root: only this capability, nothing else.
 AmbientCapabilities=CAP_NET_BIND_SERVICE

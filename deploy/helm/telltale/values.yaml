@@ -282,6 +282,66 @@ grafanaDashboard:
     grafana_dashboard: "1"
   annotations: {}
 
+# REQ: OPS-014 (ADR-182) — upgrade the cluster's native nodes (installed with install.sh, outside
+# Kubernetes) before this chart rolls its own pods. A pre-upgrade hook Job (Argo CD: PreSync)
+# runs `telltale ctl upgrade --to-self` from the new image: it asks each native node in turn,
+# replicas first, to install the image's version, and waits until it is back, ready, and in
+# sync. A node that fails stops the upgrade, and the pods keep their version. Each node needs
+# its update service on (install.sh --cluster-updates, or systemctl enable --now
+# telltale-update.path). An edge image's build can be installed on the nodes only while it is
+# the newest on the edge channel (see whenUnavailable). Nodes on an older version without this
+# feature are upgraded by hand once, on their own channel (telltale self-update --restart, with
+# --channel edge on an edge node). Helm waits for a hook only `helm upgrade --timeout` (5m by
+# default): give it at least activeDeadlineSeconds (`--timeout 45m`). docs/running.md
+# "Upgrading from the cluster" has the Argo CD notes.
+upgradeHook:
+  enabled: false
+  # A Secret with an agent token (Settings → API tokens → for an AI agent, made by an admin)
+  # that has the scopes analytics:read and cluster:upgrade (analytics:read also reads every
+  # analytics route). The hook runs on every sync and reads the cluster first, so a token that
+  # expires (expires_in_days), is revoked, or stops working ([agents] enabled = false) fails
+  # EVERY sync from then on, a values-only change too: make it without an expiry for this narrow
+  # scope, or set a reminder to rotate it. A first install has no cluster to make the token in:
+  # leave the hook off until the token exists (or create the Secret with a placeholder, which
+  # the hook skips past only while nothing answers yet). A missing Secret fails the hook at
+  # once ("set TELLTALE_TOKEN"). Under Argo CD a PreSync hook runs before the app's own
+  # resources, so the Secret must not be one of them.
+  tokenSecret:
+    name: ""
+    key: token
+  # The API to ask. Default: this release's API Service, over plain HTTP inside the cluster; set
+  # an https:// URL when the API serves TLS ([api] tls), and with a self-signed certificate
+  # name a Secret holding it in caSecret (otherwise the hook can't trust it and fails).
+  url: ""
+  # A Secret with the PEM certificate the API's https:// URL must be checked against (its `key`,
+  # default ca.crt), mounted into the hook and given to ctl as --ca-file.
+  caSecret:
+    name: ""
+    key: ca.crt
+  # How long each node may take to install the version and come back in sync: at least the
+  # update service's longest run (about 15 minutes: the downloads, the restart, the health
+  # check and a rollback).
+  timeout: 15m
+  # Leave nodes that are down out instead of failing. A node that is up but can't take the
+  # request (its update service off, another channel, an update running there) still fails the
+  # hook: that is set up wrong, not down.
+  skipDown: false
+  # When a native node can't fetch the image's edge build any more (main has published a newer
+  # one): `fail` keeps the sync blocked until the pin moves to the newest edge build or a
+  # release; `skip` leaves that node on its version with a loud log line and goes on (the
+  # replicas-first order is lost for that node in that run).
+  whenUnavailable: fail
+  # The whole hook's limit, for every node together: `timeout` for each native node it may
+  # upgrade, plus room for the pre-flight and the pod's start (2700 covers two nodes; raise it,
+  # and helm's --timeout and Argo CD's sync timeout with it, for more).
+  activeDeadlineSeconds: 2700
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
 networkPolicy:
   enabled: false
   # CIDRs allowed to query DNS / reach the UI+API / scrape metrics. Empty: anyone.

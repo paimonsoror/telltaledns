@@ -288,6 +288,60 @@ name = \"pi\"
         assert!(!off.dns.nsid && off.exclusions.names.is_empty());
     }
 
+    // REQ: CLU-010, FLT-006 (ADR-183) — `[clients] router_macs` is shared (identity must agree on
+    // every node) but is not written while it is on: a replica one version behind refuses a
+    // `[clients]` key it doesn't know ("unknown field"), so a primary at the default must send
+    // exactly the keys that replica knows. Off, it is sent and a replica takes it; back on, the
+    // replica reads it as on again, not as its own.
+    #[test]
+    fn clu_010_router_macs_left_out_of_the_shared_part_at_its_default() {
+        let keys = |shared: &Value| -> Vec<String> {
+            let mut k: Vec<String> = shared["clients"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            k.sort_unstable();
+            k
+        };
+        let primary = load("[clients]\ninfrastructure = [\"10.42.0.0/16\"]\n");
+        let shared = shared_part(&primary);
+        assert_eq!(
+            keys(&shared),
+            [
+                "infrastructure",
+                "mdns",
+                "mdns_port",
+                "neighbor_refresh_secs",
+                "neighbor_table",
+                "trust_edns_mac_from"
+            ],
+            "a primary at the default sends no key an older replica doesn't know"
+        );
+
+        // Off at the primary: the key is sent, and a replica (whatever its own file says) takes it.
+        let off = load("[clients]\ninfrastructure = [\"10.42.0.0/16\"]\nrouter_macs = false\n");
+        let shared_off = shared_part(&off);
+        assert_eq!(shared_off["clients"]["router_macs"], false);
+        let merged = with_shared(&load("[node]\nname = \"pi\"\n"), &shared_off).unwrap();
+        assert!(!merged.clients.router_macs);
+
+        // Back at the default: not sent, and the replica reads it as on.
+        let back = with_shared(&merged, &shared).unwrap();
+        assert!(back.clients.router_macs);
+        assert_eq!(back.clients.infrastructure, primary.clients.infrastructure);
+        let own_off = load("[clients]\nrouter_macs = false\n");
+        assert!(
+            with_shared(&own_off, &shared).unwrap().clients.router_macs,
+            "a replica's own `false` gives way to the primary's default"
+        );
+        assert!(
+            ignored_on_replica(&own_off).contains(&"clients".to_owned()),
+            "and the node says its own setting is ignored"
+        );
+    }
+
     #[test]
     fn clu_006_local_sections_stay_and_shared_ones_come_from_the_primary() {
         let primary = load(

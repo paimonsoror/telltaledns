@@ -70,7 +70,7 @@ Common options per upstream: `timeout_ms`, `tls_server_name`, `tls_ca`, `tls_cli
 | `fastest` | Pick the lowest EWMA latency (α=0.2) among healthy members; with probability ε=5%, probe another member to keep stats fresh. |
 | `parallel` | Send to the best `parallel_fanout` members at once; the first valid (NOERROR/NXDOMAIN, passes DNSSEC if enabled) response wins; cancel the others. This is Technitium's "concurrency". |
 
-Retry budget: total query budget 2 s; per-attempt timeout = min(upstream.timeout_ms, adaptive 3 × EWMA + 50 ms, 1000 ms), except the attempt on the last member with a closed breaker, which may use the rest of the budget (ADR-165). A SERVFAIL/REFUSED from an upstream counts as a failure and triggers the next attempt (configurable).
+Retry budget: total query budget 2 s; per-attempt timeout = min(upstream.timeout_ms, adaptive 3 × EWMA + 50 ms, 1000 ms), except the attempt on the last member with a closed breaker, and with `parallel` on each member with a closed breaker among the first `parallel_fanout` (they start together, so none has another to hand over to), which may use the rest of the budget (ADR-165); a probe or last resort (breaker open or half-open) never does. A SERVFAIL/REFUSED from an upstream counts as a failure and triggers the next attempt (configurable).
 
 ## 5. Health and circuit breaking (UPS-006)
 - **Passive:** a rolling window of the last 50 outcomes. If the error rate exceeds 50% with ≥ 10 samples, the breaker goes **open** for 10 s (exponential backoff up to 5 min), then **half-open** (1 probe query). Three failures in a row open it too.

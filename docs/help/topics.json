@@ -213,7 +213,7 @@
       "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups.",
       "when": "You see an address you don't recognize, or want different rules for one device.",
       "example": "Name 192.168.1.42 \"Living room TV\" and add it to the kids group: its history relabels at once.",
-      "caution": "Addresses can change when a device reconnects; match by MAC for devices that don't keep their address (a DHCP reservation also works).",
+      "caution": "Addresses can change when a device reconnects. Name a device by its MAC address and it is followed to its new address wherever your router or this server's neighbor table reports the MAC (a DHCP reservation also works).",
       "docs": "naming-devices-in-the-ui"
     },
     {
@@ -224,6 +224,16 @@
       "when": "Always: a name you'll recognize in a month.",
       "example": "\"Kids tablet\", \"Office printer\", \"Ring doorbell\".",
       "caution": "Names must be unique; renaming keeps the device's groups.",
+      "docs": "naming-devices-in-the-ui"
+    },
+    {
+      "id": "device-mac",
+      "title": "Recognize a device by its MAC address",
+      "term": "MAC address",
+      "summary": "A MAC address is the number a device's network card goes by. Naming a device by it keeps the name, its groups and the rules that name it when the device gets another address, for as long as your router (or this server's own neighbor table) keeps reporting that MAC at one address; naming it by its address doesn't. A router's MAC is followed for IPv4 addresses only, and offered here only while the router has been read within the last 15 minutes (before any device is named by a MAC, with a long read interval, the first naming may have to wait for a fresh read).",
+      "when": "The device's address can change (it isn't reserved in your router) and you want its name and rules to follow it.",
+      "example": "Your kids' tablet is named by 02:00:00:00:00:41; it moves from 192.168.1.20 to 192.168.1.35 and is still the tablet, in the kids group.",
+      "caution": "A phone or laptop's \"private\" Wi-Fi address is made up by the device and can change (per network, or when the network is forgotten): name the device again if it does. A range extender or bridge can show one MAC address for several devices, and a device can copy another's MAC address, so don't name a device by a MAC address for an allowance worth protecting: use a client ID (DoT or DoH), which a MAC address isn't. A block on a device named by its MAC stops applying whenever the MAC isn't vouched for (a private address that changes, an extender, 15 minutes of router silence, a restart): a restriction you must enforce belongs on its network's group, not on a MAC alone.",
       "docs": "naming-devices-in-the-ui"
     },
     {
@@ -530,10 +540,10 @@
       "id": "quick-rules",
       "title": "Allow or block a site for one device or group",
       "term": "Quick rules",
-      "summary": "A quick rule allows or blocks a site (and everything under it) for one device, a group, or everyone, for a while or until you remove it. It decides before any list: a device's rule beats its group's, which beats everyone's. It takes effect on the next query. Press Edit on the Quick rules page to change one; it keeps who made it and when.",
+      "summary": "A quick rule allows or blocks a site (and everything under it) for one device, a group, or everyone, for a while or until you remove it. It decides before any list: a device's rule beats its group's, which beats everyone's. It takes effect on the next query. Press Edit on the Quick rules page to change one; it keeps who made it and when. A rule can be for a device you've named, an IP address, a network, or a group. The name the query log shows for an unnamed device (from your router or the device itself) isn't one of those: the form fills in the address instead, unless TelltaleDNS recognizes the device there, or the log names a device you named whose own IP, network or MAC address could be this one. A Kubernetes workload starts as a rule for its group only where an operator placed it in one.",
       "when": "Unblock a game's server on one phone for an evening; block a site on the kids' tablets until tomorrow; allow something a list blocks by mistake while you report it.",
       "example": "Allow game.example.com for Mom's phone for 2 hours. Block videos.example.com for the kids group until midnight.",
-      "caution": "DNS sees whole sites, not pages, and an app often uses many sites. A rule follows a device only as well as TelltaleDNS recognizes it (give it a fixed address, or turn off its private Wi-Fi address for your network). Devices may keep an old answer for a few minutes, and mobile data, a VPN, or a hard-coded DNS server get around it.",
+      "caution": "DNS sees whole sites, not pages, and an app often uses many sites. A rule for an address stops matching when the address changes: reserve the address in your router, or name the device so you change one place, not every rule. A rule follows a device only as well as TelltaleDNS recognizes it (a private Wi-Fi address changes; turn it off for your network). Devices may keep an old answer for a few minutes, and mobile data, a VPN, or a hard-coded DNS server get around it.",
       "docs": "quick-rules"
     },
     {

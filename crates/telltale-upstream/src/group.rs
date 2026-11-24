@@ -47,6 +47,18 @@ pub enum ResolveError {
     Empty,
 }
 
+/// One position of a query's attempt order.
+#[derive(Clone, Debug)]
+struct Attempt {
+    up: Arc<Upstream>,
+    /// Start the next attempt at once rather than after this one's hedge delay: a probe, an
+    /// exploratory pick, a last resort, or a member whose last attempt failed.
+    hedge_now: bool,
+    /// REQ: UPS-006 (ADR-165) — no member to hand over to: the attempt may use the rest of the
+    /// query's budget ([`Upstream::timeout_for`]).
+    patient: bool,
+}
+
 /// A named set of upstreams with a strategy.
 #[derive(Debug)]
 pub struct Group {
@@ -87,11 +99,22 @@ impl Group {
         self.strategy
     }
 
+    /// REQ: UPS-005 — how many members `parallel` starts at once; none for the strategies that
+    /// try one member at a time.
+    fn racing(&self) -> usize {
+        match self.strategy {
+            Strategy::Parallel { fanout } => fanout.max(1),
+            _ => 0,
+        }
+    }
+
     /// Attempt order: admitted members in strategy order (probes marked), then the rest
-    /// least-recently-failed first as a last resort. Each entry: `(upstream, must_hedge)`.
-    /// Also the position of the last member with a closed breaker, whose attempt is patient
-    /// ([`Upstream::timeout_for`], ADR-165): `None` when every breaker is open or probing.
-    fn attempt_order(&self, now: Instant) -> (Vec<(Arc<Upstream>, bool)>, Option<usize>) {
+    /// least-recently-failed first as a last resort. An attempt is patient
+    /// ([`Upstream::timeout_for`], ADR-165) when its member's breaker is closed and it has no
+    /// member to hand over to: the last such member, and for `parallel` each one among the
+    /// first `fanout`, which start together. None is patient when every breaker is open or
+    /// probing.
+    fn attempt_order(&self, now: Instant) -> Vec<Attempt> {
         let mut ready = Vec::with_capacity(self.members.len());
         let mut rest = Vec::new();
         let mut closed = Vec::with_capacity(self.members.len());
@@ -131,16 +154,26 @@ impl Group {
             Strategy::Failover | Strategy::RoundRobin | Strategy::Weighted => {}
         }
         rest.sort_by_key(|&i| self.members[i].health.last_failure());
-        let patient = ready.iter().rposition(|(i, _)| closed.contains(i));
-        let order = ready
+        let last_closed = ready.iter().rposition(|(i, _)| closed.contains(i));
+        // REQ: UPS-005, UPS-006 (ADR-165) — the adaptive timeout is there to give up on one
+        // member and hand over to the next. `parallel` starts its first `fanout` members at
+        // once, so none of them has anyone to hand over to: cutting one off only throws away
+        // its answer (a name it had to resolve itself) while the other is still waiting.
+        let racing = self.racing();
+        ready
             .into_iter()
-            .map(|(i, hedge)| (Arc::clone(&self.members[i]), hedge))
-            .chain(
-                rest.into_iter()
-                    .map(|i| (Arc::clone(&self.members[i]), true)),
-            )
-            .collect();
-        (order, patient)
+            .enumerate()
+            .map(|(pos, (i, hedge_now))| Attempt {
+                up: Arc::clone(&self.members[i]),
+                hedge_now,
+                patient: closed.contains(&i) && (pos < racing || Some(pos) == last_closed),
+            })
+            .chain(rest.into_iter().map(|i| Attempt {
+                up: Arc::clone(&self.members[i]),
+                hedge_now: true,
+                patient: false,
+            }))
+            .collect()
     }
 
     /// Smooth weighted round robin (nginx algorithm) over the admitted members.
@@ -172,7 +205,7 @@ impl Group {
     /// fallback while other members are tried.
     pub async fn resolve(&self, q: Question, budget: Duration) -> Result<Answer, ResolveError> {
         let start = Instant::now();
-        let (order, patient) = self.attempt_order(start);
+        let order = self.attempt_order(start);
         if order.is_empty() {
             return Err(ResolveError::Empty);
         }
@@ -188,9 +221,14 @@ impl Group {
                       next: &mut usize,
                       attempts: &mut u8|
          -> Option<(Duration, bool)> {
-            let (up, hedge_now) = order.get(*next)?.clone();
-            // REQ: UPS-006 (ADR-165) — the last healthy member has nobody to hand over to.
-            let timeout = up.timeout_for(patient == Some(*next));
+            let Attempt {
+                up,
+                hedge_now,
+                patient,
+            } = order.get(*next)?.clone();
+            // REQ: UPS-006 (ADR-165) — the last healthy member, and `parallel`'s racing ones,
+            // have nobody to hand over to.
+            let timeout = up.timeout_for(patient);
             *next += 1;
             *attempts = attempts.saturating_add(1);
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -204,12 +242,9 @@ impl Group {
             Some((delay, hedge_now))
         };
 
-        // Initial launches: `fanout` members for parallel, else one (plus whatever follows a
+        // Initial launches: `parallel`'s racing members, else one (plus whatever follows a
         // must-hedge probe immediately).
-        let initial = match self.strategy {
-            Strategy::Parallel { fanout } => fanout.max(1),
-            _ => 1,
-        };
+        let initial = self.racing().max(1);
         for _ in 0..initial {
             if let Some((d, _)) = launch(&mut set, &mut next, &mut attempts) {
                 next_hedge = tokio::time::Instant::now() + d;
@@ -265,6 +300,13 @@ impl Group {
                 }
             }
         }
+        // REQ: UPS-006 (ADR-165) — attempts still running when the query ends (at its deadline,
+        // or with only a SERVFAIL or REFUSED in hand) finish in the background, as the losers
+        // above do, so their outcome reaches the health tracker: dropping the set would abort
+        // them, and a silent member would never be benched. Each still ends at its own timeout,
+        // set from what was left of the budget when it started (a retry after a truncated
+        // answer has some time of its own).
+        set.detach_all();
         match fallback {
             Some(mut a) => {
                 a.attempts = attempts;
@@ -277,6 +319,135 @@ impl Group {
                 attempts,
                 last: last_err,
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::endpoint::Endpoint;
+    use crate::health::Breaker;
+
+    const MS: Duration = Duration::from_millis(1);
+
+    /// A member these tests never ask: they only compute the attempt order.
+    fn member(id: u16) -> Arc<Upstream> {
+        // TEST-NET-1 (RFC 5737): nothing is sent to it.
+        let ep = Endpoint::parse("udp://192.0.2.1:53").unwrap();
+        Arc::new(Upstream::new(id, format!("u{id}"), ep, 400 * MS, 1).unwrap())
+    }
+
+    /// Members 1..=n with measured latencies of 10, 20, 30 ms, so `fastest` and `parallel`
+    /// sort them in that order (apart from the 5% exploration).
+    fn members(n: u16, t: Instant) -> Vec<Arc<Upstream>> {
+        (1..=n)
+            .zip([10, 20, 30])
+            .map(|(id, latency)| {
+                let m = member(id);
+                m.health.record(true, latency * MS, t);
+                m
+            })
+            .collect()
+    }
+
+    /// Opens a member's breaker with three failures in a row, for 10 s from `t`.
+    fn open(m: &Upstream, t: Instant) {
+        for _ in 0..3 {
+            m.health.record(false, MS, t);
+        }
+        assert_eq!(m.health.snapshot().breaker, Breaker::Open);
+    }
+
+    /// `(member id, patient)` at each position of the attempt order.
+    fn patience(g: &Group, now: Instant) -> Vec<(u16, bool)> {
+        g.attempt_order(now)
+            .iter()
+            .map(|a| (a.up.id, a.patient))
+            .collect()
+    }
+
+    /// REQ: UPS-005, UPS-006 (ADR-165) — `parallel` starts its first `parallel_fanout` members
+    /// together, so none of them has another to hand over to: every racing member with a closed
+    /// breaker is patient, in whatever order the EWMA (and its 5% exploration) put them. With
+    /// three members and a fanout of 2, the third is patient too, as the last healthy member.
+    #[test]
+    fn ups_005_parallel_racing_members_are_patient() {
+        let t = Instant::now();
+        for n in [2, 3] {
+            let g = Group::new("p", members(n, t), Strategy::Parallel { fanout: 2 });
+            // 200 orders: the exploration swap (5% each) happens in almost every run.
+            for _ in 0..200 {
+                let p = patience(&g, t);
+                assert_eq!(p.len(), usize::from(n));
+                assert!(p.iter().all(|&(_, patient)| patient), "{n} members: {p:?}");
+            }
+        }
+    }
+
+    /// REQ: UPS-006 (ADR-165) — a member whose breaker is open (a last resort) or half-open
+    /// (the probe) is never patient, also in one of `parallel`'s racing slots (with two members
+    /// and a fanout of 2 both slots race, and the initial wave starts both); the members with a
+    /// closed breaker are.
+    #[test]
+    fn ups_006_probe_and_last_resort_never_patient() {
+        let t = Instant::now();
+        for n in [2, 3] {
+            let ups = members(n, t);
+            open(&ups[0], t);
+            let g = Group::new("p", ups, Strategy::Parallel { fanout: 2 });
+            for _ in 0..50 {
+                let p = patience(&g, t);
+                assert_eq!(p.len(), usize::from(n));
+                assert!(
+                    p.iter().all(|&(id, patient)| patient == (id != 1)),
+                    "{n} members, member 1 open: {p:?}"
+                );
+            }
+            // After the 10 s backoff the breaker is half-open: member 1 is admitted once, as
+            // the probe (its 1 ms failures sort it first), then is a last resort again while
+            // that probe is out.
+            let later = t + Duration::from_secs(11);
+            for round in ["the probe", "probe in flight"] {
+                let p = patience(&g, later);
+                assert_eq!(p.len(), usize::from(n));
+                assert!(
+                    p.iter().all(|&(id, patient)| patient == (id != 1)),
+                    "{n} members, member 1 {round}: {p:?}"
+                );
+            }
+        }
+    }
+
+    /// REQ: UPS-006 (ADR-165) — the strategies that try one member at a time keep ADR-165 as it
+    /// was: only the last member with a closed breaker is patient. `failover` exactly; `fastest`
+    /// (which explores), `round_robin` and `weighted` reorder, so for them: exactly one patient
+    /// member, and it is the last one whose breaker is closed.
+    #[test]
+    fn ups_006_one_at_a_time_strategies_patient_only_last_closed() {
+        let t = Instant::now();
+        let ups = members(3, t);
+        let g = Group::new("f", ups.clone(), Strategy::Failover);
+        assert_eq!(patience(&g, t), [(1, false), (2, false), (3, true)]);
+        open(&ups[2], t);
+        assert_eq!(patience(&g, t), [(1, false), (2, true), (3, false)]);
+
+        for strategy in [Strategy::Fastest, Strategy::RoundRobin, Strategy::Weighted] {
+            let ups = members(3, t);
+            open(&ups[1], t);
+            let g = Group::new("o", ups, strategy);
+            for _ in 0..200 {
+                let p = patience(&g, t);
+                let patient: Vec<usize> = p
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| entry.1)
+                    .map(|(pos, _)| pos)
+                    .collect();
+                let last_closed = p.iter().rposition(|&(id, _)| id != 2);
+                assert_eq!(patient.len(), 1, "{strategy:?}: {p:?}");
+                assert_eq!(patient.first().copied(), last_closed, "{strategy:?}: {p:?}");
+            }
         }
     }
 }

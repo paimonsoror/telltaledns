@@ -47,6 +47,16 @@ spec:
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
       {{- end }}
+    {{- if and $np.apiFrom .Values.upgradeHook.enabled }}
+    # REQ: OPS-014 — the upgrade hook asks the API from inside the cluster.
+    - ports:
+        - { port: api, protocol: TCP }
+      from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: upgrade-hook
+    {{- end }}
     {{- if include "telltale.scaled" . }}
     # REQ: CLU-009 — the cluster port: resolver pods and nodes outside Kubernetes join here.
     - ports:

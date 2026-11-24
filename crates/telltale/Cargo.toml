@@ -20,7 +20,7 @@ workspace = true
 socket2 = { version = "0.6.5", features = ["all"] }
 http = "1.5.0"
 base64 = "0.23.1"
-telltale-git = { version = "0.8.0", path = "../telltale-git" }
+telltale-git = { version = "0.9.0", path = "../telltale-git" }
 blake3 = "1.8.7"
 arc-swap = "1.9.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "tower-log"] }
@@ -41,7 +41,7 @@ minisign-verify = "0.3"
 rand = "0.10.3"
 # REQ: API-007 (T6.3) — Pi-hole keeps groups in SQLite (gravity.db) and Teleporter archives
 # are zip / tar.gz. Both crates are already in the tree (telltale-store, telltale-git).
-rusqlite = { version = "0.42", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 miniz_oxide = "0.8"
 # REQ: API-007 (T6.7) — backups are zstd-compressed tar; zstd is already in the tree
 # (telltale-store, telltale-filter).
@@ -57,18 +57,18 @@ webpki-roots = "1.0.9"
 # float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 bytes = "1.12.1"
-telltale-api = { version = "0.8.0", path = "../telltale-api" }
-telltale-cache = { version = "0.8.0", path = "../telltale-cache" }
-telltale-cluster = { version = "0.8.0", path = "../telltale-cluster" }
+telltale-api = { version = "0.9.0", path = "../telltale-api" }
+telltale-cache = { version = "0.9.0", path = "../telltale-cache" }
+telltale-cluster = { version = "0.9.0", path = "../telltale-cluster" }
 telltale-config.workspace = true
 telltale-support = { path = "../telltale-support" }
-telltale-filter = { version = "0.8.0", path = "../telltale-filter" }
-telltale-store = { version = "0.8.0", path = "../telltale-store" }
-telltale-net = { version = "0.8.0", path = "../telltale-net" }
-telltale-policy = { version = "0.8.0", path = "../telltale-policy" }
-telltale-proto = { version = "0.8.0", path = "../telltale-proto" }
-telltale-telemetry = { version = "0.8.0", path = "../telltale-telemetry" }
-telltale-upstream = { version = "0.8.0", path = "../telltale-upstream" }
+telltale-filter = { version = "0.9.0", path = "../telltale-filter" }
+telltale-store = { version = "0.9.0", path = "../telltale-store" }
+telltale-net = { version = "0.9.0", path = "../telltale-net" }
+telltale-policy = { version = "0.9.0", path = "../telltale-policy" }
+telltale-proto = { version = "0.9.0", path = "../telltale-proto" }
+telltale-telemetry = { version = "0.9.0", path = "../telltale-telemetry" }
+telltale-upstream = { version = "0.9.0", path = "../telltale-upstream" }
 # io-std/io-util: `telltale mcp --stdio` (AGT-006).
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util"] }
 toml = "1.1.6"
@@ -77,6 +77,12 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 # REQ: NFR-002 (T10.2) — development-only heap profiling (`--features dhat-heap`); not in
 # release builds or the image.
 dhat = { version = "0.3.3", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# REQ: OPS-014 (ADR-182) — the root update service opens, checks and removes a request relative
+# to its folder, never through a link and without blocking (openat, fstat, unlinkat), with no
+# unsafe code; already in the tree (telltale-cluster, tempfile).
+rustix = { version = "1.1.5", features = ["fs"] }
 
 [features]
 dhat-heap = ["dep:dhat"]

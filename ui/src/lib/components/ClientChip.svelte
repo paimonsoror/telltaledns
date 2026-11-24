@@ -10,6 +10,7 @@
   import ChangePreview from './ChangePreview.svelte';
   import Icon from './Icon.svelte';
   import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
+  import { isMac, listsMac, normMac, sameIp } from '../macKeys';
 
   let {
     ip,
@@ -55,6 +56,42 @@
   // what it was set to be ('' = let TelltaleDNS guess).
   let identity = $state<S['DeviceIdentity'] | null>(null);
   let kind = $state('');
+  // REQ: FLT-006, API-010 (ADR-183) — how this address is recognized now (`identity.recognition`), and
+  // so the MAC address a device here could be named by: a MAC follows the device when its address
+  // changes, an address doesn't. `devices` are the configured devices; `first` is what the form
+  // started with, for when the MAC is chosen and then not.
+  let recognition = $state<S['DeviceRecognition'] | null>(null);
+  let devices = $state<S['ClientInfo'][]>([]);
+  let useMac = $state(false);
+  let first = $state<{ name: string; groups: string[]; kind: string } | null>(null);
+  const mac = $derived(recognition?.mac ? normMac(recognition.mac) : '');
+  /** A configured device that already lists the MAC. */
+  const macHolder = $derived(mac ? (devices.find((d) => listsMac(d.match, mac)) ?? null) : null);
+  /** The device edited doesn't list the MAC, and the one that does is not a configuration file's. */
+  const offerMac = $derived(!!mac && !(existing && listsMac(existing.match, mac)) && macHolder?.source !== 'file');
+  const heldElsewhere = $derived(offerMac && !!macHolder && macHolder.name !== existing?.name);
+  const macChosen = $derived(offerMac && useMac);
+  /** The device the form edits: the one that has the MAC when the MAC is chosen, else the one at this address. */
+  const target = $derived(macChosen && heldElsewhere ? macHolder : existing);
+  const macSource = $derived(recognition?.macFrom === 'neighbor' ? 'seen on this network' : 'from your router');
+  /** What keeps vouching for the MAC, and what it can't follow: the sentence says so, not just that the MAC "follows". */
+  const macVouch = $derived(
+    recognition?.macFrom === 'neighbor'
+      ? "this server's neighbor table still holds this MAC at one address"
+      : 'your router still reports this MAC at one address (IPv4 only)',
+  );
+  /** Why the address, not the MAC, is what the form starts with. */
+  const macReason = $derived(
+    recognition?.macShared
+      ? recognition.macFrom === 'neighbor'
+        ? "This server's neighbor table holds this MAC address at more than one address (a range extender or bridge may share it), so it can't tell these devices apart."
+        : "Your router reports this MAC address at more than one address (a range extender or bridge may share it), so it can't tell these devices apart."
+      : recognition?.macFrom === 'neighbor'
+        ? "Only this server sees this MAC address directly: other servers in your cluster, or one in Docker or Kubernetes, won't recognize the device by it."
+        : '',
+  );
+  /** Who the sentences below talk about. */
+  const who = $derived(macChosen ? `this device (${mac}, now at ${ip})` : ip);
   const article = (p: string) => (/^[aeiou]/i.test(p) ? 'an' : 'a');
   const kinds = ['phone', 'tablet', 'laptop', 'desktop', 'tv', 'streaming', 'speaker', 'console', 'camera', 'doorbell', 'plug', 'bulb', 'thermostat', 'hub', 'vacuum', 'printer', 'nas', 'network', 'appliance', 'wearable', 'car', 'other', 'unknown'];
   let busy = $state(false);
@@ -140,8 +177,16 @@
         api.identity(ip).catch(() => null),
       ]);
       groups = g.items;
-      existing = c.items.find((x) => x.match.includes(ip)) ?? null;
+      devices = c.items;
       identity = id;
+      recognition = id?.recognition ?? null;
+      // The device this address is recognized as (by its address or by a MAC), else the one that lists the address.
+      const named = recognition?.device?.toLowerCase();
+      const byRecognition =
+        named && ['ip', 'neighbor_mac', 'router_mac', 'edns_mac'].includes(recognition?.identifiedBy ?? '')
+          ? c.items.find((x) => x.name.toLowerCase() === named)
+          : undefined;
+      existing = byRecognition ?? c.items.find((x) => x.match.includes(ip)) ?? null;
       const suggested = leases?.items.find((l) => l.ip === ip)?.hostname;
       // A guess only pre-fills the form (owner, 2026-10-09): it never becomes a name by itself.
       const guess = id?.available && id.level !== 'unknown' ? (id.product ?? undefined) : undefined;
@@ -151,11 +196,49 @@
         chosen = [id.suggestedGroup, ...chosen.filter((x) => x !== 'default')];
       }
       kind = existing?.kind ?? '';
+      first = { name: newName, groups: [...chosen], kind };
+      // For a new device the MAC is what the form starts with only when a router reports it, for
+      // this address alone: the kernel's table is this server's (not a cluster's, a pod's or
+      // Docker's), and a shared MAC can't tell devices apart. A device that already exists keeps its
+      // keys unless the MAC is chosen: re-saving it to change a group must not strip its address.
+      useMac = !existing && (recognition?.macFrom === 'router' || recognition?.macFrom === 'peer') && !recognition.macShared;
+      if (target?.name !== existing?.name) fill();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
+  }
+
+  /** The form's fields from the device edited (the one that has the MAC, when the MAC is chosen), or what it started with. */
+  function fill() {
+    const t = target;
+    if (t) {
+      newName = t.name;
+      chosen = [...t.groups];
+      kind = t.kind ?? '';
+    } else if (first) {
+      newName = first.name;
+      chosen = [...first.groups];
+      kind = first.kind;
+    }
+  }
+
+  /** The "Recognize it by" choice: the MAC address, or this address. */
+  function recognizeBy(mac: boolean) {
+    const before = target?.name;
+    useMac = mac;
+    if (target?.name !== before) fill();
+  }
+
+  /**
+   * The keys the device is recognized by: what it has now (or this address, for a new device); with
+   * the MAC chosen, the MAC first and no key for this address, the other keys kept.
+   */
+  function matchFor(): string[] {
+    const base = target ? target.match : [ip];
+    if (!macChosen) return base;
+    return [mac, ...base.filter((k) => !sameIp(k, ip) && !(isMac(k) && normMac(k) === mac))];
   }
 
   function toggle(g: string) {
@@ -166,8 +249,8 @@
   async function simulateChange(): Promise<S['Simulation'] | null | undefined> {
     const n = newName.trim();
     const r = await api.putClient(
-      existing?.name ?? n,
-      { name: n, match: existing ? existing.match : [ip], groups: chosen.length ? chosen : ['default'] },
+      target?.name ?? n,
+      { name: n, match: matchFor(), groups: chosen.length ? chosen : ['default'] },
       true,
       'true',
     );
@@ -184,17 +267,16 @@
     busy = true;
     error = '';
     try {
-      const target = existing?.name ?? n;
-      const r = await api.putClient(target, {
+      const r = await api.putClient(target?.name ?? n, {
         name: n,
-        match: existing ? existing.match : [ip],
+        match: matchFor(),
         groups: chosen.length ? chosen : ['default'],
         kind: kind || undefined,
       });
       done =
         r.recentQueries > 0
           ? `Saved. ${r.recentQueries} recent queries now show “${n}”.`
-          : `Saved. Queries from ${ip} now show “${n}”.`;
+          : `Saved. Queries from ${who} now show “${n}”.`;
       onchanged?.(n);
     } catch (e) {
       error = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
@@ -282,8 +364,8 @@
     {:else}
       <form class="stack" onsubmit={save}>
         <p class="muted small">
-          Queries from <code>{ip}</code> will show this name everywhere, including past ones. The device is
-          recognized by {existing ? existing.match.join(', ') : ip}.
+          Queries from {#if macChosen}this device (<code>{mac}</code>, now at <code>{ip}</code>){:else}<code>{ip}</code>{/if} will show this name
+          everywhere, including past ones. The device is recognized by {matchFor().join(', ')}.
         </p>
         <label>
           Name
@@ -309,12 +391,40 @@
             <label class="check"><input type="checkbox" checked={chosen.includes(g.name)} onchange={() => toggle(g.name)} /> {g.name}</label>
           {/each}
         </fieldset>
+        {#if offerMac}
+          <!-- REQ: FLT-006, API-010 (ADR-183) — a MAC address follows the device when its address changes. -->
+          <fieldset data-testid="recognize-by">
+            <legend>Recognize it by<HelpButton id="device-mac" /></legend>
+            <label class="check">
+              <input type="radio" name="recognize-by" value="mac" checked={useMac} onchange={() => recognizeBy(true)} />
+              <span>Its MAC address, <code>{mac}</code> <span class="muted small">({macSource}): follows the device when its address changes, while {macVouch}</span></span>
+            </label>
+            <label class="check">
+              <input type="radio" name="recognize-by" value="ip" checked={!useMac} onchange={() => recognizeBy(false)} />
+              <span>This address, <code>{ip}</code><span class="muted small">: stops matching if the device gets another address (a DHCP reservation in your router keeps it)</span></span>
+            </label>
+            {#if macReason}<p class="muted small" data-testid="mac-reason">{macReason}</p>{/if}
+            {#if macChosen && heldElsewhere && macHolder}
+              <p class="notice" data-testid="mac-holder">{macHolder.name} already has this MAC address: this changes {macHolder.name}.</p>
+            {/if}
+            {#if macChosen && recognition?.macRandomized}
+              <p class="notice" data-testid="mac-randomized">
+                This is a private Wi-Fi address the device made up. It stays the same on your network unless the device is set to change it or forgets the network; if it changes, name the device again, or turn its private address off for this network.
+              </p>
+            {/if}
+            {#if macChosen && !matchFor().some((k) => !isMac(k) && !k.startsWith('id:'))}
+              <p class="muted small" data-testid="mac-only-limits">
+                With only a MAC address, this device isn't covered by its group's anomaly mutes, change previews and simulations, the Clients page's guess of what it is, or look-ups of its identity and rhythm by name.
+              </p>
+            {/if}
+          </fieldset>
+        {/if}
         {#if newName.trim()}
           <ChangePreview
             highlight="blocked"
             device={newName.trim()}
             name="any site"
-            sentence={`Queries from ${ip} will show “${newName.trim()}”, past ones included, and get the lists of ${chosen.length ? chosen.join(', ') : 'default'}.`}
+            sentence={`Queries from ${who} will show “${newName.trim()}”, past ones included, and get the lists of ${chosen.length ? chosen.join(', ') : 'default'}.`}
             simulate={simulateChange}
           />
         {/if}

@@ -414,7 +414,12 @@ impl Oidc {
     pub fn resource_metadata(&self) -> Option<Value> {
         let m = self.mcp()?;
         let p = self.provider(&m.provider).ok()?;
-        let scopes: Vec<&str> = super::agent::SCOPES.iter().map(|(s, _)| *s).collect();
+        // REQ: AGT-008 (ADR-182) — never a scope an OAuth token may not carry.
+        let scopes: Vec<&str> = super::agent::SCOPES
+            .iter()
+            .map(|(s, _)| *s)
+            .filter(|s| super::agent::oauth_scope(s))
+            .collect();
         Some(serde_json::json!({
             "resource": m.audience,
             "authorization_servers": [p.issuer],
@@ -732,9 +737,12 @@ impl Auth {
                 .collect(),
             _ => Vec::new(),
         };
+        // REQ: AGT-008 (ADR-182) — an identity provider can't grant a scope an OAuth token may not
+        // carry (`cluster:upgrade`): it is dropped as an unknown one is.
         let known: Vec<String> = asked
             .into_iter()
             .filter(|s| s == "config:write:*" || super::agent::SCOPES.iter().any(|(k, _)| k == s))
+            .filter(|s| super::agent::oauth_scope(s))
             .collect();
         let mut scopes = super::agent::parse_scopes(&known).unwrap_or_default();
         if scopes.is_empty() {

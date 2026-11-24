@@ -38,6 +38,7 @@ mod masking;
 mod mcp_stdio;
 mod mdns;
 mod node_removal;
+mod node_update;
 mod otlp;
 mod pihole;
 mod pipeline;
@@ -310,6 +311,20 @@ enum Command {
         /// Restart the `telltale` systemd service after updating.
         #[arg(long)]
         restart: bool,
+        // REQ: OPS-014
+        /// Install this version only: a release (`0.8.0`), or an edge build
+        /// (`0.8.0-edge.393`) while it is the newest on the edge channel. It may be older than
+        /// this one (a downgrade by hand). Sets the channel.
+        #[arg(long, value_name = "VERSION", conflicts_with = "request")]
+        to: Option<String>,
+        // REQ: OPS-014
+        /// The root update service's run (`telltale-update.service`): install the version a
+        /// node's request file asks for, if it is newer, and record the outcome.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["check", "channel"])]
+        request: Option<PathBuf>,
+        /// With `--request`: where to record the outcome (the node reads it).
+        #[arg(long, value_name = "FILE", requires = "request", default_value = node_update::RESULT_PATH)]
+        result: PathBuf,
     },
 }
 
@@ -781,7 +796,17 @@ fn main() -> ExitCode {
             channel,
             check,
             restart,
-        } => Ok(run_self_update(channel, check, restart)),
+            to,
+            request,
+            result,
+        } => Ok(match request {
+            Some(request) => {
+                // REQ: OPS-014 (ADR-182) — the root update service's lines go to its journal.
+                init_journal_logging();
+                run_update_request(&request, &result, restart)
+            }
+            None => run_self_update(channel, check, restart, to),
+        }),
         Command::Import { command } => Ok(run_import(command)),
         Command::Backup { command } => Ok(run_backup(command)),
         Command::Mcp {
@@ -1307,11 +1332,28 @@ fn health(url: &str) -> Result<(), String> {
     }
 }
 
-fn run_self_update(channel: selfupdate::Channel, check: bool, restart: bool) -> ExitCode {
+fn run_self_update(
+    channel: selfupdate::Channel,
+    check: bool,
+    restart: bool,
+    to: Option<String>,
+) -> ExitCode {
+    let to = match to
+        .map(|v| telltale_api::update_api::check_version(&v))
+        .transpose()
+    {
+        Ok(v) => v,
+        Err(p) => {
+            eprintln!("error: {}", p.detail);
+            return ExitCode::FAILURE;
+        }
+    };
+    let channel = to.as_deref().map_or(channel, node_update::channel_for);
     let opts = selfupdate::Options {
         channel,
         check,
         restart,
+        to,
         base_url: None,
         exe: None,
     };
@@ -1320,10 +1362,22 @@ fn run_self_update(channel: selfupdate::Channel, check: bool, restart: bool) -> 
             format!("TelltaleDNS is up to date ({channel:?} channel).")
         }
         Ok(selfupdate::Outcome::Available { sha256 }) => {
+            let again = opts
+                .to
+                .as_deref()
+                .map_or_else(String::new, |v| format!(" --to {v}"));
             format!(
                 "An update is available ({channel:?} channel, sha256 {sha256}).\n\
-                 Install it with: telltale self-update --restart"
+                 Install it with: telltale self-update{again} --restart"
             )
+        }
+        Ok(selfupdate::Outcome::Unavailable { serves, commit }) => {
+            let to = opts.to.as_deref().unwrap_or_default();
+            eprintln!(
+                "error: {}",
+                selfupdate::unavailable_text(to, &serves, &commit)
+            );
+            return ExitCode::FAILURE;
         }
         Ok(selfupdate::Outcome::Updated { previous }) => {
             let mut m = format!(
@@ -1342,6 +1396,181 @@ fn run_self_update(channel: selfupdate::Channel, check: bool, restart: bool) -> 
     };
     let _ = writeln!(io::stdout().lock(), "{msg}");
     ExitCode::SUCCESS
+}
+
+/// REQ: OPS-014 (ADR-182) — the root update service on this host: the signed self-update, the
+/// node's restart, its health, and putting the previous binary back. Its settings come from its
+/// own root-owned unit (written by `install.sh`), never from the request.
+struct RootHost {
+    /// The installed binary (this one), resolved before anything is replaced.
+    exe: Option<PathBuf>,
+    /// The channel set for the node (`TELLTALE_UPDATE_CHANNEL`).
+    channel: Option<String>,
+    /// Where the health gate asks (`TELLTALE_UPDATE_HEALTH_URL`), or why the run is refused.
+    gate: Result<node_update::HealthGate, String>,
+}
+
+impl RootHost {
+    /// This process, as the unit started it.
+    fn from_env() -> Self {
+        let var = |name: &str| match std::env::var(name) {
+            Ok(v) => Some(v),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => Some("\u{fffd}".to_owned()),
+        };
+        Self {
+            exe: std::env::current_exe().and_then(std::fs::canonicalize).ok(),
+            channel: var(telltale_api::update_api::CHANNEL_ENV),
+            gate: node_update::health_gate(
+                var(node_update::HEALTH_URL_ENV).as_deref(),
+                node_update::is_this_host,
+            ),
+        }
+    }
+
+    /// The installed binary, which must sit where root alone can write.
+    fn checked_exe(&self) -> Result<&Path, String> {
+        let exe = self
+            .exe
+            .as_deref()
+            .ok_or("the installed binary's path isn't known")?;
+        node_update::root_owned(exe, 0, Path::new("/"))?;
+        Ok(exe)
+    }
+}
+
+impl node_update::Host for RootHost {
+    fn channel(&self) -> Option<String> {
+        self.channel.clone()
+    }
+
+    fn ready(&mut self) -> Result<(), String> {
+        self.checked_exe()?;
+        self.gate.as_ref().map(|_| ()).map_err(Clone::clone)
+    }
+
+    fn install(&mut self, to: &str) -> Result<selfupdate::Outcome, String> {
+        selfupdate::run(&selfupdate::Options {
+            channel: node_update::channel_for(to),
+            check: false,
+            restart: false,
+            to: Some(to.to_owned()),
+            base_url: None,
+            exe: None,
+        })
+    }
+
+    fn restart(&mut self) -> Result<(), String> {
+        selfupdate::restart_node()
+    }
+
+    /// The node's own health check (`telltale health`), on its readiness for a start
+    /// (`/readyz?startup=1`: maintenance doesn't count) at the address the unit names, passing
+    /// twice in a row, 2 s apart, within [`node_update::HEALTH_WAIT`].
+    fn healthy(&mut self) -> Result<String, String> {
+        let url = match &self.gate {
+            Ok(node_update::HealthGate::Check(url)) => url.clone(),
+            Err(e) => return Err(e.clone()),
+        };
+        let started = std::time::Instant::now();
+        let mut passed = 0;
+        let mut last = String::from("no answer yet");
+        while started.elapsed() < node_update::HEALTH_WAIT {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            match health(&url) {
+                Ok(()) => {
+                    passed += 1;
+                    if passed >= 2 {
+                        return Ok(format!("checked at {url}"));
+                    }
+                }
+                Err(e) => {
+                    passed = 0;
+                    last = e;
+                }
+            }
+        }
+        Err(format!(
+            "not healthy within {} s ({url}: {last})",
+            node_update::HEALTH_WAIT.as_secs()
+        ))
+    }
+
+    fn restore(&mut self, previous: &Path) -> Result<(), String> {
+        let exe = self.checked_exe()?.to_path_buf();
+        std::fs::rename(previous, &exe)
+            .map_err(|e| format!("can't put {} back: {e}", previous.display()))?;
+        // A build that doesn't start makes systemd restart it (`Restart=on-failure`) until the
+        // unit hits its start limit, which would refuse the restart onto the previous binary:
+        // clear it first (nothing to clear is fine).
+        let _ = selfupdate::run_bounded(
+            std::process::Command::new(selfupdate::systemctl())
+                .args(["reset-failed", "telltale"])
+                .env_clear(),
+            node_update::RESET_WAIT,
+        );
+        Ok(())
+    }
+}
+
+/// REQ: OPS-014 (ADR-182) — `telltale self-update --request`: the root update service's run.
+fn run_update_request(request: &Path, result: &Path, restart: bool) -> ExitCode {
+    // Resolved now: once the new binary is in place, this process's own path names it.
+    let mut host = RootHost::from_env();
+    let served = node_update::serve_request(
+        request,
+        result,
+        build_info::VERSION,
+        node_update_now(),
+        restart,
+        &mut host,
+    );
+    let out = |m: String| {
+        let _ = writeln!(io::stdout().lock(), "{m}");
+    };
+    match served {
+        node_update::Served::Nothing => {
+            out(format!("No update request at {}.", request.display()));
+            ExitCode::SUCCESS
+        }
+        node_update::Served::Done { state } => {
+            out(format!(
+                "Update request: {state} (recorded in {}).",
+                result.display()
+            ));
+            // REQ: OPS-014 (ADR-182) — a refusal is the service doing its job, and it is
+            // recorded in the result: exit 0, so a refused request is no failed unit. An install
+            // that failed, was rolled back, or couldn't be fetched is a failure.
+            if node_update::served_ok(&state) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+fn node_update_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// REQ: OPS-014 (ADR-182) — logging for `self-update --request` (the root update service): its
+/// own lines on stderr, which systemd puts in the unit's journal (`journalctl -u
+/// telltale-update`). Nothing else: no support log, no files (the service writes nowhere it
+/// doesn't have to).
+fn init_journal_logging() {
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let console = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(io::stderr);
+    let _ = tracing_subscriber::registry()
+        .with(console.with_filter(tracing::level_filters::LevelFilter::INFO))
+        .try_init();
 }
 
 fn init_logging() {

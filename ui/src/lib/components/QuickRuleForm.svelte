@@ -6,22 +6,49 @@
   // from the rule, saves under its ID (the rule keeps who made it and when), and the end time
   // stays as it was unless a new duration is picked. Pass a snapshot, not the live row: a list
   // that reloads must not reset what the person is typing.
-  import { api, type S } from '../api';
+  // REQ: FLT-005, FLT-017 (GitHub issue #73) — a rule can name a configured device, an IP, or a
+  // CIDR, and nothing else: the names a router or a device gives an address (what the query log
+  // shows for a device nobody named) are refused. So the "Why?" drawer fills in the configured
+  // device the row is, else the address, and says what the log shows for it (never as the value). A
+  // pod's address changes whenever it restarts: a Kubernetes workload an operator placed in a group
+  // (a pod or namespace label, or a rule) starts as a rule for that group; any other starts from the
+  // pod's address and points at "Add to group…", because the group it falls to is its network's (or
+  // `default`) and a rule for that is a rule for every device there. A dry run as you change a
+  // field shows a refusal before Save.
+  import { untrack } from 'svelte';
+  import { api, ApiError, type S } from '../api';
   import { endsAt } from '../format';
   import ErrorNote from './ErrorNote.svelte';
+  import HelpButton from './HelpButton.svelte';
   import SimulationCard from './SimulationCard.svelte';
 
   let {
     domain = '',
     device = '',
     group = '',
+    address = '',
+    seenAs = '',
+    workload = '',
+    workloadFrom = '',
+    known,
     rule,
     onsaved,
     oncancel,
   }: {
     domain?: string;
+    /** What the Device field starts with: the configured device the row is, else the address. */
     device?: string;
     group?: string;
+    /** The address the query came from (the Why? drawer): the form says what it filled in. */
+    address?: string;
+    /** What the query log shows for the address when it is no configured device's name (a router's, mDNS, a peer's). */
+    seenAs?: string;
+    /** The Kubernetes workload the address is a pod of. */
+    workload?: string;
+    /** Where the workload's group came from (`pod_label`, `namespace_label`, `map`, `default_group`, `none`). */
+    workloadFrom?: string;
+    /** The configured devices, when the page has them already (the Why? drawer): the form doesn't ask again. */
+    known?: S['ClientInfo'][];
     rule?: S['RuleInfo'];
     onsaved?: (message: string) => void;
     oncancel?: () => void;
@@ -29,6 +56,30 @@
 
   // One datalist per form: the page can hold the new-rule form and an edit form together.
   const listId = `quick-devices-${Math.random().toString(36).slice(2, 8)}`;
+  // The check's note, which the Device field points at.
+  const checkDomId = `${listId}-check`;
+
+  /** A group an operator put the workload in. */
+  const placedBy: Record<string, string> = {
+    pod_label: 'set by a label on its pods',
+    namespace_label: 'set by a label on its namespace',
+    map: 'set by a rule',
+  };
+  /** Where any other group of a workload comes from. */
+  const otherGroup: Record<string, string> = {
+    default_group: 'the default group for workloads',
+    none: "its network's group",
+  };
+  /** The words for a workload's group, whichever it is. */
+  const origin = (from: string) =>
+    Object.hasOwn(placedBy, from) ? placedBy[from] : Object.hasOwn(otherGroup, from) ? otherGroup[from] : 'its group';
+  // What the log calls a pod is `namespace/kind/name`. When this node's explanation has no workload for
+  // the row, that shape decides nothing about the rule (the field and the scope stay as they were);
+  // it only changes the advice in the label, which is wrong for a pod: its address changes.
+  const podLike = $derived(/^[^/\s]+\/[^/\s]+\/[^/\s]+$/.test(seenAs));
+  // Only a group an operator placed the workload in starts a pod's rule, and never `default`: that is
+  // every device nothing else claims. (`group` is today's group of the workload, not the row's.)
+  const placed = $derived(!!workload && !!group && group !== 'default' && Object.hasOwn(placedBy, workloadFrom));
 
   let action = $state<'allow' | 'block'>('allow');
   let name = $state('');
@@ -57,11 +108,12 @@
     name = domain;
     who = device;
     whichGroup = group;
-    scope = device ? 'device' : group ? 'group' : 'everyone';
+    // A pod starts as a rule for its group only where an operator placed the workload in one.
+    scope = placed ? 'group' : device ? 'device' : group ? 'group' : 'everyone';
   });
   $effect(() => {
     api.groups().then((g) => (groups = g.items)).catch(() => {});
-    api.clients().then((c) => (devices = c.items)).catch(() => {});
+    if (!known) api.clients().then((c) => (devices = c.items)).catch(() => {});
   });
 
   const durations = [
@@ -108,6 +160,38 @@
     return c.simulation;
   }
 
+  // The check as you type: the rule as a dry run, once what it names has settled, so a refusal (a
+  // device a rule can't name) shows before Save, with what to do. Only a refusal of the rule
+  // itself shows (422, 400); anything else waits for Save, which shows it too. Nothing is saved:
+  // a new rule is checked under an ID of its own that is never stored. No check runs until the
+  // person changes a field: what the form was filled in with is valid by construction, and a check
+  // takes a place among the configuration changes and a full validation on the node.
+  const checkId = `r-check-${Math.random().toString(36).slice(2, 8)}`;
+  let checkError = $state<unknown>(null);
+  let checkSeq = 0;
+  let touched = $state(false);
+  const touch = () => (touched = true);
+  $effect(() => {
+    const ready = touched && name.trim() !== '' && (scope === 'device' ? who.trim() !== '' : scope === 'group' ? whichGroup !== '' : true);
+    const mine = ++checkSeq;
+    checkError = null;
+    // A refusal at Save is about the values it was made with: a changed value clears it.
+    if (touched) error = null;
+    if (!ready) return;
+    const body = untrack(ruleBody);
+    const t = setTimeout(() => {
+      api
+        .putRule(rule?.id ?? checkId, body, true)
+        .then(() => {
+          if (mine === checkSeq) checkError = null;
+        })
+        .catch((err) => {
+          if (mine === checkSeq && err instanceof ApiError && (err.status === 422 || err.status === 400)) checkError = err;
+        });
+    }, 400);
+    return () => clearTimeout(t);
+  });
+
   async function save(e: SubmitEvent) {
     e.preventDefault();
     saving = true;
@@ -133,21 +217,30 @@
       <button type="button" aria-pressed={action === 'allow'} onclick={() => (action = 'allow')}>Allow</button>
       <button type="button" aria-pressed={action === 'block'} onclick={() => (action = 'block')}>Block</button>
     </span>
-    <input class="grow mono" aria-label="Domain" placeholder="game.example.com" bind:value={name} required />
+    <input class="grow mono" aria-label="Domain" placeholder="game.example.com" bind:value={name} oninput={touch} required />
   </div>
   <div class="row">
     <label class="small">For
-      <select bind:value={scope} aria-label="Applies to">
+      <select bind:value={scope} onchange={touch} aria-label="Applies to">
         <option value="device">a device</option>
         <option value="group">a group</option>
         <option value="everyone">everyone</option>
       </select>
     </label>
     {#if scope === 'device'}
-      <input aria-label="Device" list={listId} placeholder="device name or IP" bind:value={who} required />
-      <datalist id={listId}>{#each devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
+      <input
+        aria-label="Device"
+        list={listId}
+        placeholder="named device, IP, or network"
+        bind:value={who}
+        oninput={touch}
+        aria-invalid={checkError ? 'true' : undefined}
+        aria-describedby={checkError ? checkDomId : undefined}
+        required
+      />
+      <datalist id={listId}>{#each known ?? devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
     {:else if scope === 'group'}
-      <select aria-label="Group" bind:value={whichGroup} required>
+      <select aria-label="Group" bind:value={whichGroup} onchange={touch} required>
         {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
       </select>
     {/if}
@@ -162,10 +255,49 @@
     <button class="primary" disabled={saving || !name.trim()}>{saving ? 'Saving…' : rule ? 'Save changes' : 'Save rule'}</button>
     {#if rule}<button type="button" class="link" onclick={oncancel}>Cancel</button>{/if}
   </div>
+  {#if !rule && address}
+    <!-- REQ: FLT-005, FLT-017 (issue #73) — what the form filled in, and what the log shows for it. The
+         log's name is a label, said only as what the log shows (its source isn't known here). -->
+    {#if scope === 'group' && workload}
+      <p class="muted small seen" data-testid="quick-rule-seen-as">
+        {#if whichGroup === group}
+          <bdi>{workload}</bdi> is a Kubernetes workload and its pods come and go, so this rule is for its group, <bdi>{whichGroup}</bdi>
+          ({origin(workloadFrom)}): every device in it. For one address instead, choose “a device”.
+        {:else if group}
+          <bdi>{workload}</bdi> is a Kubernetes workload whose group is <bdi>{group}</bdi>. This rule is for <bdi>{whichGroup}</bdi>: every
+          device in it.
+        {:else}
+          This rule is for <bdi>{whichGroup}</bdi>: every device in it.
+        {/if}
+      </p>
+    {:else if scope === 'device' && workload && who.trim() === address}
+      <p class="muted small seen" data-testid="quick-rule-seen-as">
+        {address} is one pod of <bdi>{workload}</bdi>, and a pod's address changes whenever it restarts.
+        {#if placed}For every pod, choose “a group”.{:else}To cover all its pods, put the workload in a group first: click its name in the log,
+          then Add to group…{/if}
+      </p>
+    {:else if scope === 'device' && device !== address && who.trim() === device}
+      <p class="muted small seen" data-testid="quick-rule-seen-as">{address} is your device “<bdi>{device}</bdi>”.</p>
+    {:else if scope === 'device' && who.trim() === address}
+      <p class="muted small seen" data-testid="quick-rule-seen-as">
+        {#if seenAs && seenAs !== address}{address} (shown in the log as <bdi>{seenAs}</bdi>).{/if}
+        {#if podLike}
+          This looks like a Kubernetes pod this node doesn't know about: a pod's address changes whenever it restarts, so use the group an
+          operator placed it in, not the address.
+        {:else}
+          A rule for an address stops matching when the address changes: reserve the address in your router, or name the device so you change
+          one place, not every rule.<HelpButton id="device-name" />
+        {/if}
+      </p>
+    {/if}
+  {/if}
   <p class="muted small">
     Includes subdomains. Decides before any list. Devices may keep an old answer for a few minutes.{#if rule} Saving keeps who made the
     rule and when.{/if}
   </p>
+  <!-- A polite live region that stays in the page, so a refusal that comes and goes while someone types
+       is announced once, and the Device field points at it while it is there. -->
+  <div id={checkDomId} role="status" data-testid="quick-rule-check">{#if !error}<ErrorNote error={checkError} quiet />{/if}</div>
   <ErrorNote {error} />
   {#if saved && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved}</div>{/if}
   {#if name.trim() && (scope !== 'device' || who.trim())}<SimulationCard run={simulateRule} />{/if}
@@ -189,5 +321,9 @@
     display: inline-flex;
     gap: 6px;
     align-items: center;
+  }
+  /* A long name from a router or a device wraps instead of widening the drawer. */
+  .seen {
+    overflow-wrap: anywhere;
   }
 </style>

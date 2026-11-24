@@ -16,6 +16,8 @@
 #
 # Options:
 #   --edge                   follow builds from main instead of tagged releases
+#   --stable                 follow tagged releases (the default). With --cluster-updates on a node
+#                            that runs an edge build, one of --edge or --stable must be given.
 #   --yes                    skip the guided questions: the recommended settings. (In a terminal,
 #                            the one about systemd-resolved's stub listener is still asked,
 #                            unless --disable-resolved-stub answers it.)
@@ -26,6 +28,17 @@
 #                            The install then waits (up to 15 s) for port 53 to be free before
 #                            it starts the service, and says what holds it if it isn't.
 #   --no-start               install but don't enable or start the service
+#   --cluster-updates        let the cluster install newer versions on this node: enables
+#                            telltale-update.path (REQ: OPS-014). Off by default; re-runs keep
+#                            whatever it is. `telltale ctl upgrade` and the Helm chart's
+#                            upgradeHook use it. The units are written for the config's
+#                            [node] data_dir (they watch <data_dir>/update/ only), its [api]
+#                            address (the health check after an update), and the update channel
+#                            (--edge: edge, else the installed version's). Refused when the
+#                            binary's folder isn't root's alone, the data directory is under
+#                            /home or /root or in a folder that isn't root's, the API is off, or
+#                            the node doesn't answer at its [api] address; and on a node that
+#                            runs an edge build unless --edge (stay on edge) or --stable is given.
 #   --uninstall              stop and remove the service, its unit, and the binary; offers to
 #                            restore systemd-resolved if the install changed it, and keeps
 #                            /etc/telltale and /var/lib/telltale unless you say otherwise
@@ -43,6 +56,7 @@ PUBKEY_DEFAULT="RWQSVukPYI4mZximvuqnLSiH56cyTwz6uEWQEFyWDhqvpBHC8DdyYK5T"
 PUBKEY="${TELLTALE_RELEASE_PUBKEY:-$PUBKEY_DEFAULT}"
 PREFIX="${TELLTALE_PREFIX:-/usr/local}"
 CHANNEL=stable
+CHANNEL_FLAG=
 DISABLE_STUB=ask
 START=yes
 INTERACTIVE=auto
@@ -51,15 +65,18 @@ UNINSTALL=no
 PURGE=ask
 RESTORE_RESOLVER=ask
 WAIT_PORT53=no
+CLUSTER_UPDATES=no
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --edge) CHANNEL=edge ;;
+    --edge) CHANNEL=edge; CHANNEL_FLAG=edge ;;
+    --stable) CHANNEL=stable; CHANNEL_FLAG=stable ;;
     --disable-resolved-stub) DISABLE_STUB=yes ;;
     --no-start) START=no ;;
+    --cluster-updates) CLUSTER_UPDATES=yes ;;
     --yes|-y) INTERACTIVE=no ;;
     --interactive) INTERACTIVE=yes ;;
     --config-only) shift; [ $# -gt 0 ] || die "--config-only needs a file"; CONFIG_ONLY=$1 ;;
@@ -184,8 +201,10 @@ uninstall() {
     say "Stopping and removing the telltale service"
     systemctl disable --now telltale >/dev/null 2>&1 || true
   fi
-  rm -f /etc/systemd/system/telltale.service
-  rm -rf /etc/systemd/system/telltale.service.d
+  systemctl disable --now telltale-update.path >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/telltale.service /etc/systemd/system/telltale-update.path \
+    /etc/systemd/system/telltale-update.service
+  rm -rf /etc/systemd/system/telltale.service.d /var/lib/telltale-update
   systemctl daemon-reload
   systemctl reset-failed telltale >/dev/null 2>&1 || true
   rm -f "$PREFIX/bin/telltale" "$PREFIX/bin/telltale.old" "$PREFIX/bin/telltale.new"
@@ -271,6 +290,7 @@ guided() {
   if [ "$CHANNEL" = edge ]; then _d=2; else _d=1; fi
   choose "   Which" "$_d" 2
   if [ "$REPLY" = 2 ]; then CHANNEL=edge; else CHANNEL=stable; fi
+  CHANNEL_FLAG=$CHANNEL
 
   echo
   echo "2. Where answers come from (upstream DNS servers)"
@@ -491,6 +511,137 @@ if ! command -v minisign >/dev/null; then
   command -v minisign >/dev/null || die "minisign is required to verify the download; install it and re-run"
 fi
 
+# BEGIN update-units — REQ: OPS-014 (ADR-182). deploy/systemd/update-units-test.sh cuts this block
+# out and runs it with configs of its own, so keep it self-contained (it needs only $PREFIX).
+# The node's data directory, from its effective config (the binary prints it), or the default when
+# the config names none. The root update service watches and writes only <data_dir>/update/, and
+# the path goes into its units as written, so it must be plain: absolute, of letters, digits, `.`,
+# `_`, `-` and `/`, without `.` or `..` parts. Fails (prints nothing) otherwise. (The character
+# lists are spelled out, not ranges: what a range holds depends on the locale and the shell.)
+update_data_dir() { # config
+  _cfg="$("$PREFIX/bin/telltale" config check "$1" --no-env --print 2>/dev/null)" || return 1
+  _dd="$(printf '%s\n' "$_cfg" | awk '
+    /^\[node\]/ { on = 1; next }
+    /^\[/ { on = 0; next }
+    on && /^data_dir[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*"/, "", v); sub(/".*$/, "", v); print v; exit }')" || return 1
+  [ -n "$_dd" ] || _dd=/var/lib/telltale
+  while [ "${#_dd}" -gt 1 ] && [ "${_dd%/}" != "$_dd" ]; do _dd="${_dd%/}"; done
+  case "$_dd" in /?*) ;; *) return 1 ;; esac
+  case "$_dd" in
+    *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-]*) return 1 ;;
+    */./*|*/../*|*/.|*/..|*//*) return 1 ;;
+  esac
+  printf '%s\n' "$_dd"
+}
+
+# The URL the root update service's health gate asks, from the node's effective [api] (as the
+# install's own readiness wait below asks it): http://<address>:<port>/readyz?startup=1 at the
+# listen address and port, a wildcard bind (0.0.0.0, [::]) asked at loopback. Prints nothing when
+# the API is off ([api] enabled = false: then --cluster-updates is refused). Fails when the
+# config can't be read or its listen address isn't a plain IP address and port.
+update_health_url() { # config
+  _cfg="$("$PREFIX/bin/telltale" config check "$1" --no-env --print 2>/dev/null)" || return 1
+  _api="$(printf '%s\n' "$_cfg" | awk '
+    /^\[api\]/ { on = 1; next }
+    /^\[/ { on = 0; next }
+    on && /^enabled[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]*$/, "", v); en = v }
+    on && /^listen[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*"/, "", v); sub(/".*$/, "", v); li = v }
+    END { if (en == "") en = "true"; if (li == "") li = "0.0.0.0:8053"; print en " " li }')" || return 1
+  _en="${_api%% *}"; _li="${_api#* }"
+  case "$_en" in false) return 0 ;; true) ;; *) return 1 ;; esac
+  _port="${_li##*:}"; _host="${_li%:*}"
+  case "$_port" in ''|0*|*[!0123456789]*) return 1 ;; esac
+  [ "${#_port}" -le 5 ] && [ "$_port" -le 65535 ] || return 1
+  case "$_host" in
+    0.0.0.0) _host=127.0.0.1 ;;
+    '[::]') _host='[::1]' ;;
+    \[*\])
+      _in="${_host#?}"; _in="${_in%?}"
+      case "$_in" in ''|*[!0123456789abcdefABCDEF:.]*) return 1 ;; esac ;;
+    ''|*[!0123456789.]*) return 1 ;;
+  esac
+  printf 'http://%s:%s/readyz?startup=1\n' "$_host" "$_port"
+}
+
+# Whether the folder $1 (its links resolved) and every folder above it belong to root and can't be
+# written by their group or others; prints the first that doesn't. The root update service runs
+# and renames binaries only in such a place, and keeps its request spool only under one.
+update_root_owned() { # dir
+  _p="$(cd "$1" 2>/dev/null && pwd -P)" || { printf '%s\n' "$1"; return 1; }
+  while :; do
+    _st="$(stat -c '%u %a' "$_p" 2>/dev/null)" || { printf '%s\n' "$_p"; return 1; }
+    _mode="${_st#* }"; _o="${_mode#"${_mode%?}"}"; _g="${_mode%?}"; _g="${_g#"${_g%?}"}"
+    if [ "${_st%% *}" != 0 ]; then printf '%s\n' "$_p"; return 1; fi
+    case "$_g$_o" in *[2367]*) printf '%s\n' "$_p"; return 1 ;; esac
+    [ "$_p" != / ] || return 0
+    _p="$(dirname "$_p")"
+  done
+}
+
+# Why --cluster-updates can't be used with the binary in $PREFIX/bin, the data directory $1 and
+# the health check's URL $2, or nothing: the binary's folder must be root's alone, the data
+# directory not under /home or /root, in a folder root's alone (only its update/ folder is the
+# node's to write), and the API on (its /readyz is how the update service sees a new build come up).
+update_refusal() { # data-dir health-url
+  _d="$PREFIX/bin"
+  while [ ! -d "$_d" ]; do _d="$(dirname "$_d")"; done
+  if _bad="$(update_root_owned "$_d")"; then :; else
+    echo "install location is not root-owned: $_bad belongs to another user or can be written by its group or others (on older Debian and Raspberry Pi OS images /usr/local is root:staff 2775: sudo chmod g-w /usr/local /usr/local/bin, or install to a prefix only root can write with TELLTALE_PREFIX)"
+    return 0
+  fi
+  if [ -z "$2" ]; then
+    echo "the update service needs the API: it checks the node's /readyz to see that a new build came up, and [api] enabled = false leaves it nothing to ask (turn the API on, or upgrade this node by hand)"
+    return 0
+  fi
+  case "$1/" in /home/*|/root/*)
+    echo "the data directory $1 is under /home or /root: move [node] data_dir out of the home folders"
+    return 0 ;;
+  esac
+  if _bad="$(update_root_owned "$(dirname "$1")")"; then :; else
+    echo "the data directory's parent folder is not root-owned ($_bad belongs to another user or can be written by its group or others)"
+  fi
+}
+
+# Why --cluster-updates can't go on over the installed binary whose version line is $2, given the
+# channel flag $1 (edge, stable, or empty), or nothing: a node running an edge build needs one of
+# them (without --edge, a re-run installs the newest release: an older version, and the stable
+# channel).
+update_channel_refusal() { # flag version-line
+  [ -z "$1" ] || return 0
+  case "$2" in
+    *-edge.*) echo "this node runs an edge build ($2): pass --edge to stay on edge builds, or --stable to move it to the stable channel (the newest release, which may be older than the edge build you run now)" ;;
+  esac
+}
+
+# The two update units from the folder $1 into the folder $2, for the binary in $PREFIX/bin, the
+# data directory $3, the node's update channel $4 (edge or stable), and the health gate's URL $5
+# (empty only with the API off, which --cluster-updates refuses: the service then installs nothing).
+render_update_units() { # from to data-dir channel health-url
+  for _u in telltale-update.path telltale-update.service; do
+    sed -e "s#/usr/local/bin#$PREFIX/bin#g" -e "s#/var/lib/telltale/update#$3/update#g" \
+      -e "s#^Environment=TELLTALE_UPDATE_CHANNEL=.*#Environment=TELLTALE_UPDATE_CHANNEL=$4#" \
+      -e "s#^Environment=TELLTALE_UPDATE_HEALTH_URL=.*#Environment=TELLTALE_UPDATE_HEALTH_URL=$5#" \
+      "$1/$_u" > "$2/$_u" || return 1
+  done
+}
+# END update-units
+
+# REQ: OPS-014 (ADR-182) — --cluster-updates over an existing install is refused before anything
+# is downloaded or changed when the binary's folder or the data directory isn't fit for a root
+# service (a new install is checked below, once its config exists).
+if [ "$CLUSTER_UPDATES" = yes ] && [ -x "$PREFIX/bin/telltale" ]; then
+  WHY="$(update_channel_refusal "$CHANNEL_FLAG" "$("$PREFIX/bin/telltale" --version 2>/dev/null || true)")"
+  [ -z "$WHY" ] || die "--cluster-updates: $WHY. Nothing was changed."
+fi
+if [ "$CLUSTER_UPDATES" = yes ] && [ -x "$PREFIX/bin/telltale" ] && [ -f /etc/telltale/telltale.toml ]; then
+  DATA_DIR="$(update_data_dir /etc/telltale/telltale.toml)" \
+    || die "--cluster-updates needs [node] data_dir in /etc/telltale/telltale.toml to be a plain absolute path (letters, digits, . _ - /). Nothing was changed."
+  HEALTH_URL_NOW="$(update_health_url /etc/telltale/telltale.toml)" \
+    || die "--cluster-updates needs [api] listen in /etc/telltale/telltale.toml to be a plain IP address and port. Nothing was changed."
+  WHY="$(update_refusal "$DATA_DIR" "$HEALTH_URL_NOW")"
+  [ -z "$WHY" ] || die "--cluster-updates: $WHY. Nothing was changed."
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -r "$TMP"' EXIT
 
@@ -510,7 +661,18 @@ got="$(sha256sum "$TMP/$ASSET" | cut -d' ' -f1)"
 [ "$want" = "$got" ] || die "checksum mismatch for $ASSET: not installing"
 chmod 755 "$TMP/$ASSET"
 "$TMP/$ASSET" --version >/dev/null || die "the downloaded binary doesn't run on this machine"
-say "Verified $("$TMP/$ASSET" --version) (signature and SHA-256)"
+VERSION_LINE="$("$TMP/$ASSET" --version)"
+say "Verified $VERSION_LINE (signature and SHA-256)"
+# REQ: OPS-014 (ADR-182) — the node's update channel, written into its unit and its update
+# service's: with --edge, edge (it stays on edge builds when the cluster gives it a release);
+# otherwise the channel of the version installed.
+if [ "$CHANNEL" = edge ]; then
+  UPDATE_CHANNEL=edge; CHANNEL_FROM="--edge"
+else
+  case "$VERSION_LINE" in *-edge.*) UPDATE_CHANNEL=edge ;; *) UPDATE_CHANNEL=stable ;; esac
+  CHANNEL_FROM="the version installed; --edge sets edge"
+fi
+say "Update channel: $UPDATE_CHANNEL (from $CHANNEL_FROM)"
 
 if ! id telltale >/dev/null 2>&1; then
   say "Creating the telltale system user"
@@ -537,7 +699,33 @@ fi
 UNIT=/etc/systemd/system/telltale.service
 if [ -f "$HERE/telltale.service" ]; then cp "$HERE/telltale.service" "$TMP/telltale.service"
 else fetch "$REPO_RAW/deploy/systemd/telltale.service" "$TMP/telltale.service"; fi
-sed "s#/usr/local/bin/telltale#$PREFIX/bin/telltale#" "$TMP/telltale.service" > "$UNIT"
+sed -e "s#/usr/local/bin/telltale#$PREFIX/bin/telltale#" \
+  -e "s#^Environment=TELLTALE_UPDATE_CHANNEL=.*#Environment=TELLTALE_UPDATE_CHANNEL=$UPDATE_CHANNEL#" \
+  "$TMP/telltale.service" > "$UNIT"
+
+# REQ: OPS-014 (ADR-182) — the root update service for versions the cluster asks for (off until
+# enabled), written for this node's data directory, channel, and API address.
+for u in telltale-update.path telltale-update.service; do
+  if [ -f "$HERE/$u" ]; then cp "$HERE/$u" "$TMP/$u"
+  else fetch "$REPO_RAW/deploy/systemd/$u" "$TMP/$u"; fi
+done
+HEALTH_KNOWN=no
+UPDATE_HEALTH_URL=
+if DATA_DIR="$(update_data_dir /etc/telltale/telltale.toml)" \
+   && UPDATE_HEALTH_URL="$(update_health_url /etc/telltale/telltale.toml)"; then
+  HEALTH_KNOWN=yes
+  if [ "$CLUSTER_UPDATES" = yes ]; then
+    WHY="$(update_refusal "$DATA_DIR" "$UPDATE_HEALTH_URL")"
+    [ -z "$WHY" ] || die "--cluster-updates: $WHY"
+  fi
+  render_update_units "$TMP" /etc/systemd/system "$DATA_DIR" "$UPDATE_CHANNEL" "$UPDATE_HEALTH_URL"
+else
+  systemctl disable --now telltale-update.path >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/telltale-update.path /etc/systemd/system/telltale-update.service
+  [ "$CLUSTER_UPDATES" = no ] \
+    || die "--cluster-updates needs [node] data_dir in /etc/telltale/telltale.toml to be a plain absolute path (letters, digits, . _ - /), and [api] listen a plain IP address and port"
+  say "Updates from the cluster aren't installed: [node] data_dir isn't a plain absolute path (letters, digits, . _ - /), or [api] listen isn't a plain IP address and port"
+fi
 # The first admin, when chosen in the guided setup: its Argon2id hash goes to the service for
 # its first start only (a root-only drop-in, removed once the service is up).
 DROPIN=/etc/systemd/system/telltale.service.d/10-first-admin.conf
@@ -684,6 +872,17 @@ wait_for_port53() { # config
 }
 # END port53-wait
 
+# Whether the node answers where the update service's health gate asks (the API's own address;
+# with the API off, systemd's word that it runs; without a known address, the default one). Here,
+# after the port53-wait block, with the start it serves: portwait-test.sh runs this part of the
+# script on its own (it sets what the script sets before it: HEALTH_KNOWN, UPDATE_HEALTH_URL,
+# UPDATE_CHANNEL, CLUSTER_UPDATES).
+node_ready() {
+  if [ "$HEALTH_KNOWN" = no ]; then "$PREFIX/bin/telltale" health >/dev/null 2>&1
+  elif [ -n "$UPDATE_HEALTH_URL" ]; then "$PREFIX/bin/telltale" health --url "$UPDATE_HEALTH_URL" >/dev/null 2>&1
+  else systemctl is-active --quiet telltale; fi
+}
+
 # systemd-resolved's stub listener holds 127.0.0.53:53, which blocks binding 0.0.0.0:53.
 if systemctl is-active --quiet systemd-resolved 2>/dev/null \
    && ! grep -qs '^DNSStubListener=no' /etc/systemd/resolved.conf /etc/systemd/resolved.conf.d/*.conf; then
@@ -721,26 +920,43 @@ if [ "$START" = yes ]; then
   systemctl enable telltale >/dev/null 2>&1 || true
   systemctl restart telltale
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    "$PREFIX/bin/telltale" health >/dev/null 2>&1 && break
+    node_ready && break
     sleep 1
   done
   if [ -f "$DROPIN" ]; then rm -f "$DROPIN"; systemctl daemon-reload; fi
-  if "$PREFIX/bin/telltale" health >/dev/null 2>&1; then
+  if node_ready; then
     say "TelltaleDNS is running"
+    # REQ: OPS-014 (ADR-182) — on only once the node answers where the update service's health
+    # gate will ask (else every update would be rolled back).
+    if [ "$CLUSTER_UPDATES" = yes ]; then
+      systemctl enable --now telltale-update.path >/dev/null
+      say "Updates from the cluster are on (telltale-update.path, $UPDATE_CHANNEL channel); the health check after each update asks $UPDATE_HEALTH_URL, which answers now"
+    fi
   else
     systemctl --no-pager status telltale | tail -n 15 || true
     if [ "$PORT_BUSY" = yes ]; then echo "Port 53 was still held when the service started (see above): that is the likely reason." >&2; fi
+    if [ "$CLUSTER_UPDATES" = yes ]; then
+      systemctl disable --now telltale-update.path >/dev/null 2>&1 || true
+      echo "Updates from the cluster stay off: ${UPDATE_HEALTH_URL:-the node} didn't answer 200, and the update service's health check would roll every update back. Check [api] listen, and that [access] allowed_networks lets this host in." >&2
+    fi
     die "the service didn't become ready (journalctl -u telltale)"
   fi
   ip="$(hostname -I 2>/dev/null | cut -d' ' -f1)"
   if [ "$ADMIN" = create ]; then first="sign in as $ADMIN_USER"
   else first="sudo -u telltale $PREFIX/bin/telltale auth setup-token -c /etc/telltale/telltale.toml"; fi
+  if [ "$UPDATE_CHANNEL" = edge ]; then by_hand="sudo telltale self-update --channel edge --restart"; again="--edge --cluster-updates"
+  else by_hand="sudo telltale self-update --restart   (--channel edge for builds from main)"; again="--cluster-updates"; fi
   cat <<EOF
 
   Web UI:      http://${ip:-<this machine>}:8053/
   First admin: $first
   Test:        dig @${ip:-127.0.0.1} example.com
-  Updates:     sudo telltale self-update --restart   (--channel edge for builds from main)
+  Updates:     $by_hand
+               or from the cluster: sudo sh install.sh $again
   Then point your router's DHCP DNS setting at ${ip:-this machine}.
 EOF
+elif [ "$CLUSTER_UPDATES" = yes ]; then
+  # REQ: OPS-014 (ADR-182) — not started (--no-start): on, with the check left to the admin.
+  systemctl enable --now telltale-update.path >/dev/null
+  say "WARNING: updates from the cluster are on (telltale-update.path, $UPDATE_CHANNEL channel), but the service isn't running, so its health check couldn't be tried: once it runs, check that curl -fsS '$UPDATE_HEALTH_URL' answers before asking for an update, or every update is rolled back"
 fi

@@ -105,7 +105,7 @@ Shipping uses the same mTLS channel, in batches of columnar blocks (the same enc
 ## 9. Protocol versioning (CLU-010)
 - The cluster RPC uses protobuf with a `protocol_version`; the snapshot manifest has a `schema_version`.
 - A node accepts N and N-1. The primary refuses to emit features unsupported by the oldest connected node and warns in the UI (the "cluster minimum version" concept).
-- Upgrade order: replicas first, then the primary. Helm upgrades handle this via hooks or separate releases.
+- Upgrade order: replicas first, then the primary. Helm upgrades handle this via hooks or separate releases: the chart's `upgradeHook` runs `telltale ctl upgrade` from the new image before the pods roll, which upgrades the native nodes one at a time, replicas first (OPS-014, ADR-182). Witnesses, containers, and a native primary whose replicas are the chart's pods are upgraded by hand (the hook would put that primary before its pod replicas).
 
 ## 10. Test matrix (must pass in CI, see `09`)
 Partition primary ↔ replica for 1 h → DNS keeps serving, and convergence after heal is ≤ 10 s. Kill the primary in witness mode → new primary ≤ 30 s and no dual-writer window (Jepsen-style checker over the change log). Old primary returns with orphaned writes → they appear under Conflicts, and nothing is applied silently. Rolling upgrade N-1 → N with live traffic → 0 failed queries at clients with two DNS servers configured.

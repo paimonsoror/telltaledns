@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# REQ: T8.2, T8.3 — router integrations against fake UniFi OS, OPNsense, and MikroTik RouterOS APIs, and
-# mDNS: a UniFi login (cookie) and its client list (connected, then the offline clients it knows), OPNsense
-# leases with an API key, MikroTik's DHCP leases over REST with a RouterOS user (bound, then static ones
-# offline), the leases in the API, and a device named from the router in the query log. Needs python3, dig, curl.
+# REQ: T8.2, T8.3, FLT-006 (ADR-183) — router integrations against fake UniFi OS, OPNsense, and MikroTik RouterOS
+# APIs, and mDNS: a UniFi login (cookie) and its client list (connected, then the offline clients it knows), OPNsense
+# leases with an API key, MikroTik's DHCP leases over REST with a RouterOS user (bound, then static ones offline),
+# the leases in the API, a device named from the router in the query log, and a device named by the MAC its router
+# reports: a rule for it blocks at the address the router gives it, and the explanation, the identity and the
+# metrics say so. Needs python3, dig, curl. Nothing leaves this machine: the routers are fakes on loopback, and the
+# upstream below is a closed port.
 # Usage: deploy/routers-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -123,6 +126,13 @@ flush_interval_secs = 1
 name = "nas.routers.test"
 type = "A"
 value = "10.0.0.8"
+# Nothing listens here (as in the UI's e2e node): only a blocked or a local name is answered.
+[[upstream]]
+name = "nowhere"
+url = "udp://127.0.0.1:9"
+[[upstream_group]]
+name = "default"
+members = ["nowhere"]
 [[router]]
 name = "udm"
 type = "unifi"
@@ -199,4 +209,51 @@ rows = [r for r in json.load(sys.stdin)["items"] if r["client"] == "127.0.0.2"]
 assert rows and rows[0]["clientName"] == "nas-box", rows[:1]
 print("query log: the mDNS device is named nas-box")
 ' || fail "mDNS naming"
+
+# REQ: FLT-006 (ADR-183) — a device named by a MAC address is recognized by the MAC its router reports
+# for the address (the kernel's neighbor table has no entry for loopback): the fake UniFi gives
+# 127.0.0.1 the MAC 02:00:00:00:00:01. A rule for the device blocks at that address, and not at
+# 127.0.0.2, whose MAC no router reports. Every wait is bounded (the table is rebuilt within seconds).
+put() { # <path> <json>
+  local code
+  code=$(curl -s -o "$E/put.json" -w '%{http_code}' -b "$E/jar" -X PUT -H "x-csrf-token: $CSRF" \
+    -H 'content-type: application/json' -d "$2" "$API$1")
+  [ "$code" = 200 ] || fail "PUT $1 answered $code: $(cat "$E/put.json")"
+}
+put /api/v1/clients/desk '{"match":["02:00:00:00:00:01"],"groups":["default"]}'
+put /api/v1/rules/desk-block '{"action":"block","domain":"blocked.routers.test","devices":["desk"]}'
+ask() { # [dig options] -> the answer, or nothing
+  dig +time=1 +tries=1 +short -p 25992 "$@" @127.0.0.1 blocked.routers.test A 2>/dev/null || true
+}
+ok=
+for _ in $(seq 60); do [ "$(ask)" = 0.0.0.0 ] && { ok=1; break; }; sleep 0.5; done
+[ -n "$ok" ] || fail "the rule for desk (the MAC the router reports for 127.0.0.1) doesn't block 127.0.0.1 within 30 s"
+[ "$(ask -b 127.0.0.2)" != 0.0.0.0 ] || fail "the rule for desk blocks 127.0.0.2, whose MAC no router reports"
+echo "desk is recognized by the MAC its router reports: blocked at 127.0.0.1, not at 127.0.0.2"
+
+curl -sf -b "$E/jar" "$API/api/v1/explain?name=blocked.routers.test&client=127.0.0.1" | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["client"]
+assert c["identifiedBy"] == "router_mac" and c["macFrom"] == "router" and c["device"] == "desk", c
+assert c["mac"] == "02:00:00:00:00:01", c
+print("explain: desk, by router_mac, the MAC from the router")
+' || fail "explain doesn't say the router's MAC identified the client"
+
+# The identity offers the MAC (to a signed-in person) for naming a device by it.
+curl -sf -b "$E/jar" "$API/api/v1/clients/127.0.0.1/identity" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)["recognition"]
+assert r["mac"] == "02:00:00:00:00:01" and r["macFrom"] == "router", r
+assert r["macRandomized"] is True and not r.get("macShared"), r
+assert r["device"] == "desk" and r["identifiedBy"] == "router_mac", r
+print("identity: recognition offers the router MAC, a made-up (private) one")
+' || fail "the identity's recognition"
+
+ok=
+for _ in $(seq 20); do
+  curl -sf "http://127.0.0.1:27992/metrics" | grep -Eq '^telltale_router_macs\{source="router"\} [1-9]' && { ok=1; break; }
+  sleep 0.5
+done
+[ -n "$ok" ] || fail "/metrics has no telltale_router_macs{source=\"router\"} of at least 1"
+echo "metrics: telltale_router_macs{source=\"router\"} >= 1"
 echo "routers-e2e: ok"

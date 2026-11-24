@@ -113,7 +113,9 @@ pub fn drill_slot(cfg: &crate::schema::DrillConfig, node: &str, now: i64) -> Opt
         return None;
     }
     let tz = time_zone(cfg.tz.as_ref().map(crate::types::SafeString::as_str)).ok()?;
-    let z = jiff::Timestamp::from_second(now).ok()?.to_zoned(tz);
+    let z = jiff::Timestamp::from_second(now)
+        .ok()?
+        .to_zoned_datetime(tz);
     let (year, month) = (z.year(), z.month());
     (z.day() == drill_day(node, year, month) && i64::from(z.hour()) == i64::from(cfg.hour))
         .then_some((year, month))
@@ -138,7 +140,7 @@ impl Compiled {
         let Ok(ts) = jiff::Timestamp::from_second(now) else {
             return false;
         };
-        let z = ts.to_zoned(self.tz.clone());
+        let z = ts.to_zoned_datetime(self.tz.clone());
         let day = usize::try_from(z.weekday().to_monday_zero_offset()).unwrap_or(0);
         let minute = u16::try_from(i32::from(z.hour()) * 60 + i32::from(z.minute())).unwrap_or(0);
         self.windows.iter().any(|w| w.contains(day, minute))
@@ -236,7 +238,7 @@ mod tests {
         let at = |d: i8, h: i8| {
             jiff::civil::date(2026, 11, d)
                 .at(h, 30, 0, 0)
-                .to_zoned(TimeZone::UTC)
+                .to_zoned_datetime(TimeZone::UTC)
                 .unwrap()
                 .timestamp()
                 .as_second()
@@ -272,5 +274,127 @@ mod tests {
         let monday_1030 = 1_791_196_200;
         assert!(s.is_on(monday_1030));
         assert!(!s.is_on(monday_1030 + 3600));
+    }
+
+    /// A one-window schedule in the system database's zone `tz`. `None` (the test says it
+    /// skipped) only where there is no time zone database at all: jiff found none in `TZDIR`,
+    /// `/usr/share/zoneinfo`, `/usr/share/lib/zoneinfo` or `/etc/zoneinfo`. With one, any lookup
+    /// error (a zone it can't find or refuses to read) fails the test.
+    fn in_zone(tz: &str, window: &ScheduleWindow) -> Option<Compiled> {
+        if jiff::tz::db().is_definitively_empty() {
+            eprintln!("skipped: no system time zone database here");
+            return None;
+        }
+        let tz = time_zone(Some(tz)).unwrap();
+        Some(Compiled {
+            name: "dst".into(),
+            action: ScheduleAction::BlockAll,
+            lists: Vec::new(),
+            services: Vec::new(),
+            tz,
+            windows: vec![parse_window(window).unwrap()],
+        })
+    }
+
+    /// REQ: FLT-010 — the DST tests below skip only where there is no time zone database at all:
+    /// with one, a zone lookup that fails (here a zone that doesn't exist) fails them instead of
+    /// passing as a skip.
+    #[test]
+    fn flt_010_dst_tests_fail_on_a_lookup_error_when_a_database_exists() {
+        if jiff::tz::db().is_definitively_empty() {
+            eprintln!("skipped: no system time zone database here");
+            return;
+        }
+        let lookup = std::panic::catch_unwind(|| {
+            in_zone("Mars/Olympus_Mons", &w(&["sun"], "02:00", "03:00"))
+        });
+        assert!(
+            lookup.is_err(),
+            "an unknown zone must fail the test, not skip it"
+        );
+    }
+
+    /// The spans `[on, off)` (Unix seconds) in which `s` is on, checked every minute of `[from, to)`.
+    fn on_spans(s: &Compiled, from: i64, to: i64) -> Vec<(i64, i64)> {
+        let (mut spans, mut on) = (Vec::new(), None);
+        for t in (from..to).step_by(60) {
+            match (s.is_on(t), on) {
+                (true, None) => on = Some(t),
+                (false, Some(a)) => {
+                    spans.push((a, t));
+                    on = None;
+                }
+                _ => {}
+            }
+        }
+        spans.extend(on.map(|a| (a, to)));
+        spans
+    }
+
+    /// REQ: FLT-010 — a window is local wall-clock time across daylight saving changes, here
+    /// `America/New_York`'s in 2026 (Sunday 8 March 02:00 EST -> 03:00 EDT, Sunday 1 November
+    /// 02:00 EDT -> 01:00 EST): on the spring day it covers only the local minutes that exist, on
+    /// the autumn day it covers the repeated hour twice. The instants are written out by hand.
+    #[test]
+    fn flt_010_dst_spring_forward_and_fall_back_in_new_york() {
+        // 01:30 to 03:30 on 8 March: on at 01:30 EST (06:30Z), off at 03:30 EDT (07:30Z): one
+        // hour, not two (02:00 to 02:59 doesn't exist). Checked 04:00Z to 10:00Z.
+        let Some(spring) = in_zone("America/New_York", &w(&["sun"], "01:30", "03:30")) else {
+            return;
+        };
+        assert_eq!(
+            on_spans(&spring, 1_772_942_400, 1_772_964_000),
+            [(1_772_951_400, 1_772_955_000)]
+        );
+        // 01:30 to 02:30 on 1 November: on at 01:30 EDT (05:30Z); at 06:00Z it is 01:00 EST,
+        // off until 01:30 EST (06:30Z), then on until 02:30 EST (07:30Z). Checked 04:00Z to 10:00Z.
+        let Some(autumn) = in_zone("America/New_York", &w(&["sun"], "01:30", "02:30")) else {
+            return;
+        };
+        assert_eq!(
+            on_spans(&autumn, 1_793_505_600, 1_793_527_200),
+            [
+                (1_793_511_000, 1_793_512_800),
+                (1_793_514_600, 1_793_518_200)
+            ]
+        );
+    }
+
+    /// REQ: FLT-010 — the same with a half-hour offset and a half-hour change:
+    /// `Australia/Lord_Howe` is +10:30 in winter and +11:00 in summer. In 2026 it goes back on
+    /// Sunday 5 April (02:00 +11:00 -> 01:30 +10:30, at 15:00Z on the 4th) and forward on Sunday
+    /// 4 October (02:00 +10:30 -> 02:30 +11:00, at 15:30Z on the 3rd): the local day is a UTC day
+    /// ahead.
+    #[test]
+    fn flt_010_dst_half_hour_change_on_lord_howe() {
+        // 01:45 to 02:15 on 5 April: on at 01:45 +11:00 (14:45Z); at 15:00Z it is 01:30 +10:30,
+        // off until 01:45 +10:30 (15:15Z), then on until 02:15 +10:30 (15:45Z). Checked 12:00Z
+        // to 18:00Z on the 4th.
+        let Some(autumn) = in_zone("Australia/Lord_Howe", &w(&["sun"], "01:45", "02:15")) else {
+            return;
+        };
+        assert_eq!(
+            on_spans(&autumn, 1_775_304_000, 1_775_325_600),
+            [
+                (1_775_313_900, 1_775_314_800),
+                (1_775_315_700, 1_775_317_500)
+            ]
+        );
+        // 02:00 to 03:00 on 4 October: 01:59 +10:30 (15:29Z) is followed by 02:30 +11:00
+        // (15:30Z), so it is on from 15:30Z to 03:00 +11:00 (16:00Z), half an hour. Checked 12:00Z
+        // to 18:00Z on the 3rd.
+        let Some(spring) = in_zone("Australia/Lord_Howe", &w(&["sun"], "02:00", "03:00")) else {
+            return;
+        };
+        assert_eq!(
+            on_spans(&spring, 1_791_028_800, 1_791_050_400),
+            [(1_791_041_400, 1_791_043_200)]
+        );
+        // A window wholly inside the skipped half hour is never on that day.
+        let Some(gap) = in_zone("Australia/Lord_Howe", &w(&["sun"], "02:00", "02:30")) else {
+            return;
+        };
+        let never: [(i64, i64); 0] = [];
+        assert_eq!(on_spans(&gap, 1_791_028_800, 1_791_050_400), never);
     }
 }

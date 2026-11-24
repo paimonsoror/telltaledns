@@ -6,10 +6,10 @@
 //! offset, abbreviation and daylight-saving flag agree with the host's for every zone (weekly) and
 //! for twelve zones with every kind of rule (every six hours), from 2020 to 2075.
 //!
-//! It is `fat`, not `slim`, because jiff 0.2.37 refuses one slim file: `America/Ojinaga` from
-//! tzdata 2025b ("expected last transition in `TZif` file to have DST offset matching the offset
-//! derived from the POSIX time zone transition rule"), so a schedule in that zone would fail. The
-//! first check below is the one that found it.
+//! It is `fat`, not `slim`, because jiff refuses one slim file (0.2.37 did, and 1.0.1 still does):
+//! `America/Ojinaga` from tzdata 2025b ("expected last transition in `TZif` file to have DST
+//! offset matching the offset derived from the POSIX time zone transition rule"), so a schedule in
+//! that zone would fail. The first check below is the one that found it.
 //!
 //! It needs `zic` and the system's `tzdata.zi`; where they aren't installed it says so and passes.
 

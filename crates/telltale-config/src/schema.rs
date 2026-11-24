@@ -1267,7 +1267,10 @@ pub struct RouterConfig {
     /// Skip certificate verification (dangerous; logs a warning).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tls_insecure_skip_verify: bool,
-    /// Seconds between reads.
+    /// Seconds between reads. While a device is named by its MAC address and `[clients]
+    /// router_macs` is on, the MACs a router lists identify devices, so it is read at least
+    /// every 600 seconds whatever this says (a list older than 900 seconds doesn't say who
+    /// holds an address, and a read that fails is asked again within that time).
     #[serde(default = "default_router_interval")]
     pub interval_secs: u32,
     /// UniFi and MikroTik: also name the clients that are offline now, if the router saw them
@@ -1301,7 +1304,7 @@ const fn is_default_offline_days(d: &u32) -> bool {
 pub enum RouterKind {
     Unifi,
     Opnsense,
-    /// REQ: T8.2 (ADR-182) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.
+    /// REQ: T8.2 (ADR-185) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.
     Mikrotik,
 }
 
@@ -1593,6 +1596,27 @@ pub struct ClientsConfig {
     pub mdns: bool,
     /// The mDNS port (5353; shared with avahi or the OS responder).
     pub mdns_port: u16,
+    /// REQ: FLT-006 (ADR-183) — recognize a device named by its MAC address (`[[client]]`
+    /// `match = ["aa:bb:cc:dd:ee:ff"]`) from the client lists of the routers (`[[router]]`) as
+    /// well as from this host's neighbor table: the MAC a router reports for an address, on this
+    /// node and on the cluster's other full members. That is what lets a device named by its MAC
+    /// keep its name, groups and rules when its address changes, also in a Docker bridge, a
+    /// Kubernetes pod or another VLAN, where the neighbor table sees nothing. On by default;
+    /// `false` keeps to the neighbor table and trusted EDNS MACs. The cluster shares it, so every
+    /// node identifies devices the same way, and it is not written while it is on: set it to
+    /// `false` only once every node runs this version (an older node refuses the key). While it
+    /// is on and a device is named by its MAC, each router is read at least every 10 minutes
+    /// (600 seconds), whatever its `interval_secs`, and a router silent for 15 minutes
+    /// identifies nothing.
+    #[serde(skip_serializing_if = "is_default_router_macs")]
+    pub router_macs: bool,
+}
+
+// REQ: FLT-006, CLU-010 (ADR-183) — not written while it is on, so a node that doesn't know the
+// key (a rolling upgrade; the section refuses unknown fields) still reads the shared config.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` takes a reference
+const fn is_default_router_macs(on: &bool) -> bool {
+    *on
 }
 
 impl Default for ClientsConfig {
@@ -1604,6 +1628,7 @@ impl Default for ClientsConfig {
             infrastructure: Vec::new(),
             mdns: false,
             mdns_port: 5353,
+            router_macs: true,
         }
     }
 }

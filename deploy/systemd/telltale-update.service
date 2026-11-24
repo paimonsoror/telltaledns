@@ -1,0 +1,71 @@
+# TelltaleDNS: install a version the cluster asked for (REQ: OPS-014, ADR-182). Started by
+# telltale-update.path; installed by deploy/systemd/install.sh, which writes the node's data
+# directory into it (/var/lib/telltale is the default), its update channel, and where its health
+# check asks (from the node's [api]).
+#
+# It runs as root because it replaces the binary and restarts the service, which the sandboxed
+# telltale service can't (ADR-038, ADR-046). It trusts nothing in the request: it opens it in
+# the request's own folder without following a link or waiting on it, reads it only if it is a
+# small regular file the telltale user wrote, removes it, and acts only on a release or edge
+# build newer than the one installed and on the node's channel (TELLTALE_UPDATE_CHANNEL below: a
+# stable node takes only releases; an edge node edge builds and releases, and stays on edge), and
+# not on a version whose build it installed here and that didn't come up in the last day. It installs only a binary that the
+# release key signed, under the version its signed index names, and only where root alone can
+# write; then it restarts the node and waits up to two minutes for it to be healthy at
+# TELLTALE_UPDATE_HEALTH_URL (empty: the API is off, and it installs nothing); if it isn't, it puts the previous
+# binary back and restarts once more. The outcome goes to /var/lib/telltale-update/result.json,
+# which the node reads.
+[Unit]
+Description=TelltaleDNS: install a version the cluster asked for
+Documentation=https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#upgrading-from-the-cluster
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/telltale self-update --request /var/lib/telltale/update/request.json --restart
+Environment=TELLTALE_INSTALL=native
+Environment=TELLTALE_LOG=info
+# Written by install.sh: the node's update channel (edge or stable), and where the health check
+# after an install asks (the node's [api] address; empty when the API is off: then nothing is
+# installed). Never from the
+# request.
+Environment=TELLTALE_UPDATE_CHANNEL=stable
+Environment=TELLTALE_UPDATE_HEALTH_URL=http://127.0.0.1:8053/readyz?startup=1
+# The downloads (eight minutes for them all), the restart (up to a minute) and two minutes for the
+# new build to be healthy, and one rollback: under this limit with room to spare
+# (node_update::run_budget_secs).
+TimeoutStartSec=960
+StateDirectory=telltale-update
+StateDirectoryMode=0755
+UMask=0022
+
+# Root, but only what the job needs: reading and removing the request in the telltale user's
+# folder (CAP_DAC_OVERRIDE); writing the binary's own directory and its state needs no capability.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+# The code writes only the binary's directory, the request's folder (to remove the request), and
+# its own state. This sandbox is defence in depth, not the proof of that: the request's folder is
+# in a folder the telltale user owns, which systemd resolves when it builds the namespace. A
+# root-owned request spool is the follow-up (ADR-182).
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin -/var/lib/telltale/update
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

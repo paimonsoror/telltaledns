@@ -110,9 +110,11 @@ impl Federated {
                 },
             });
         }
+        // REQ: CLU-002 (ADR-056) — a witness makes no part: one that isn't connected isn't
+        // missing (a connected one was never asked: `peers` leaves witnesses out).
         for m in self
             .cluster
-            .members()
+            .serving_members()
             .into_iter()
             .filter(|m| !m.connected && !peers.contains(&m.node_id))
         {

@@ -176,6 +176,7 @@
     ['config:write:records', 'Change names on my network'],
     ['config:write:forwards', 'Send domains to other servers'],
     ['cluster:admin', 'Promote a node; staged rollouts and pins'],
+    ['cluster:upgrade', 'Install newer TelltaleDNS versions on nodes'],
   ];
   let tokenScopes = $state<string[]>(['analytics:read', 'config:read']);
   let tokenGroup = $state('');

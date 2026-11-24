@@ -248,7 +248,8 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::LatencyHist { by, hour } => serde_json::to_vec(&b.latency_hists(by, hour)),
         Read::NewDevices { since_s } => serde_json::to_vec(&b.new_devices(since_s)),
         Read::Identities => serde_json::to_vec(&b.identities()),
-        Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
+        // REQ: FLT-006, CLU-002 (ADR-183) — no `recognition` for a peer: the entry node keeps its own.
+        Read::Identity { client } => serde_json::to_vec(&b.identity_for_peer(&client).ok()),
         Read::ClientRhythm { client } => serde_json::to_vec(&b.client_rhythm(&client).ok()),
         Read::TailOpen { params } | Read::TailOpenNegated { params } => {
             serde_json::to_vec(&tail_open(b, &params).map_err(text)?)
@@ -269,7 +270,11 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             from_us,
             to_us,
             limit,
-        } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
+        } => {
+            // REQ: OBS-003 — at most the API's own page (the asking node sends the API's `limit`).
+            let limit = limit.min(telltale_api::MAX_QUERY_PAGE);
+            serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?)
+        }
         Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
         Read::ConfigEntries { kind } => serde_json::to_vec(&b.config_entries(kind.as_deref())),
         Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
@@ -374,6 +379,16 @@ pub(crate) fn rpc_handler(
                 })
                 .await
                 .map_err(|e| format!("maintenance worker failed: {e}"))?;
+            }
+            if kind == crate::node_update::KIND {
+                // REQ: OPS-014 (ADR-182) — another node asks this node to install a version, or
+                // reads its update state (a user or `telltale ctl upgrade` acted there). An
+                // ephemeral member serves no UI: it may read, and nothing it asks is installed.
+                return tokio::task::spawn_blocking(move || {
+                    crate::node_update::handle(&src, &cluster, &peer, &body, ephemeral)
+                })
+                .await
+                .map_err(|e| format!("update worker failed: {e}"))?;
             }
             if kind == crate::drill::KIND {
                 // REQ: CLU-014 — a drill started or ended here (a user acted elsewhere; never
@@ -813,10 +828,10 @@ impl Federated {
             .is_none_or(|o| o.peers.iter().any(|p| p == node_id))
     }
 
-    /// The reachable peers in the read's scope.
+    /// The reachable peers in the read's scope that answer reads (no witnesses: ADR-056).
     fn peers(&self) -> Vec<String> {
         self.cluster
-            .reachable_peers()
+            .serving_peers()
             .into_iter()
             .filter(|p| self.in_scope(p))
             .collect()
@@ -966,12 +981,16 @@ impl Federated {
         ok
     }
 
-    /// The in-scope members that aren't connected, by site (or ID).
+    /// The in-scope members that aren't connected, by site (or ID). A witness has nothing to
+    /// read, so it's never missing from a read.
     fn unconnected(&self) -> Vec<String> {
+        let witnesses = self.cluster.witnesses();
         self.cluster
             .members()
             .into_iter()
-            .filter(|m| !m.connected && self.in_scope(&m.node_id))
+            .filter(|m| {
+                !m.connected && self.in_scope(&m.node_id) && !witnesses.contains(&m.node_id)
+            })
             .map(|m| if m.site.is_empty() { m.node_id } else { m.site })
             .collect()
     }
@@ -1015,6 +1034,39 @@ impl Federated {
             })
             .map(|m| Some(m.node_id))
             .ok_or_else(|| Problem::invalid(format!("`node`: no cluster node `{node}`")))
+    }
+
+    /// REQ: OPS-010, OPS-014 — where a call about `node`'s own state (maintenance, an update)
+    /// goes: here (`None`, for `local` and this node), a peer, or a problem: `node_unreachable`
+    /// with `unreachable_hint` for a member of the registry this node hasn't heard from since it
+    /// started, `node_unknown` otherwise.
+    fn own_state_node(
+        &self,
+        node: &str,
+        unreachable_hint: &'static str,
+    ) -> Result<Option<String>, Problem> {
+        use telltale_api::problem::Code;
+        if node == "local" {
+            return Ok(None);
+        }
+        self.resolve_node(node).map_err(|_| {
+            if self
+                .cluster
+                .identity
+                .registry()
+                .iter()
+                .any(|n| n.node_id == node)
+            {
+                Problem::new(
+                    Code::NodeUnreachable,
+                    format!("{node} isn't reachable over the cluster channel"),
+                )
+                .hint(unreachable_hint)
+            } else {
+                Problem::new(Code::NodeUnknown, format!("no cluster node `{node}`"))
+                    .hint("Use `local`, or a node's ID, site, or pod name from the Cluster page (or cluster_status).")
+            }
+        })
     }
 
     /// REQ: CLU-014 — where a drill request for `node` goes: here (`None`), a peer, or a
@@ -1081,7 +1133,13 @@ impl Federated {
                 for (l, v) in answered {
                     out.extend(label(v, &l));
                 }
-                for m in self.cluster.members().into_iter().filter(|m| m.connected) {
+                // REQ: CLU-002 (ADR-056) — a witness runs no DNS: it has nothing to pause.
+                for m in self
+                    .cluster
+                    .serving_members()
+                    .into_iter()
+                    .filter(|m| m.connected)
+                {
                     let l = self.label_of(&m.node_id);
                     if !names.contains(&l) {
                         out.push(failed(
@@ -1485,7 +1543,7 @@ impl Backend for Federated {
     // REQ: OBS-008, CLU-002 (T9.2) — the live tail covers the cluster: a session on each
     // peer (same filter, a share of the rate cap), polled twice a second.
     fn tail(&self, p: &TailParams) -> Result<tokio::sync::mpsc::Receiver<TailItem>, Problem> {
-        let reachable = self.cluster.reachable_peers();
+        let reachable = self.cluster.serving_peers();
         let (me, peers): (bool, Vec<String>) = match p.scope.as_deref() {
             Some("node:local") => return self.local.tail(p),
             None | Some("" | "cluster") => (true, reachable),
@@ -1650,6 +1708,9 @@ impl Backend for Federated {
         to_us: u64,
         limit: usize,
     ) -> Result<QueryPage, Problem> {
+        // REQ: OBS-003 — a node answers at most the API's page, so that is what each is asked for,
+        // and what `asked` and the merge count: a full page is then never taken as a node's last.
+        let limit = limit.min(telltale_api::MAX_QUERY_PAGE);
         let prev: Bounds = match q.cursor.as_deref() {
             None => Bounds::new(),
             Some(c) => federation::decode_cursor(Some(c)).ok_or_else(|| {
@@ -1863,23 +1924,29 @@ impl Backend for Federated {
         let mut local = self.local.identity(client)?;
         local.node = Some(self.own_label());
         let key = local.client.clone();
-        let mut all = vec![local];
-        for (label, v) in
-            self.everyone_labelled::<Option<telltale_api::model::DeviceIdentity>>(|| {
-                Read::Identity {
-                    client: key.clone(),
-                }
+        let others = self
+            .everyone_labelled::<Option<telltale_api::model::DeviceIdentity>>(|| Read::Identity {
+                client: key.clone(),
             })
-        {
-            all.extend(v.map(|mut i| {
-                i.node = Some(label);
-                i
-            }));
-        }
-        Ok(crate::identify::merge(all)
             .into_iter()
-            .next()
-            .unwrap_or_else(|| crate::identify::unavailable(&key, "not_seen")))
+            .filter_map(|(label, v)| {
+                v.map(|mut i| {
+                    i.node = Some(label);
+                    i
+                })
+            })
+            .collect();
+        Ok(merge_identity(local, others, &key))
+    }
+    // REQ: FLT-006, CLU-002 (ADR-183) — a peer's read of one device's identity is this node's own
+    // answer, without `recognition`, and never the fan-out of `identity` above (a read that asks
+    // every node must not ask every node again). `answer` calls it on the local backend; this
+    // override only makes sure the trait's default can never be what runs here.
+    fn identity_for_peer(
+        &self,
+        client: &str,
+    ) -> Result<telltale_api::model::DeviceIdentity, Problem> {
+        self.local.identity_for_peer(client)
     }
     // REQ: OBS-031 — every node's view of the device (it may roam), summed by domain.
     fn client_rhythm(
@@ -1993,44 +2060,37 @@ impl Backend for Federated {
         node: &str,
         w: telltale_api::MaintenanceWrite,
     ) -> BoxFuture<Result<telltale_api::model::MaintenanceResult, Problem>> {
-        use telltale_api::problem::Code;
-        if node == "local" {
-            return self.local.maintenance("local", w);
-        }
-        match self.resolve_node(node) {
+        match self.own_state_node(
+            node,
+            "Maintenance is the node's own state, so the node must be up to take it.",
+        ) {
             Ok(None) => self.local.maintenance("local", w),
             Ok(Some(peer)) => {
                 let cluster = Arc::clone(&self.cluster);
                 let label = self.label_of(&peer);
                 Box::pin(crate::maintenance::send(cluster, peer, label, w))
             }
-            // A member of the registry this node hasn't heard from since it started.
-            Err(_)
-                if self
-                    .cluster
-                    .identity
-                    .registry()
-                    .iter()
-                    .any(|n| n.node_id == node) =>
-            {
-                let node = node.to_owned();
-                Box::pin(async move {
-                    Err(Problem::new(
-                        Code::NodeUnreachable,
-                        format!("{node} isn't reachable over the cluster channel"),
-                    )
-                    .hint(
-                        "Maintenance is the node's own state, so the node must be up to take it.",
-                    ))
-                })
+            Err(p) => Box::pin(async move { Err(p) }),
+        }
+    }
+    // REQ: OPS-014 (ADR-182) — installing a version is the node's own business, like
+    // maintenance: a request (or a read) for another node goes to that node.
+    fn node_update(
+        &self,
+        node: &str,
+        call: telltale_api::NodeUpdateCall,
+    ) -> BoxFuture<Result<telltale_api::model::NodeUpdate, Problem>> {
+        match self.own_state_node(
+            node,
+            "The node installs the version itself, so it must be up.",
+        ) {
+            Ok(None) => self.local.node_update("local", call),
+            Ok(Some(peer)) => {
+                let cluster = Arc::clone(&self.cluster);
+                let label = self.label_of(&peer);
+                Box::pin(crate::node_update::send(cluster, peer, label, call))
             }
-            Err(_) => {
-                let node = node.to_owned();
-                Box::pin(async move {
-                    Err(Problem::new(Code::NodeUnknown, format!("no cluster node `{node}`"))
-                        .hint("Use `local`, or a node's ID, site, or pod name from the Cluster page (or cluster_status)."))
-                })
-            }
+            Err(p) => Box::pin(async move { Err(p) }),
         }
     }
     // REQ: CLU-014 (ADR-151) — a drill is the node's own state, like maintenance: a request for
@@ -2527,8 +2587,9 @@ impl Backend for Federated {
                     out.extend(label(v, &l));
                 }
                 // Labelled like the answers (pods by pod name, T6.14), so a pod that answered
-                // isn't also listed as unreachable.
-                for m in self.cluster.members() {
+                // isn't also listed as unreachable. REQ: CLU-002 (ADR-056) — a witness has no
+                // cache, up or down.
+                for m in self.cluster.serving_members() {
                     let l = self.label_of(&m.node_id);
                     if !names.contains(&l) {
                         out.push(CacheFlushNode {
@@ -2622,7 +2683,13 @@ impl Backend for Federated {
                 for (l, v) in answered {
                     out.extend(label(v, &l));
                 }
-                for m in self.cluster.members().into_iter().filter(|m| m.connected) {
+                // REQ: CLU-002 (ADR-056) — a witness has no cache.
+                for m in self
+                    .cluster
+                    .serving_members()
+                    .into_iter()
+                    .filter(|m| m.connected)
+                {
                     let l = self.label_of(&m.node_id);
                     if !names.contains(&l) {
                         out.push(failed(
@@ -2693,6 +2760,720 @@ impl Backend for Federated {
             WriteRoute::Here => self.local.write_client(w),
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
+    }
+}
+
+/// REQ: FLT-006, API-010 (ADR-183) — one device's identity across the nodes: the best guess of
+/// any of them (`identify::merge`), with how the address is recognized taken from this node's
+/// answer alone. Recognition is the entry node's own view (its table, its routers, its
+/// `router_macs`): another node's differs, and merging them would give a MAC that this node
+/// doesn't hold.
+fn merge_identity(
+    mut local: telltale_api::model::DeviceIdentity,
+    others: Vec<telltale_api::model::DeviceIdentity>,
+    key: &str,
+) -> telltale_api::model::DeviceIdentity {
+    let recognition = local.recognition.take();
+    let mut all = vec![local];
+    all.extend(others.into_iter().map(|mut i| {
+        i.recognition = None;
+        i
+    }));
+    let mut merged = crate::identify::merge(all)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| crate::identify::unavailable(key, "not_seen"));
+    merged.recognition = recognition;
+    merged
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use std::collections::HashMap;
+    use std::net::Ipv4Addr;
+    use std::sync::Arc;
+
+    use telltale_api::Backend as _;
+    use telltale_api::model::{DeviceIdentity, DeviceRecognition};
+
+    use super::{Read, answer, merge_identity};
+
+    // REQ: FLT-006, CLU-002, API-010 (ADR-183) — what a node answers a peer's identity read has no
+    // `recognition`: the entry node never uses it (it keeps its own), so a node doesn't compute it
+    // (the work of its routers' bindings, per read, per peer) or send it (its table's MACs, over the
+    // cluster channel, to any member, ephemeral ones included). The entry node's own read still
+    // has it, and the merge still shows the entry node's.
+    #[test]
+    fn clu_002_a_peers_identity_read_carries_no_recognition() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = Arc::new(crate::http::tests::sources_in(dir.path()));
+        src.pipeline.reload(
+            Arc::new(telltale_upstream::Router::default()),
+            crate::pipeline::Policy::from_config(
+                &telltale_config::Config::default(),
+                telltale_policy::LocalData::default(),
+            ),
+        );
+        let lease = crate::devices::Lease {
+            mac: "00:11:11:11:11:50".into(),
+            ip: Ipv4Addr::new(10, 0, 0, 50),
+            hostname: None,
+            expires: 0,
+            offline: false,
+            unsure: false,
+            stale: false,
+        };
+        src.pipeline
+            .router_leases
+            .store(Arc::new(HashMap::from([(lease.ip, lease)])));
+        let backend = crate::api_backend::ApiBackend {
+            src: Arc::clone(&src),
+        };
+        let mine = backend.identity("10.0.0.50").unwrap();
+        assert_eq!(
+            mine.recognition.as_ref().and_then(|r| r.mac.as_deref()),
+            Some("00:11:11:11:11:50"),
+            "the entry node's own read has it"
+        );
+        let bytes = answer(
+            &backend,
+            Read::Identity {
+                client: "10.0.0.50".into(),
+            },
+        )
+        .unwrap();
+        let theirs: Option<DeviceIdentity> = serde_json::from_slice(&bytes).unwrap();
+        let theirs = theirs.expect("an identity");
+        assert!(theirs.recognition.is_none(), "{theirs:?}");
+        assert_eq!(theirs.client, mine.client, "the rest is the same");
+        let merged = merge_identity(mine.clone(), vec![theirs], "10.0.0.50");
+        assert_eq!(merged.recognition, mine.recognition);
+    }
+
+    fn node(
+        label: &str,
+        product: Option<&str>,
+        score: f32,
+        recognition: Option<DeviceRecognition>,
+    ) -> DeviceIdentity {
+        DeviceIdentity {
+            client: "192.168.1.20".into(),
+            available: true,
+            product: product.map(str::to_owned),
+            class: "streaming".into(),
+            level: "likely".into(),
+            score,
+            source: "inferred".into(),
+            node: Some(label.into()),
+            recognition,
+            ..DeviceIdentity::default()
+        }
+    }
+
+    fn seen_as(device: &str, mac: &str, from: &str) -> DeviceRecognition {
+        DeviceRecognition {
+            device: Some(device.into()),
+            identified_by: "router_mac".into(),
+            mac: Some(mac.into()),
+            mac_from: Some(from.into()),
+            ..DeviceRecognition::default()
+        }
+    }
+
+    // REQ: FLT-006, API-010, CLU-002 (ADR-183) — how an address is recognized is the entry node's
+    // own view: the merged identity takes the best guess of any node (here the other node's, with
+    // the higher score), and the entry node's `recognition`, whatever the others say.
+    #[test]
+    fn clu_002_identity_recognition_is_the_entry_nodes() {
+        let entry = node(
+            "entry",
+            Some("Roku player"),
+            0.6,
+            Some(seen_as("tv", "02:00:00:00:00:01", "router")),
+        );
+        let other = node(
+            "pod",
+            Some("Roku Ultra"),
+            0.9,
+            Some(seen_as("someone else", "02:00:00:00:00:99", "peer")),
+        );
+        let merged = merge_identity(entry, vec![other], "192.168.1.20");
+        assert_eq!(
+            merged.product.as_deref(),
+            Some("Roku Ultra"),
+            "the best guess wins"
+        );
+        let r = merged.recognition.expect("the entry node's recognition");
+        assert_eq!(r.device.as_deref(), Some("tv"));
+        assert_eq!(r.mac.as_deref(), Some("02:00:00:00:00:01"));
+        assert_eq!(r.mac_from.as_deref(), Some("router"));
+    }
+
+    // REQ: FLT-006, API-010 (ADR-183) — an entry node that says nothing about recognition (privacy
+    // level 2 and above) leaves none on the merged identity, though another node had one: that
+    // node's MAC must not reach a caller this node hides it from.
+    #[test]
+    fn clu_002_identity_recognition_hidden_here_stays_hidden() {
+        let entry = node("entry", Some("Roku player"), 0.6, None);
+        let other = node(
+            "pod",
+            Some("Roku player"),
+            0.6,
+            Some(seen_as("tv", "02:00:00:00:00:01", "router")),
+        );
+        let merged = merge_identity(entry, vec![other], "192.168.1.20");
+        assert!(merged.recognition.is_none(), "{merged:?}");
+    }
+
+    // REQ: CLU-010, API-010 (ADR-183) — a mixed cluster: a node on an earlier build writes no
+    // `recognition` (it reads the same), and one on this build writes it where an earlier one
+    // ignores the key.
+    #[test]
+    fn clu_010_identity_recognition_reads_both_ways() {
+        let earlier = r#"{"client":"192.168.1.20","available":true,"class":"streaming","level":"likely","score":0.6,"source":"inferred"}"#;
+        let read: DeviceIdentity = serde_json::from_str(earlier).unwrap();
+        assert!(read.recognition.is_none());
+        let newer = node(
+            "pod",
+            None,
+            0.6,
+            Some(seen_as("tv", "02:00:00:00:00:01", "peer")),
+        );
+        let mut json = serde_json::to_value(&newer).unwrap();
+        assert_eq!(json["recognition"]["macFrom"], "peer");
+        // An earlier build's struct has no such field and no `deny_unknown_fields`: the same read
+        // with the key it doesn't know is what `from_value` does with an extra key here.
+        json["futureField"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<DeviceIdentity>(json).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod heatmap_read_tests {
+    use std::sync::Arc;
+
+    use telltale_api::Backend as _;
+    use telltale_api::heatmap::{KeyPart, KeyQuery, MAX_SLOTS, NetworkQuery};
+    use telltale_store::rollup::{Rollups, TopRow};
+    use telltale_telemetry::agg::Counts;
+    use telltale_telemetry::event::{Name, Record};
+
+    use super::{Read, answer};
+
+    /// 2020-09-14T00:00:00Z, a day boundary: every window below starts at or after it.
+    const DAY0: u64 = 1_600_041_600;
+    /// The node's current hour (one query in it), after every stored hour.
+    const LIVE: u64 = DAY0 + 500 * 86_400;
+
+    fn query(ts_s: u64) -> Record {
+        Record::Query(
+            telltale_telemetry::QueryEvent {
+                ts_us: ts_s * 1_000_000,
+                client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)
+                    .to_ipv6_mapped()
+                    .octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: telltale_telemetry::Status::Forwarded,
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 0,
+                t_total_us: 100,
+                t_upstream_us: 0,
+                resp_size: 64,
+                answers: 1,
+            },
+            Name::from_wire(b"\x07example\x03com\x00"),
+        )
+    }
+
+    fn row(key: &str, count: u64) -> TopRow {
+        TopRow {
+            key: key.into(),
+            count,
+            error: 0,
+        }
+    }
+
+    /// The hour `k` after `DAY0` has top lists when `k % 5 == 0`; `10.0.0.1` and `example.com`
+    /// are on them with this count (at least 1), unless `k % 10 == 0` too (then the lists lack
+    /// them: 0).
+    fn listed(k: u64) -> Option<u64> {
+        k.is_multiple_of(5)
+            .then_some(if k.is_multiple_of(10) { 0 } else { k % 50 + 1 })
+    }
+
+    /// A node with two days of minutes, then a minute every three hours to day 401 (each with
+    /// blocked queries), the hours' top lists of [`listed`], and one live query at `LIVE`.
+    fn backend(dir: &std::path::Path) -> crate::api_backend::ApiBackend {
+        let mut s = crate::http::tests::sources_in(dir);
+        let db = Arc::new(Rollups::in_memory().unwrap());
+        let minute = |t: u64| {
+            let total = u32::try_from(t / 60 % 13 + 1).unwrap();
+            let mut c = Counts {
+                total,
+                ..Counts::default()
+            };
+            c.status.fill(total / 2 + 1);
+            (t, c)
+        };
+        let mut rows: Vec<(u64, Counts)> = (0..2 * 1440).map(|m| minute(DAY0 + m * 60)).collect();
+        rows.extend((16..401 * 8).map(|i| minute(DAY0 + i * 3 * 3600 + 420)));
+        db.put_minutes(&rows).unwrap();
+        for (k, count) in (0..9_700u64).filter_map(|k| listed(k).map(|c| (k, c))) {
+            let (clients, domains) = if count == 0 {
+                (vec![row("10.0.0.2", 1)], vec![row("other.example", 1)])
+            } else {
+                (
+                    vec![row("10.0.0.1", count), row("10.0.0.2", 1)],
+                    vec![row("example.com", count), row("other.example", 1)],
+                )
+            };
+            db.put_hour_extras(
+                DAY0 + k * 3600,
+                &[("clients", clients), ("domains", domains)],
+                &[],
+            )
+            .unwrap();
+        }
+        s.rollups = Some(db);
+        s.pipeline.telemetry.aggregates().record(&query(LIVE));
+        crate::api_backend::ApiBackend { src: Arc::new(s) }
+    }
+
+    fn network(b: &crate::api_backend::ApiBackend, q: NetworkQuery) -> Vec<u64> {
+        serde_json::from_slice(&answer(b, Read::HeatmapNetwork { q }).unwrap()).unwrap()
+    }
+
+    fn key_part(
+        b: &crate::api_backend::ApiBackend,
+        from_s: u64,
+        to_s: u64,
+        kind: &str,
+        key: &str,
+    ) -> KeyPart {
+        let q = KeyQuery {
+            from_s,
+            to_s,
+            kind: kind.into(),
+            key: key.into(),
+            blocked: false,
+        };
+        serde_json::from_slice(&answer(b, Read::HeatmapKey { q }).unwrap()).unwrap()
+    }
+
+    /// REQ: OBS-029 — whatever window and slot a peer's read names, the answering node's part
+    /// has at most `MAX_SLOTS` slots: a window that doesn't end after it starts has none, a
+    /// zero slot counts as a minute (the finest grain the API asks for), and a window longer
+    /// than `MAX_SLOTS` slots is answered for its first `MAX_SLOTS`.
+    #[test]
+    fn obs_029_peer_heatmap_reads_use_bounded_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = backend(dir.path());
+        let net = |from_s, to_s, slot| {
+            network(
+                &b,
+                NetworkQuery {
+                    from_s,
+                    to_s,
+                    slot,
+                    blocked: false,
+                },
+            )
+        };
+        for slot in [1, 0, 60, 3600] {
+            assert_eq!(net(0, u64::MAX, slot).len(), MAX_SLOTS, "slot {slot}");
+        }
+        // No slot: minute slots, with the minutes' counts in them.
+        let by_minute = net(DAY0, DAY0 + 7200, 60);
+        assert_eq!(by_minute.len(), 120);
+        assert!(by_minute.iter().all(|v| *v > 0), "{by_minute:?}");
+        assert_eq!(net(DAY0, DAY0 + 7200, 0), by_minute);
+        // A window that ends before it starts, or where it starts: no slots.
+        assert_eq!(net(DAY0 + 7200, DAY0, 60), Vec::<u64>::new());
+        assert_eq!(net(u64::MAX, 0, 0), Vec::<u64>::new());
+        assert_eq!(net(DAY0, DAY0, 60), Vec::<u64>::new());
+        // A slot longer than the window: one.
+        assert_eq!(net(DAY0, DAY0 + 7200, u64::MAX).len(), 1);
+        // A device's or a name's hours.
+        for (kind, k) in [
+            ("client", "10.0.0.1"),
+            ("name", "example.com"),
+            ("other", "x"),
+        ] {
+            for (from_s, to_s) in [(10, 0), (u64::MAX, 0), (DAY0, DAY0)] {
+                let part = key_part(&b, from_s, to_s, kind, k);
+                assert!(
+                    part.values.is_empty() && part.covered.is_empty(),
+                    "{kind} {from_s}..{to_s}"
+                );
+            }
+            for (from_s, to_s) in [(0, u64::MAX), (DAY0, u64::MAX)] {
+                let part = key_part(&b, from_s, to_s, kind, k);
+                assert_eq!(
+                    (part.values.len(), part.covered.len()),
+                    (MAX_SLOTS, MAX_SLOTS),
+                    "{kind} {from_s}..{to_s}"
+                );
+            }
+        }
+        // From DAY0 on, the first MAX_SLOTS hours are the stored ones.
+        let part = key_part(&b, DAY0, u64::MAX, "client", "10.0.0.1");
+        assert_eq!(Some(part.values[5]), listed(5));
+        assert!(!part.covered[10]);
+    }
+
+    /// REQ: OBS-029 — for every window the API itself sends (its slot sizes, its windows of up
+    /// to `MAX_SLOTS` slots, aligned starts, any end), the answering node's part is exactly
+    /// what it was before parts were bounded: the slot count and the sums computed here the way
+    /// the node computed them, without a bound.
+    #[test]
+    fn obs_029_peer_heatmap_reads_match_the_api_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = backend(dir.path());
+        let unbounded_count = |from_s: u64, to_s: u64, slot: u64| {
+            usize::try_from(to_s.saturating_sub(from_s).div_ceil(slot.max(1))).unwrap_or(0)
+        };
+        let unbounded_slots = |points: &[(u64, u64)], from_s: u64, slot: u64, n: usize| {
+            let mut v = vec![0u64; n];
+            for &(start, value) in points {
+                if start < from_s {
+                    continue;
+                }
+                let i = usize::try_from((start - from_s) / slot).unwrap_or(usize::MAX);
+                if let Some(x) = v.get_mut(i) {
+                    *x += value;
+                }
+            }
+            v
+        };
+        let counts = [
+            1, 2, 3, 59, 60, 61, 96, 97, 168, 672, 673, 676, 1440, 9600, 9601, 10_079, 10_080,
+        ];
+        for (slot, max_days) in [(3600u64, 400u64), (900, 7), (60, 7)] {
+            // The API's own limit for the grain (`stats_heatmap`).
+            let api_max = ((max_days * 86_400 + 3600) / slot).min(MAX_SLOTS as u64);
+            for n in counts
+                .into_iter()
+                .filter(|n| *n <= api_max)
+                .chain([api_max])
+            {
+                // Aligned starts; ends anywhere in the last slot.
+                for (start, rest, blocked) in [(0, slot, false), (3, 1, true), (7, slot - 1, false)]
+                {
+                    let from_s = DAY0 + start * slot;
+                    let to_s = from_s + (n - 1) * slot + rest;
+                    let q = NetworkQuery {
+                        from_s,
+                        to_s,
+                        slot,
+                        blocked,
+                    };
+                    let what =
+                        format!("slot {slot}, {n} slots, {from_s}..{to_s}, blocked {blocked}");
+                    let got = network(&b, q.clone());
+                    let points: Vec<(u64, u64)> = b
+                        .timeseries(q.step(), from_s, to_s)
+                        .iter()
+                        .map(|x| {
+                            let v = if blocked {
+                                x.by_status.get("blocked").copied().unwrap_or(0)
+                            } else {
+                                x.total
+                            };
+                            (x.start_unix_seconds, u64::from(v))
+                        })
+                        .collect();
+                    let want =
+                        unbounded_slots(&points, from_s, slot, unbounded_count(from_s, to_s, slot));
+                    assert_eq!(got.len(), usize::try_from(n).unwrap(), "{what}");
+                    assert!(got == want, "{what}");
+                    assert_eq!(q.slot_count(), want.len(), "{what}");
+                }
+            }
+        }
+        // A device's or a name's hours (hour slots only, up to the API's 9,601).
+        for n in [1u64, 2, 5, 24, 168, 1000, 9600, 9601] {
+            for rest in [1, 3600] {
+                let from_s = DAY0 + 3 * 3600;
+                let to_s = from_s + (n - 1) * 3600 + rest;
+                let hours = usize::try_from((to_s - from_s).div_ceil(3600)).unwrap();
+                for (kind, k) in [("client", "10.0.0.1"), ("name", "example.com")] {
+                    let what = format!("{kind}, {n} hours, {from_s}..{to_s}");
+                    let part = key_part(&b, from_s, to_s, kind, k);
+                    assert_eq!(part.values.len(), hours, "{what}");
+                    assert_eq!(part.covered.len(), hours, "{what}");
+                    for (i, (v, c)) in part.values.iter().zip(&part.covered).enumerate() {
+                        let hour = (from_s - DAY0) / 3600 + i as u64;
+                        // No list: covered, nothing; a list without the key: not covered.
+                        let expected = match listed(hour) {
+                            None => (0, true),
+                            Some(0) => (0, false),
+                            Some(count) => (count, true),
+                        };
+                        assert_eq!((*v, *c), expected, "{what}: hour {i}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod queries_read_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use telltale_api::Backend as _;
+    use telltale_api::model::{QueryPage, QueryParams};
+    use telltale_store::qlog::{Builder, Settings};
+
+    use super::{Read, answer};
+
+    /// The API's own page size (`GET /api/v1/queries` takes `limit` 1 to 1000).
+    const API_PAGE: usize = telltale_api::MAX_QUERY_PAGE;
+    /// Rows in the test log: more than one page.
+    pub(super) const ROWS: usize = 1_100;
+
+    fn wire(name: &str) -> Vec<u8> {
+        let mut w = Vec::new();
+        for l in name.split('.') {
+            w.push(u8::try_from(l.len()).unwrap());
+            w.extend_from_slice(l.as_bytes());
+        }
+        w.push(0);
+        w
+    }
+
+    /// A node whose query log holds `ROWS` queries (`n<i>.example.com`), one every 2 s from
+    /// midnight UTC two days ago (the writer keeps 30 days by the real clock), from four
+    /// devices, every fourth blocked. Returns the backend and the first row's time (µs).
+    pub(super) fn node(dir: &std::path::Path) -> (crate::api_backend::ApiBackend, u64) {
+        let mut src = crate::http::tests::sources_in(dir);
+        src.qlog = Some(Arc::new(telltale_store::qlog::Stats::default()));
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let start = (now_s / 86_400 - 2) * 86_400;
+        let mut w = Builder::spawn(Settings {
+            dir: dir.join("qlog"),
+            node: 1,
+            privacy: 0,
+            flush_interval: Duration::from_secs(3600),
+            fsync: false,
+            retention_days: 30,
+            retention_bytes: u64::MAX,
+            rotate_after: None,
+        })
+        .unwrap();
+        for i in 0..u64::try_from(ROWS).unwrap() {
+            let event = telltale_telemetry::QueryEvent {
+                ts_us: (start + 2 * i) * 1_000_000,
+                client_ip: std::net::Ipv4Addr::new(10, 0, 0, u8::try_from(1 + i % 4).unwrap())
+                    .to_ipv6_mapped()
+                    .octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: if i.is_multiple_of(4) {
+                    telltale_telemetry::Status::Blocked
+                } else {
+                    telltale_telemetry::Status::Forwarded
+                },
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 1,
+                t_total_us: 100,
+                t_upstream_us: 50,
+                resp_size: 64,
+                answers: 1,
+            };
+            w.push(&event, &wire(&format!("n{i}.example.com")));
+        }
+        drop(w);
+        (
+            crate::api_backend::ApiBackend { src: Arc::new(src) },
+            start * 1_000_000,
+        )
+    }
+
+    /// A peer's query-log read, as the asking node sends it (`QueriesNegated` for a negated
+    /// filter), answered by `b`.
+    fn ask(
+        b: &crate::api_backend::ApiBackend,
+        params: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> Result<Vec<u8>, String> {
+        let p = Box::new(params.clone());
+        let read = if params.negates() {
+            Read::QueriesNegated {
+                params: p,
+                from_us,
+                to_us,
+                limit,
+            }
+        } else {
+            Read::Queries {
+                params: p,
+                from_us,
+                to_us,
+                limit,
+            }
+        };
+        answer(b, read)
+    }
+
+    fn page(
+        b: &crate::api_backend::ApiBackend,
+        params: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> QueryPage {
+        serde_json::from_slice(&ask(b, params, from_us, to_us, limit).unwrap()).unwrap()
+    }
+
+    /// REQ: OBS-003 — a peer's query-log read is answered with at most the API's own page of rows,
+    /// whatever `limit` it names, and its cursor goes on from there; `limit` 0, a window that
+    /// ends before it starts or starts at the end of time give an empty page, a cursor that isn't
+    /// one an error.
+    #[test]
+    fn obs_003_peer_queries_read_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (b, start_us) = node(dir.path());
+        let all = QueryParams::default();
+        for limit in [usize::MAX, 1_000_000, API_PAGE + 1] {
+            let p = page(&b, &all, 0, 0, limit);
+            assert_eq!(p.items.len(), API_PAGE, "limit {limit}");
+            assert!(p.next_cursor.is_some(), "limit {limit}: more to read");
+        }
+        // The rest, from the cursor: every row once.
+        let first = page(&b, &all, 0, 0, usize::MAX);
+        let next = QueryParams {
+            cursor: first.next_cursor.clone(),
+            ..all.clone()
+        };
+        let rest = page(&b, &next, 0, 0, usize::MAX);
+        assert_eq!(rest.items.len(), ROWS - API_PAGE);
+        let mut seen: Vec<u64> = first
+            .items
+            .iter()
+            .chain(&rest.items)
+            .map(|r| r.ts_unix_micros)
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), ROWS, "every row once");
+        // A negated filter (every row matches it) and an open end: the same bound.
+        let negated = QueryParams {
+            name: Some("nothing.example".into()),
+            name_not: Some(true),
+            ..all.clone()
+        };
+        assert_eq!(page(&b, &negated, 0, 0, usize::MAX).items.len(), API_PAGE);
+        assert_eq!(
+            page(&b, &all, 0, u64::MAX, usize::MAX).items.len(),
+            API_PAGE
+        );
+        // Nothing to read.
+        let none = |from_us, to_us, limit| page(&b, &all, from_us, to_us, limit).items.len();
+        assert_eq!(none(0, 0, 0), 0, "limit 0");
+        assert_eq!(
+            none(start_us + 100_000_000, start_us, usize::MAX),
+            0,
+            "inverted"
+        );
+        assert_eq!(none(u64::MAX, 0, usize::MAX), 0, "from the end of time");
+        let bad = QueryParams {
+            cursor: Some("not a cursor".into()),
+            ..all.clone()
+        };
+        assert!(
+            ask(&b, &bad, 0, 0, usize::MAX).is_err(),
+            "a cursor that isn't one"
+        );
+    }
+
+    /// REQ: OBS-003 — for every page the API itself asks a peer for (it sends its own `limit`,
+    /// 1 to 1000, and the window, with no cursor; the next page's window ends where each node
+    /// stopped), the answer is exactly the backend's page for that `limit`, as a node always
+    /// answered: the same bytes, for plain and negated filters, windows, and every page of a walk.
+    #[test]
+    fn obs_003_peer_queries_read_matches_the_api_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (b, start_us) = node(dir.path());
+        let filters = [
+            QueryParams::default(),
+            QueryParams {
+                status: Some("blocked".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                client: Some("10.0.0.2".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                name: Some("n1".into()),
+                ..QueryParams::default()
+            },
+            QueryParams {
+                status: Some("blocked".into()),
+                status_not: Some(true),
+                ..QueryParams::default()
+            },
+        ];
+        let windows = [
+            (0, 0),
+            (start_us + 300_000_000, start_us + 1_500_000_000),
+            (start_us, u64::MAX),
+        ];
+        let mut compared = 0;
+        for limit in [1, 2, 50, 100, 999, API_PAGE] {
+            for params in &filters {
+                for (from_us, to_us) in windows {
+                    let want =
+                        serde_json::to_vec(&b.queries(params, from_us, to_us, limit).unwrap())
+                            .unwrap();
+                    let got = ask(&b, params, from_us, to_us, limit).unwrap();
+                    assert!(got == want, "limit {limit}, {params:?}, {from_us}..{to_us}");
+                    compared += 1;
+                }
+            }
+        }
+        // A walk the way the asking node pages: each next read ends where the last row was.
+        for limit in [50, 333, API_PAGE] {
+            let all = QueryParams::default();
+            let (mut to_us, mut rows) = (0, 0);
+            loop {
+                let want = b.queries(&all, 0, to_us, limit).unwrap();
+                let got: QueryPage = page(&b, &all, 0, to_us, limit);
+                assert_eq!(
+                    serde_json::to_vec(&got).unwrap(),
+                    serde_json::to_vec(&want).unwrap(),
+                    "limit {limit}, to {to_us}"
+                );
+                rows += got.items.len();
+                match got.items.last() {
+                    Some(r) if got.items.len() == limit => to_us = r.ts_unix_micros,
+                    _ => break,
+                }
+                compared += 1;
+            }
+            assert_eq!(rows, ROWS, "limit {limit}: the walk reads every row");
+        }
+        assert!(compared > 90, "{compared}");
     }
 }
 
@@ -2795,6 +3576,168 @@ mod ephemeral_tests {
             from_s: 0,
             to_s: 1
         }));
+    }
+
+    /// A backend for the RPC tests below: the `update` call never reads it.
+    struct NoBackend;
+
+    impl Backend for NoBackend {
+        fn system_info(&self) -> SystemInfo {
+            unreachable!("not read here")
+        }
+        fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<TimeBucket> {
+            Vec::new()
+        }
+        fn top(&self, _: TopKind, _: Hour, _: usize, _: Option<IpAddr>) -> Vec<TopItem> {
+            Vec::new()
+        }
+        fn latency(&self, _: LatencyBy, _: Hour) -> Vec<LatencyRow> {
+            Vec::new()
+        }
+        fn queries(&self, _: &QueryParams, _: u64, _: u64, _: usize) -> Result<QueryPage, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn explain(&self, _: &ExplainParams) -> Result<Explanation, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            Vec::new()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            Vec::new()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            Vec::new()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            Vec::new()
+        }
+        fn config_version(&self) -> u64 {
+            0
+        }
+    }
+
+    /// REQ: OPS-014, CLU-009 (ADR-182, ADR-058) — the `update` RPC: an ephemeral member (a
+    /// resolver pod) and a peer the registry doesn't list get nothing from it, neither a request
+    /// nor a read of the node's update state (which names who asked and the errors), as for
+    /// maintenance. A member the registry lists gets the node's own answer.
+    #[tokio::test]
+    async fn ops_014_an_ephemeral_member_cannot_ask_for_an_update() {
+        use telltale_cluster::node::{Identity, NodeRecord};
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let member = |node_id: &str, ephemeral: bool| NodeRecord {
+            node_id: node_id.into(),
+            site: node_id.into(),
+            eligible: false,
+            advertise: Vec::new(),
+            joined: 1,
+            witness: false,
+            ephemeral,
+        };
+        let mut registry = id.registry();
+        registry.push(member("replica-1", false));
+        registry.push(member("pod-1", true));
+        id.save_registry(&registry).unwrap();
+        let cluster = Cluster::new(id, "0.1.0");
+        let data = tempfile::tempdir().unwrap();
+        let src = Arc::new(crate::http::tests::sources_in(data.path()));
+        let handler = rpc_handler(src, Arc::new(NoBackend), cluster);
+        let now = crate::maintenance::now_ms();
+        let body = |call: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({ "call": call, "sent_ms": now })).unwrap()
+        };
+        let request = serde_json::json!({"op": "request", "to": "99.0.0", "by": "mallory"});
+        let status = serde_json::json!({"op": "status"});
+        let written = || {
+            data.path().join("update-request.json").exists()
+                || data.path().join("update").join("request.json").exists()
+        };
+        for peer in ["pod-1", "a-stranger"] {
+            let e = handler(
+                peer.into(),
+                crate::node_update::KIND.into(),
+                body(request.clone()),
+            )
+            .await
+            .expect_err("an ephemeral or unlisted peer can't ask for an update");
+            assert!(e.contains("ephemeral member"), "{peer}: {e}");
+            assert!(!written(), "{peer}: nothing is written");
+            // Nor a read: it names admins and errors, and nothing legitimate asks through such a
+            // peer (`ctl` and the API go through full members).
+            let e = handler(
+                peer.into(),
+                crate::node_update::KIND.into(),
+                body(status.clone()),
+            )
+            .await
+            .expect_err("an ephemeral or unlisted peer can't read the update state");
+            assert!(e.contains("ephemeral member"), "{peer}: {e}");
+        }
+        // A member the registry lists gets this node's answer (a test build is a local build, so
+        // a problem that says so, not a refusal of the sender).
+        let answer = handler(
+            "replica-1".into(),
+            crate::node_update::KIND.into(),
+            body(request),
+        )
+        .await
+        .expect("a listed member is answered");
+        let decoded: Result<telltale_api::model::NodeUpdate, Problem> =
+            crate::forward::decode_answer(&answer);
+        assert!(
+            decoded
+                .as_ref()
+                .is_err_and(|p| p.code != telltale_api::problem::Code::Forbidden),
+            "{decoded:?}"
+        );
+    }
+
+    /// REQ: OPS-010, OPS-014 — maintenance and updates find their node the same way (one helper):
+    /// `local` and this node's own ID are here; a member of the registry not heard from is
+    /// `node_unreachable` with the call's own hint; anything else `node_unknown`.
+    #[test]
+    fn ops_014_a_call_about_a_nodes_own_state_finds_its_node() {
+        use telltale_api::problem::Code;
+        use telltale_cluster::node::{Identity, NodeRecord};
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let me = id.meta.node_id.clone();
+        let mut registry = id.registry();
+        registry.push(NodeRecord {
+            node_id: "replica-1".into(),
+            site: "pi".into(),
+            eligible: false,
+            advertise: Vec::new(),
+            joined: 1,
+            witness: false,
+            ephemeral: false,
+        });
+        id.save_registry(&registry).unwrap();
+        let fed = Federated::new(Arc::new(NoBackend), Cluster::new(id, "0.1.0"));
+        assert_eq!(fed.own_state_node("local", "h").unwrap(), None);
+        assert_eq!(fed.own_state_node(&me, "h").unwrap(), None);
+        let p = fed.own_state_node("replica-1", "must be up").unwrap_err();
+        assert_eq!(
+            (p.code, p.hint.as_deref()),
+            (Code::NodeUnreachable, Some("must be up"))
+        );
+        assert_eq!(
+            fed.own_state_node("nope", "h").unwrap_err().code,
+            Code::NodeUnknown
+        );
     }
 
     /// The `fn` names of one `impl` block in a source file.
@@ -2903,12 +3846,34 @@ mod bridge_tests {
 
     use super::*;
 
-    /// The replica's own node: nothing but a configuration version no peer has.
+    /// The asking node's own backend: nothing but a configuration version no peer has (and, for the
+    /// witness tests, a pause that pauses nothing and an empty support part).
     struct Local;
 
     impl Backend for Local {
         fn system_info(&self) -> SystemInfo {
             unreachable!("not read here")
+        }
+        fn blocking_pause(
+            &self,
+            _: Option<&str>,
+            _: u32,
+            _: Option<&str>,
+        ) -> Result<Vec<telltale_api::model::BlockingNode>, Problem> {
+            Ok(Vec::new())
+        }
+        fn blocking_resume(
+            &self,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<Vec<telltale_api::model::BlockingNode>, Problem> {
+            Ok(Vec::new())
+        }
+        fn support_part(
+            &self,
+            _: &telltale_api::model::SupportCollectRequest,
+        ) -> Result<Vec<u8>, Problem> {
+            Ok(empty_part("k8s"))
         }
         fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<TimeBucket> {
             Vec::new()
@@ -3177,6 +4142,153 @@ mod bridge_tests {
         let none = n.fed.gather(vec![(n.primary.clone(), Read::CacheStats)]);
         assert!(none.is_empty(), "an error is no answer");
         assert_eq!(n.fed.missing_nodes(), [n.fed.label_of(&n.primary)]);
+    }
+
+    /// The asking node's own backend for the query-log test: an empty page of its own, and every
+    /// `limit` it was asked for.
+    #[derive(Default)]
+    struct RecordingLocal {
+        limits: Mutex<Vec<usize>>,
+    }
+
+    impl Backend for RecordingLocal {
+        fn system_info(&self) -> SystemInfo {
+            unreachable!("not read here")
+        }
+        fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<TimeBucket> {
+            Vec::new()
+        }
+        fn top(&self, _: TopKind, _: Hour, _: usize, _: Option<IpAddr>) -> Vec<TopItem> {
+            Vec::new()
+        }
+        fn latency(&self, _: LatencyBy, _: Hour) -> Vec<LatencyRow> {
+            Vec::new()
+        }
+        fn queries(
+            &self,
+            _: &QueryParams,
+            _: u64,
+            _: u64,
+            limit: usize,
+        ) -> Result<QueryPage, Problem> {
+            self.limits
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(limit);
+            Ok(QueryPage {
+                items: Vec::new(),
+                next_cursor: None,
+                scanned: telltale_api::model::ScanStats::default(),
+                missing_nodes: Vec::new(),
+                client_truncated: false,
+            })
+        }
+        fn explain(&self, _: &ExplainParams) -> Result<Explanation, Problem> {
+            Err(Problem::unavailable("stub"))
+        }
+        fn lists(&self) -> Vec<ListInfo> {
+            Vec::new()
+        }
+        fn groups(&self) -> Vec<GroupInfo> {
+            Vec::new()
+        }
+        fn clients(&self) -> Vec<ClientInfo> {
+            Vec::new()
+        }
+        fn upstreams(&self) -> Vec<UpstreamInfo> {
+            Vec::new()
+        }
+        fn config_version(&self) -> u64 {
+            7
+        }
+    }
+
+    // REQ: OBS-003 — the node that asks its peers for a page of the query log asks each for at
+    // most the API's own page, whatever its caller asked, and asks its own backend for the same:
+    // a peer that answers a full page isn't taken as finished, and the next page goes on to its
+    // other rows (every row once).
+    #[test]
+    fn obs_003_the_asking_node_asks_for_at_most_the_api_page() {
+        let api_page = telltale_api::MAX_QUERY_PAGE;
+        let rows = super::queries_read_tests::ROWS;
+        let dir = tempfile::tempdir().unwrap();
+        let peer_backend = Arc::new(super::queries_read_tests::node(dir.path()).0);
+        // The primary answers query-log reads as any node does (`answer`) and keeps each `limit`.
+        let asked: Arc<Mutex<Vec<usize>>> = Arc::default();
+        let (log, b) = (Arc::clone(&asked), Arc::clone(&peer_backend));
+        let handler: RpcHandler = Arc::new(move |_peer, _kind, body| {
+            let (log, b) = (Arc::clone(&log), Arc::clone(&b));
+            Box::pin(async move {
+                let r = serde_json::from_slice::<Read>(&body).map_err(|e| e.to_string())?;
+                match &r {
+                    Read::Queries { limit, .. } | Read::QueriesNegated { limit, .. } => log
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(*limit),
+                    _ => return Err("a read this test doesn't ask".to_owned()),
+                }
+                tokio::task::spawn_blocking(move || answer(b.as_ref(), r))
+                    .await
+                    .map_err(|e| e.to_string())?
+            })
+        });
+        let n = two_nodes_answering(handler);
+        let local = Arc::new(RecordingLocal::default());
+        let shared = Arc::clone(&local);
+        let fed = Federated::new(shared, Arc::clone(&n.fed.cluster));
+        let _in = n.rt.enter();
+        let negated = QueryParams {
+            name: Some("nothing.example".into()),
+            name_not: Some(true),
+            ..QueryParams::default()
+        };
+        for limit in [5_000, usize::MAX] {
+            for params in [QueryParams::default(), negated.clone()] {
+                let what = format!("limit {limit}, negated {}", params.negates());
+                asked.lock().unwrap_or_else(PoisonError::into_inner).clear();
+                local
+                    .limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                let first = fed.queries(&params, 0, 0, limit).unwrap();
+                let next = QueryParams {
+                    cursor: first.next_cursor.clone(),
+                    ..params.clone()
+                };
+                let rest = fed.queries(&next, 0, 0, limit).unwrap();
+                let to_peer = asked.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                let to_me = local
+                    .limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                assert!(
+                    !to_peer.is_empty() && to_peer.iter().all(|l| *l <= api_page),
+                    "{what}: the peer was asked for {to_peer:?}"
+                );
+                assert_eq!(
+                    to_me.first(),
+                    to_peer.first(),
+                    "{what}: the same for this node"
+                );
+                assert_eq!(first.items.len(), api_page, "{what}");
+                assert!(
+                    first.next_cursor.is_some(),
+                    "{what}: a full page from the peer isn't its last"
+                );
+                assert_eq!(rest.items.len(), rows - api_page, "{what}");
+                let mut seen: Vec<u64> = first
+                    .items
+                    .iter()
+                    .chain(&rest.items)
+                    .map(|r| r.ts_unix_micros)
+                    .collect();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), rows, "{what}: every row once");
+            }
+        }
     }
 
     /// A primary that answers the time-bucket reads (with no buckets) and the configuration
@@ -3497,5 +4609,444 @@ mod bridge_tests {
             .map(|r| ((*r).to_owned(), 1))
             .collect();
         assert_eq!(got, want);
+    }
+
+    // ---- a witness (ADR-056, GitHub issue #88) ----
+
+    /// A primary (site `k8s`) with a replica (`pi`) and a witness (`attic`) joined to it, as
+    /// `telltale cluster join` does: each with a token that may bring it, so the primary's registry
+    /// marks the witness at join. Both dialed in. The primary's federated backend is the one read;
+    /// the replica answers each read with one row ([`replica_answers`]) and the witness never
+    /// answers ([`slow_witness`]). The witness runs on a runtime of its own, so a test can take it
+    /// away. The primary answers its peers as a node does ([`rpc_handler`]: the drill relay).
+    struct Three {
+        rt: tokio::runtime::Runtime,
+        witness_rt: Option<tokio::runtime::Runtime>,
+        primary: Arc<Cluster>,
+        replica: Arc<Cluster>,
+        witness: String,
+        /// The calls the witness was given.
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        _stop: tokio::sync::watch::Sender<bool>,
+        _dirs: Vec<tempfile::TempDir>,
+    }
+
+    impl Three {
+        /// The primary's federated backend, with bounds of its own.
+        fn federated(&self, limiter: &'static bridge::Limiter) -> Federated {
+            Federated {
+                limiter,
+                ..Federated::new(Arc::new(Local), Arc::clone(&self.primary))
+            }
+        }
+
+        fn witness_asked(&self) -> usize {
+            self.asked.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// The witness's process ends, and the primary sees its stream end (it still knows it).
+        fn witness_gone(&mut self) {
+            if let Some(rt) = self.witness_rt.take() {
+                rt.shutdown_background();
+            }
+            let up = || {
+                self.primary
+                    .members()
+                    .iter()
+                    .any(|m| m.node_id == self.witness && m.connected)
+            };
+            let until = Instant::now() + Duration::from_secs(30);
+            while up() {
+                assert!(
+                    Instant::now() < until,
+                    "the primary never saw the witness go"
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(
+                self.primary
+                    .members()
+                    .iter()
+                    .any(|m| m.node_id == self.witness),
+                "the primary knows the witness, as not connected"
+            );
+        }
+    }
+
+    /// An identity in `dir` for site `site`, joined to `primary` with a token that grants `grants`.
+    fn joined(
+        primary: &Identity,
+        dir: &std::path::Path,
+        site: &str,
+        grants: TokenGrants,
+    ) -> Identity {
+        let token = primary.create_token_for(60, None, grants).unwrap();
+        let key = pki::new_node_key().unwrap();
+        let answer = primary
+            .accept_join(
+                &JoinRequest {
+                    witness: grants.witness,
+                    ephemeral: false,
+                    secret: token.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: site.into(),
+                    eligible: grants.eligible,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
+            .unwrap();
+        Identity::save_joined(dir, &key.key_pem, &answer, site, grants.eligible, vec![]).unwrap()
+    }
+
+    /// A support part of `node`'s with nothing in it.
+    fn empty_part(node: &str) -> Vec<u8> {
+        telltale_support::cluster::Part {
+            node: node.into(),
+            manifest: "{}".into(),
+            redactions: std::collections::BTreeMap::new(),
+            files: Vec::new(),
+        }
+        .to_wire()
+    }
+
+    /// The replica: one row for each read the witness tests make, an empty part, and no drills.
+    fn replica_answers() -> RpcHandler {
+        Arc::new(|_peer, kind, body| {
+            Box::pin(async move {
+                if kind == crate::drill::KIND {
+                    let op = serde_json::from_slice::<crate::drill::Op>(&body)
+                        .map_err(|e| e.to_string())?;
+                    return match op {
+                        crate::drill::Op::List => Ok(b"[]".to_vec()),
+                        crate::drill::Op::Report { .. } => Ok(b"null".to_vec()),
+                        _ => Err("a drill call these tests don't make".to_owned()),
+                    };
+                }
+                let read = serde_json::from_slice::<Read>(&body).map_err(|e| e.to_string())?;
+                let answer = match read {
+                    Read::Timeseries { from_s, .. } => serde_json::to_vec(&vec![TimeBucket {
+                        start_unix_seconds: from_s,
+                        total: 1,
+                        ..TimeBucket::default()
+                    }]),
+                    Read::Top { .. } => serde_json::to_vec(&vec![TopItem {
+                        key: "example.com".into(),
+                        name: None,
+                        count: 3,
+                        error_bound: 0,
+                        groups: Vec::new(),
+                        by_status: None,
+                    }]),
+                    Read::BlockingState
+                    | Read::BlockingPause { .. }
+                    | Read::BlockingResume { .. } => {
+                        serde_json::to_vec(&vec![telltale_api::model::BlockingNode::default()])
+                    }
+                    Read::CacheEntries { .. } => {
+                        serde_json::to_vec(&vec![telltale_api::model::CacheNodeEntries::default()])
+                    }
+                    Read::CacheFlush { .. } => {
+                        serde_json::to_vec(&vec![telltale_api::model::CacheFlushNode {
+                            node: None,
+                            removed: Some(2),
+                            error: None,
+                        }])
+                    }
+                    Read::SupportCollect { .. } => return Ok(empty_part("pi")),
+                    _ => return Err("a read these tests don't ask".to_owned()),
+                };
+                answer.map_err(|e| e.to_string())
+            })
+        })
+    }
+
+    /// A witness that is slow, or wedged: it counts each call and never answers. (`telltale cluster
+    /// witness` answers "a witness only votes" at once; either way it has nothing for a read, and
+    /// this one, asked, would hold a read to its deadline.)
+    fn slow_witness(asked: Arc<std::sync::atomic::AtomicUsize>) -> RpcHandler {
+        Arc::new(move |_peer, _kind, _body| {
+            let asked = Arc::clone(&asked);
+            Box::pin(async move {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::pending::<Result<Vec<u8>, String>>().await
+            })
+        })
+    }
+
+    fn three_nodes() -> Three {
+        let runtime = |workers: usize| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(workers)
+                .enable_all()
+                .build()
+                .unwrap()
+        };
+        let (rt, witness_rt) = (runtime(2), runtime(1));
+        let dirs: Vec<tempfile::TempDir> = (0..4).map(|_| tempfile::tempdir().unwrap()).collect();
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let primary_id = Identity::init(
+            dirs[0].path(),
+            "home",
+            vec![format!("https://{addr}")],
+            "k8s",
+        )
+        .unwrap();
+        let replica_id = joined(
+            &primary_id,
+            dirs[1].path(),
+            "pi",
+            TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        );
+        // As `telltale cluster join --witness` does.
+        let mut witness_id = joined(
+            &primary_id,
+            dirs[2].path(),
+            "attic",
+            TokenGrants {
+                eligible: false,
+                witness: true,
+            },
+        );
+        witness_id.mark_witness().unwrap();
+        let primary = Cluster::new(primary_id, "0.1.0");
+        let replica = Cluster::new(replica_id, "0.1.0");
+        let witness = Cluster::new(witness_id, "0.1.0");
+        let primary_node = primary.identity.meta.node_id.clone();
+        let replica_node = replica.identity.meta.node_id.clone();
+        let witness_node = witness.identity.meta.node_id.clone();
+        let src = Arc::new(crate::http::tests::sources_in(dirs[3].path()));
+        primary.set_rpc_handler(rpc_handler(src, Arc::new(Local), Arc::clone(&primary)));
+        replica.set_rpc_handler(replica_answers());
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        witness.set_rpc_handler(slow_witness(Arc::clone(&asked)));
+        // The nodes' tasks run until their runtime is dropped (the sender stays in `Three`).
+        let (stop_tx, stop) = tokio::sync::watch::channel(false);
+        drop(rt.spawn(telltale_cluster::net::serve(
+            Arc::clone(&primary),
+            addr,
+            stop.clone(),
+        )));
+        drop(rt.spawn(telltale_cluster::net::dial(
+            Arc::clone(&replica),
+            stop.clone(),
+        )));
+        drop(witness_rt.spawn(telltale_cluster::net::dial(Arc::clone(&witness), stop)));
+        let mut both = vec![replica_node, witness_node.clone()];
+        both.sort();
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut reachable = primary.reachable_peers();
+            reachable.sort();
+            let connected = primary.members().iter().filter(|m| m.connected).count();
+            if reachable == both
+                && connected == 2
+                && replica.reachable_primary().as_deref() == Some(primary_node.as_str())
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "the replica and the witness never both reached the primary"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        // What the primary decided at join, from the token (ADR-056): the witness is one.
+        assert_eq!(primary.witnesses(), std::slice::from_ref(&witness_node));
+        Three {
+            rt,
+            witness_rt: Some(witness_rt),
+            primary,
+            replica,
+            witness: witness_node,
+            asked,
+            _stop: stop_tx,
+            _dirs: dirs,
+        }
+    }
+
+    // REQ: CLU-002 (ADR-056, GitHub issue #88) — a read that fans out over the cluster asks the
+    // nodes that serve reads, never a witness, which holds no data and answers only votes: it isn't
+    // in `missingNodes` (the page said "Partial results: attic didn't answer" on every view), and it
+    // costs the read nothing. This witness never answers, as one that is slow or wedged: asked, it
+    // would hold the read to its deadline. The read's budget has room for the replica's calls only,
+    // so calls to the witness would also have had the read refused. A witness that is gone isn't
+    // missing either. Before (pull request #89): the witness was asked for every window, and
+    // listed, up or down.
+    #[test]
+    fn clu_002_a_witness_is_never_asked_nor_listed_in_missing_nodes() {
+        let mut n = three_nodes();
+        let handle = n.rt.handle().clone();
+        let _in = handle.enter();
+        // Four windows of 240 seconds, and room for four calls at once: the replica's.
+        let limiter: &'static bridge::Limiter =
+            Box::leak(Box::new(bridge::Limiter::with_budget(8, 4)));
+        let fed = n.federated(limiter);
+        let from = 1_791_000_000;
+        let starts: Vec<u64> = fed
+            .timeseries(Step::Second, from, from + 4 * 240)
+            .iter()
+            .map(|b| b.start_unix_seconds)
+            .collect();
+        assert_eq!(
+            starts,
+            [from, from + 240, from + 480, from + 720],
+            "the replica's, every window"
+        );
+        assert_eq!(fed.missing_nodes(), Vec::<String>::new(), "a range of time");
+        let top: Vec<(String, u64)> = fed
+            .top(TopKind::Domains, Hour::Current, 10, None)
+            .into_iter()
+            .map(|t| (t.key, t.count))
+            .collect();
+        assert_eq!(top, [("example.com".to_owned(), 3)]);
+        assert_eq!(fed.missing_nodes(), Vec::<String>::new(), "a top list");
+        assert_eq!(n.witness_asked(), 0, "the witness was asked");
+        n.witness_gone();
+        let starts_now = fed.timeseries(Step::Second, from, from + 4 * 240).len();
+        assert_eq!(starts_now, 4, "the replica's, every window");
+        assert_eq!(
+            fed.missing_nodes(),
+            Vec::<String>::new(),
+            "with the witness gone"
+        );
+        let refused: Vec<(&str, u64)> = limiter
+            .refusals()
+            .iter()
+            .map(|&(why, count)| (why.label(), count))
+            .filter(|&(_, count)| count > 0)
+            .collect();
+        assert_eq!(refused, [], "nothing was refused");
+    }
+
+    // REQ: CLU-002, FLT-009, DNS-006 (ADR-056) — what every node is asked to do or to list, pausing
+    // blocking and the cache, goes to the nodes that serve DNS. A witness runs none: it is not
+    // listed as a node that "didn't answer (an older version can't pause)", nor as one whose cache
+    // is "not reachable: flush it when it's back" (said even of a witness that was up). The
+    // replica's rows are there. Before: each of these lists took every member.
+    #[test]
+    fn clu_002_cluster_wide_pause_and_cache_lists_skip_witnesses() {
+        let n = three_nodes();
+        let _in = n.rt.enter();
+        let fed = n.federated(Box::leak(Box::new(bridge::Limiter::new(8))));
+        let pi = || vec![(Some("pi".to_owned()), None::<String>)];
+        let state: Vec<_> = fed
+            .blocking_state()
+            .into_iter()
+            .map(|r| (r.node, r.error))
+            .collect();
+        assert_eq!(state, pi(), "the pause state");
+        let paused: Vec<_> = fed
+            .blocking_pause(None, 5, None)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.node, r.error))
+            .collect();
+        assert_eq!(paused, pi(), "a pause");
+        let resumed: Vec<_> = fed
+            .blocking_resume(None, None)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.node, r.error))
+            .collect();
+        assert_eq!(resumed, pi(), "a resume");
+        let entries: Vec<_> = fed
+            .cache_entries("hits", 10, None)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.node, r.error))
+            .collect();
+        assert_eq!(entries, pi(), "the cache's entries");
+        let flushed: Vec<_> = fed
+            .cache_flush(Some("example.com"), false, None)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.node, r.removed, r.error))
+            .collect();
+        assert_eq!(flushed, [(Some("pi".to_owned()), Some(2), None)], "a flush");
+        assert_eq!(n.witness_asked(), 0, "the witness was asked");
+    }
+
+    // REQ: CLU-014, CLU-002 (ADR-056) — the drills list and a report's "didn't answer" hint (the
+    // affinity view and a drill's parts ask the same way) go to the nodes that keep drills: a
+    // witness keeps none. Before: it was asked and listed, and a finished drill's report waited the
+    // full five minutes for the witness's part before listing it as missing.
+    #[test]
+    fn clu_002_the_drills_list_skips_witnesses() {
+        let n = three_nodes();
+        let fed = n.federated(Box::leak(Box::new(bridge::Limiter::new(8))));
+        let page = n.rt.block_on(fed.drills(50, 0)).expect("the drills page");
+        assert_eq!(page.missing_nodes, Vec::<String>::new());
+        let p =
+            n.rt.block_on(fed.drill_report("no-such-drill"))
+                .expect_err("there is no such drill");
+        assert_eq!(
+            p.hint.as_deref(),
+            Some("List them with GET /api/v1/drills."),
+            "{p:?}"
+        );
+        assert_eq!(n.witness_asked(), 0, "the witness was asked");
+    }
+
+    // REQ: CLU-014, CLU-002 (ADR-056) — a node with no stream to the witness (the replica here,
+    // which dialed the primary only; a resolver pod is another) asks the primary to pass a drill call
+    // on to the nodes it can't reach. The primary passes it to the nodes that keep drills, never the
+    // witness. Before: the primary asked the witness, and the caller listed it as missing.
+    #[test]
+    fn clu_002_a_drill_call_the_primary_relays_skips_witnesses() {
+        let n = three_nodes();
+        let (answers, missing) =
+            n.rt.block_on(crate::drill::ask_all(&n.replica, &crate::drill::Op::List));
+        let labels: Vec<&str> = answers.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["k8s"], "the primary's own answer");
+        assert_eq!(missing, Vec::<String>::new());
+        assert_eq!(n.witness_asked(), 0, "the witness was asked");
+    }
+
+    // REQ: OPS-011, CLU-002 (ADR-172, ADR-056) — a cluster support package is made of the parts of
+    // the nodes that serve: a witness makes none, so it is neither asked nor listed in the manifest
+    // as missing, whether it is up or gone. Before (pull request #89): a witness that was up was
+    // asked and listed as "did not answer"; after it, one that was down was still listed as "not
+    // connected".
+    #[test]
+    fn clu_002_a_cluster_support_package_skips_witnesses() {
+        let mut n = three_nodes();
+        let handle = n.rt.handle().clone();
+        let _in = handle.enter();
+        let fed = n.federated(Box::leak(Box::new(bridge::Limiter::new(8))));
+        let req = telltale_api::model::SupportPackageRequest {
+            level: Some("none".into()),
+            cluster: true,
+            ..telltale_api::model::SupportPackageRequest::default()
+        };
+        let rows = |fed: &Federated| -> Vec<(String, String)> {
+            let out = fed.support_package(&req, true).expect("a package");
+            let mut rows: Vec<(String, String)> = out.manifest["nodes"]
+                .as_array()
+                .expect("the manifest's nodes")
+                .iter()
+                .map(|r| {
+                    let field = |k: &str| r[k].as_str().unwrap_or_default().to_owned();
+                    (field("node"), field("status"))
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+        let both = [
+            ("k8s".to_owned(), "ok".to_owned()),
+            ("pi".to_owned(), "ok".to_owned()),
+        ];
+        assert_eq!(rows(&fed), both, "with the witness up");
+        n.witness_gone();
+        assert_eq!(rows(&fed), both, "with the witness gone");
+        assert_eq!(n.witness_asked(), 0, "the witness was asked");
     }
 }

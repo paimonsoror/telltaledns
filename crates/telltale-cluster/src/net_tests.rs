@@ -2409,6 +2409,119 @@ fn clu_001_a_peer_with_an_open_stream_is_never_forgotten() {
     assert_eq!(listed(&c), Vec::<String>::new());
 }
 
+// REQ: CLU-002 (ADR-056) — a witness only votes: reads that fan out across the cluster ask the
+// peers that serve them, so a witness with an open stream is reachable but never asked (the UI
+// said "Partial results: <witness> didn't answer" on every page).
+#[test]
+fn clu_002_a_witness_is_reachable_but_serves_no_reads() {
+    let (c, _dir) = auto_replica(
+        true,
+        &[
+            record("replica-b", true, false),
+            record("witness-w", false, true),
+        ],
+    );
+    let mut rxs = Vec::new();
+    for peer in ["replica-b", "witness-w"] {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Frame>(1);
+        c.outbox.lock().unwrap().insert(peer.into(), tx);
+        rxs.push(rx);
+    }
+    let mut reachable = c.reachable_peers();
+    reachable.sort();
+    assert_eq!(
+        reachable,
+        vec!["replica-b".to_owned(), "witness-w".to_owned()]
+    );
+    assert_eq!(c.witnesses(), vec!["witness-w".to_owned()]);
+    assert_eq!(c.serving_peers(), vec!["replica-b".to_owned()]);
+    drop(rxs);
+}
+
+/// The node IDs of `members`, sorted.
+fn ids_of(members: Vec<Member>) -> Vec<String> {
+    let mut ids: Vec<String> = members.into_iter().map(|m| m.node_id).collect();
+    ids.sort();
+    ids
+}
+
+// REQ: CLU-002 (ADR-056) — the members that serve leave out the witnesses the registry names,
+// connected or not: a cluster-wide pause or flush listed both as nodes that didn't answer, and a
+// simulation and a support package listed one that wasn't connected. The member table keeps them
+// (the Cluster page shows every node). Who is a witness is the registry's word, never a Hello's:
+// these Hellos all say "eligible", and a Hello doesn't carry the witness flag.
+#[test]
+fn clu_002_the_members_that_serve_leave_out_the_witnesses() {
+    let (c, _dir) = auto_replica(
+        true,
+        &[
+            record("replica-b", true, false),
+            record("witness-w", false, true),
+            record("witness-x", false, true),
+        ],
+    );
+    for n in ["replica-b", "witness-w", "witness-x"] {
+        meet(&c, n, false);
+    }
+    stream_ended(&c, "witness-x");
+    assert_eq!(ids_of(c.members()), ["replica-b", "witness-w", "witness-x"]);
+    assert_eq!(ids_of(c.serving_members()), ["replica-b"]);
+}
+
+// REQ: CLU-002, CLU-005 (ADR-056) — who is a witness is what the registry says now, read at each
+// call: nothing keeps an old answer, and a Hello can't claim it. A witness never becomes primary (it
+// can't stand, and votes refuse it: `failover::answer`), and a node promoted after a failover keeps
+// the registry it last received, witnesses marked. A node stops being a witness only when the
+// registry says so (it joined again, and the next signed manifest carries its new record): from the
+// next call on, it serves. A registry that can't be read names no witness, so the witness is asked
+// and listed as before: seen, never hidden.
+#[test]
+fn clu_002_who_is_a_witness_follows_the_registry_as_it_is_now() {
+    let (c, _dir) = auto_replica(
+        true,
+        &[
+            record("replica-b", true, false),
+            record("witness-w", false, true),
+        ],
+    );
+    let mut rxs = Vec::new();
+    for peer in ["replica-b", "witness-w"] {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Frame>(1);
+        c.outbox.lock().unwrap().insert(peer.into(), tx);
+        rxs.push(rx);
+        meet(&c, peer, false);
+    }
+    let serving = || {
+        let mut peers = c.serving_peers();
+        peers.sort();
+        (peers, ids_of(c.serving_members()))
+    };
+    let only_b = || (vec!["replica-b".to_owned()], vec!["replica-b".to_owned()]);
+    let both = || {
+        let v = vec!["replica-b".to_owned(), "witness-w".to_owned()];
+        (v.clone(), v)
+    };
+    assert_eq!(serving(), only_b(), "a witness in the registry");
+    let mark = |witness: bool| {
+        let mut nodes = c.identity.registry();
+        for n in &mut nodes {
+            if n.node_id == "witness-w" {
+                n.witness = witness;
+                n.eligible = !witness;
+            }
+        }
+        c.identity.save_registry(&nodes).unwrap();
+    };
+    mark(false);
+    assert_eq!(serving(), both(), "the registry no longer marks it");
+    mark(true);
+    assert_eq!(serving(), only_b(), "the registry marks it again");
+    std::fs::write(c.identity.dir.join("nodes.json"), b"{ not json").unwrap();
+    assert_eq!(c.witnesses(), Vec::<String>::new());
+    assert_eq!(serving(), both(), "an unreadable registry");
+    drop(rxs);
+}
+
 // REQ: CLU-005, CLU-008 (ADR-173) — who the voters are comes from the registry file, and a read
 // that fails leaves only this node in it, which reads as "no automatic failover". That must not
 // make a node forget the voters it keeps a stream to: with the registry unreadable in an

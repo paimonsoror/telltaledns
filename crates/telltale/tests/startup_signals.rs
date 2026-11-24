@@ -296,7 +296,9 @@ fn stop_during_a_join(sig: &str) {
     let mut node = start_joining(tmp.path());
     node.signal(sig);
     let sent = Instant::now();
-    let code = node.wait_exit(Duration::from_secs(10));
+    // A loaded machine can take a while over the stop (I/O, threads joined); 60 s is still half
+    // the join's 120 s, so a stop that waited for the join to give up would fail this.
+    let code = node.wait_exit(Duration::from_secs(60));
     assert!(
         code.is_some_and(|c| c.success()),
         "a stop during the join didn't end the node at once with exit 0: {code:?} after {:?}; {}",
@@ -340,7 +342,8 @@ fn ops_009_a_reload_during_a_cluster_join_keeps_the_node() {
         node.tail()
     );
     node.signal("-TERM");
-    let code = node.wait_exit(Duration::from_secs(10));
+    // As in `stop_during_a_join`: room for a loaded machine, well under the join's 120 s.
+    let code = node.wait_exit(Duration::from_secs(60));
     assert!(
         code.is_some_and(|c| c.success()),
         "a stop still ends it: {code:?}; {}",

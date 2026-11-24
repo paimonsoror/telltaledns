@@ -30,6 +30,10 @@ const RESERVED: &[&str] = &[
     "NODE_IPS",
     // How it was installed, for the update status (ADR-046; image, Helm, install.sh).
     "INSTALL",
+    // REQ: OPS-014 (ADR-182) — the update channel install.sh sets for a native node and its root
+    // update service, and where that service's health check asks.
+    "UPDATE_CHANNEL",
+    "UPDATE_HEALTH_URL",
     // T6.14 — the Kubernetes node and pod (downward API, set by the Helm charts).
     "KUBE_NODE",
     "POD",

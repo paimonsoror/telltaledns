@@ -36,7 +36,7 @@
   <p>Each query's device is recognized first, then given its groups. The first match wins:</p>
   <ol class="steps">
     <li class="step"><b>Client ID</b> (<code>id:…</code>), from the DoH URL path <code>/dns-query/&lt;id&gt;</code> or the DoT/DoH server name <code>&lt;id&gt;.dns.example.com</code>.</li>
-    <li class="step"><b>MAC address</b>, from a trusted router's EDNS option or from the kernel's neighbor table (ARP and IPv6 NDP, read every 60 s).</li>
+    <li class="step"><b>MAC address</b>, from a trusted router's EDNS option, or from the MAC table: the kernel's neighbor table (ARP and IPv6 NDP, read every 60 s), then the MAC addresses your routers report (<a href="#router">UniFi, OPNsense</a>), this node's and those of the full cluster members it hears (a resolver pod hears only the primary).</li>
     <li class="step"><b>Exact IP address.</b></li>
     <li class="step"><b>The most specific CIDR.</b></li>
     <li class="step"><b><code>default</code></b>, for every device that matched nothing.</li>
@@ -46,7 +46,7 @@
     <li><b>By device:</b> a <code>[[client]]</code> entry with its own <code>groups</code> wins over the network. Naming a device without giving it groups keeps it in its network's group.</li>
     <li><b>In several groups,</b> a device gets every list of all of them. Other settings, such as the blocked answer, come from its highest-priority group.</li>
   </ul>
-  <div class="callout"><p><b>MAC addresses</b> survive DHCP changes and IPv6 privacy addresses, so they're the most dependable key at home. The neighbor table only sees real devices with host networking (as on a Pi). In a container's bridge network, every query appears to come from the gateway.</p></div>
+  <div class="callout"><p><b>MAC addresses</b> survive DHCP changes and IPv6 privacy addresses, so they're the most dependable key at home. The kernel's neighbor table only sees real devices with host networking (as on a Pi). With a router integration on this node or on a full cluster member it hears, a device is also recognized by the MAC its router reports where the kernel can't see it: in Docker's bridge network (rootful Docker on Linux, which keeps the device's address; rootless Docker, Podman and Docker Desktop hide it), in Kubernetes with <code>externalTrafficPolicy: Local</code> (a pod through the primary's router), and on other VLANs. The kernel's table wins; the routers' lists are IPv4 only; and a client that is offline, a MAC reported at more than one address (a range extender or bridge) or a router silent for 15 minutes never identifies a device. <b>Name this device…</b> offers the MAC address when it knows it. A block on a device named by its MAC applies only while the MAC is vouched for (not through a private address that changes, an extender, 15 minutes of router silence or a restart): a restriction you must enforce belongs on its network's group, not on a MAC alone.</p></div>
 </section>
 
 <section id="vlans">
@@ -124,8 +124,9 @@ block_mode = "nxdomain"</code></pre>
       <ol class="guide">
         <li>Click a device's address anywhere: the dashboard's top clients, the query log, the live view, or <b>Clients</b>.</li>
         <li>Choose <b>Name this device…</b>, or <b>Add to group…</b> to put it in a group.</li>
+        <li>When TelltaleDNS knows the device's MAC address (from your router, or its own neighbor table), pick <b>Recognize it by</b>: <b>its MAC address</b>, which follows the device when its address changes for as long as your router (or this server's neighbor table) keeps reporting that MAC at one address, or <b>this address</b>, which stops matching if the device gets another one. For a new device a MAC address from your router is what the dialog starts with, unless it is reported at more than one address; for a device that exists, its address is, and the MAC is offered.</li>
       </ol>
-      <p>Operators and admins can name devices; viewers see the names. A device defined in a config file is read-only here.</p>
+      <p>Operators and admins can name devices; viewers see the names. A device defined in a config file is read-only here. A device named by its MAC address alone isn't covered by anomaly mutes, change previews and simulations, or the guess of what it is, and a phone's private Wi-Fi address can change: the dialog says so.</p>
     </div>
     <div class="panel" id="name-file"><h3>Config file</h3>
 <pre><code>[[client]]
@@ -187,6 +188,7 @@ tls_ca = "/etc/telltale/mikrotik-ca.crt"   # the CA that signed the www-ssl cert
   <ul>
     <li><b>UniFi</b> gives the connected clients and the offline ones it saw in the last 30 days (<code>offline_days</code>; 0 for connected ones only), at their last address, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC). <b>MikroTik</b> gives its bound DHCP leases, and the static leases that aren't bound now as offline devices (within <code>offline_days</code>), named by the lease's comment, else the host name.</li>
     <li><b>A self-signed UniFi console:</b> save its certificate as <code>tls_ca</code> (<code>openssl s_client -connect 192.168.1.1:443 &lt;/dev/null | openssl x509 &gt; udm.pem</code>). It names <code>unifi.local</code>, not the address you reach it at, so set <code>tls_server_name</code> to that name. The console is then verified, and only that certificate is trusted.</li>
+    <li><b>The routers' MAC addresses recognize devices too.</b> A device you named by its MAC address is recognized at whatever address your router says it has now, so its name, groups and rules follow it, also in Docker, in a Kubernetes pod and on another VLAN. A router never makes a device, and a host name never recognizes one. <code>interval_secs = 60</code> is a good value for that; a router silent for 15 minutes stops recognizing devices. Check the router's certificate (<code>tls_ca</code>). Resolver pods hear only the primary, and a replica's router reaches only the nodes with a direct stream to it (the primary, and, under automatic failover, the other voters), so keep the key on the primary and, for high availability, on the node that would be promoted. <code>[clients] router_macs = false</code> turns it off, once every node is upgraded.</li>
     <li>Credentials stay in files (a key pasted in the UI is saved to one). Routers are read every <code>interval_secs</code> (300). Routers in the configuration file apply at start and on reload (<code>SIGHUP</code>); ones added or changed in the UI apply within 5 seconds after the reads in progress end. Keep key files in <code>/etc/telltale-secrets/&lt;router&gt;/</code> (mode 0600) or <code>/run/secrets/</code>.</li>
   </ul>
   <p><b>mDNS:</b> phones, speakers, printers, and NAS boxes announce names like <code>Kitchen-HomePod.local</code>. To use them for devices you haven't named:</p>

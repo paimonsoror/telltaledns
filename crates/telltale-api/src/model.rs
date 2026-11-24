@@ -563,7 +563,9 @@ pub struct QueryRow {
     pub ts_unix_micros: u64,
     /// Client address.
     pub client: String,
-    /// The configured device name, when known.
+    /// The name shown for the client: a configured device's name, else what the router or mDNS
+    /// reports for the address (or a Kubernetes workload's `namespace/kind/name`). Only a
+    /// configured device's name works in a quick rule's `devices`; use the address for the others.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
     /// The client's primary group.
@@ -662,12 +664,22 @@ pub struct Explanation {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainClient {
     pub ip: String,
+    /// The client's MAC address: the one the request gave, else the one this node knows for the
+    /// address. Shown only to a caller who may read the devices (`config:read` for an agent token,
+    /// not restricted to a group), unless the caller gave it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
+    /// REQ: FLT-006 (ADR-183) — where the MAC comes from: `given` (the request's), `neighbor`
+    /// (this host's kernel table), `router` (this node's router) or `peer` (another full cluster
+    /// member's router). Withheld with `mac`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_from: Option<String>,
     /// The configured device it was recognized as.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
-    /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`.
+    /// `client_id`, `edns_mac`, `neighbor_mac` (a MAC the kernel's table gave, or the request),
+    /// `router_mac` (a MAC a router reported, this node's or another full member's),
+    /// `kubernetes`, `ip`, `cidr`, or `default`.
     pub identified_by: String,
     /// Highest priority first.
     pub groups: Vec<String>,
@@ -975,6 +987,56 @@ pub struct DeviceIdentity {
     pub changed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
+    /// REQ: FLT-006, API-010 (ADR-183) — how this address is recognized now, by the node that
+    /// answered, and the MAC a device there could be named by (`GET /api/v1/clients/{address}/identity`
+    /// only, for an address; left out at query-log privacy level 2 and above).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recognition: Option<DeviceRecognition>,
+}
+
+/// REQ: FLT-006, API-010 (ADR-183) — how an address is recognized on the node that answered, and
+/// the MAC a device at that address could be named by. A device named by that MAC (`[[client]]
+/// match = ["aa:bb:cc:dd:ee:ff"]`) is recognized wherever the MAC is seen, and so are the rules
+/// that name it. `mac`, `macFrom` and `macShared` go only to a caller who may read the devices
+/// (`/api/v1/clients`: a person signed in with a session or an API token of any role, or an agent
+/// token with `config:read` that isn't restricted to a group; not a display session); anyone else
+/// gets the rest. The MAC may also be missing because the node's query-log privacy level hides
+/// clients (2 and above leave out `recognition` altogether).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRecognition {
+    /// The configured device (`[[client]]`) the address is recognized as now. Never the name a
+    /// router or mDNS gives it, and never a Kubernetes workload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "tablet")]
+    pub device: Option<String>,
+    /// How: `client_id`, `edns_mac`, `neighbor_mac`, `router_mac`, `kubernetes`, `ip`, `cidr`, or
+    /// `default`.
+    #[serde(default)]
+    #[schema(example = "router_mac")]
+    pub identified_by: String,
+    /// The MAC a device at this address could be named by (`aa:bb:cc:dd:ee:ff`): the kernel's
+    /// neighbor table's, else one a router reported, when it is sure of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// Where `mac` comes from: `neighbor` (this node's kernel table: other nodes may not see it),
+    /// `router` (this node's router) or `peer` (another full cluster member's router).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "router")]
+    pub mac_from: Option<String>,
+    /// True when the routers report this MAC at more than one address, or this node's kernel
+    /// neighbor table holds it at more than one IPv4 address (a range extender or bridge shares it;
+    /// a device's own IPv6 addresses don't count): it can't tell
+    /// these devices apart, so a device named by a router's MAC isn't recognized at any of them, and
+    /// the naming dialog doesn't offer it as one device's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mac_shared: bool,
+    /// True when the MAC is locally administered (a "private" Wi-Fi address the device made up):
+    /// it stays the same on a network unless the device is set to change it. Unlike `mac`, `macFrom`
+    /// and `macShared` it is shown, with `device` and `identifiedBy`, to every caller who may read
+    /// identities, including one who may not read MACs: one bit, which names no device and no MAC.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mac_randomized: bool,
 }
 
 /// REQ: OBS-025 — the evidence behind an identity.
@@ -1661,7 +1723,12 @@ pub struct RuleInput {
     /// The domain; its subdomains are included.
     #[schema(example = "game.example.com")]
     pub domain: String,
-    /// Device names, IPs, or CIDRs it applies to.
+    /// Who it applies to: the names of configured devices (`[[client]]`, any case), IPs, or CIDRs.
+    /// A name a router or a device gives an address (the query log's `clientName` for an unnamed
+    /// device) isn't a device here and is refused (422, with a hint): use the address, or name the
+    /// device first. A rule for an address stops matching when the address changes. A Kubernetes
+    /// pod's address changes with every restart (its `clientName` is `namespace/kind/name`): for a
+    /// pod use `groups` with the group an operator placed the workload in, not the pod's address.
     #[serde(default)]
     pub devices: Vec<String>,
     /// Groups it applies to. With neither devices nor groups: everyone.
@@ -2466,6 +2533,116 @@ pub struct MaintenanceRequest {
     /// nodes.
     #[serde(default)]
     pub handover: Option<bool>,
+}
+
+/// REQ: OPS-014 (ADR-182) — `POST /api/v1/nodes/{id}/update`: install this version on the node.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NodeUpdateRequest {
+    /// A release (`0.8.0`) or an edge build (`0.8.0-edge.393`), never older than the version the
+    /// node runs. An edge build can only be installed while it is the newest on the edge channel.
+    #[schema(example = "0.8.0")]
+    pub to: String,
+}
+
+/// REQ: OPS-014 — a request handed to a node's update service and not picked up yet.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeUpdatePending {
+    pub id: String,
+    #[schema(example = "0.8.0")]
+    pub to: String,
+    /// Who asked: a user, `<user> via <site>` from another node, or an agent.
+    pub by: String,
+    /// When (RFC 3339).
+    pub requested_at: String,
+}
+
+/// REQ: OPS-014 — the update service's latest run on a node.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeUpdateRun {
+    /// The request it answers.
+    pub id: String,
+    #[schema(example = "0.8.0")]
+    pub to: String,
+    /// The version the node ran when the run started.
+    #[schema(example = "0.7.0")]
+    pub from: String,
+    /// `installing` (also while the restarted node is checked), `updated` (installed, restarted,
+    /// and healthy: see `health`), `up_to_date`, `rolled_back` (the new build
+    /// wasn't healthy after the restart: the previous binary is back in place; an incident to
+    /// look into, see `error`), `unavailable` (an edge build the edge channel no longer serves:
+    /// nothing installed; the error names the one it serves), `failed` (not installed, or the
+    /// previous binary couldn't be put back), or `refused` (the request was stale, malformed,
+    /// older than the node's version, on another channel, of a version whose build was installed
+    /// there and didn't come up in the last day, or the host wasn't set up for it). REQ: OPS-014 (ADR-182).
+    #[schema(example = "updated")]
+    pub state: String,
+    /// What went wrong, for `failed`, `rolled_back`, `unavailable` and `refused`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// For `updated`: how the new build's health was checked (`checked at <url>`, with any trouble
+    /// the restart command had), or why it wasn't (`not checked: the node wasn't restarted`, for a
+    /// run without `--restart`). REQ: OPS-014 (ADR-182).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    /// Who asked, as the node wrote it in the request: the update service can't check it
+    /// (unverified).
+    pub by: String,
+    /// When the state was written (RFC 3339).
+    pub at: String,
+}
+
+/// REQ: OPS-014 (ADR-182) — a version a node holds back after a run whose new build was
+/// installed and didn't come up (`rolled_back`, or `failed` once installed). A run that failed
+/// before installing anything (a download, a signature, an edge build moved on) holds nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeUpdateHeld {
+    #[schema(example = "0.8.0")]
+    pub to: String,
+    /// Until when (RFC 3339): 24 hours after that run, by the node's own record.
+    pub until: String,
+    /// Which run, when, what failed, and the ways out (by hand with `self-update --to`, or wait).
+    pub why: String,
+}
+
+/// REQ: OPS-014 (ADR-182) — a node's update state (`GET`), or what it did with a request
+/// (`POST`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeUpdate {
+    /// The node (its pod, site, or ID).
+    pub node: String,
+    /// The version it runs.
+    #[schema(example = "0.7.0")]
+    pub version: String,
+    /// `native`, `container`, or `helm`. Only a native node installs a version itself; the others
+    /// are upgraded by their image.
+    pub install: String,
+    /// The channel it follows, `edge` or `stable`: as `install.sh` set it (`--edge`), or, on an
+    /// install from before that, its version's. A stable node takes only releases; an edge node
+    /// edge builds and releases, and stays on edge. Absent from an older node. REQ: OPS-014
+    /// (ADR-182).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Its root update service (`telltale-update.path`) is enabled, so a request is picked up.
+    pub enabled: bool,
+    /// A version the node refuses for now (`update_failed_recently`): one whose new build was
+    /// installed here and didn't come up, for 24 hours after that run. REQ: OPS-014 (ADR-182).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<NodeUpdateHeld>,
+    /// After a `POST`: `requested` (handed to the update service) or `up_to_date` (it already runs
+    /// that version). Absent from a `GET`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// A request the update service hasn't picked up yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<NodeUpdatePending>,
+    /// The update service's latest run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<NodeUpdateRun>,
 }
 
 /// A node's maintenance after a start or end.

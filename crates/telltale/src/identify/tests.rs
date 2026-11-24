@@ -603,6 +603,8 @@ fn t8_2_offline_router_clients_are_not_announced_as_seen() {
         hostname: Some("x".into()),
         expires: 0,
         offline,
+        unsure: false,
+        stale: false,
     };
     let table = |ls: &[crate::devices::Lease]| -> crate::devices::Leases {
         ls.iter().map(|l| (l.ip, l.clone())).collect()
@@ -617,5 +619,70 @@ fn t8_2_offline_router_clients_are_not_announced_as_seen() {
             std::net::Ipv4Addr::new(10, 0, 0, 2),
             std::net::Ipv4Addr::new(10, 0, 0, 4)
         ]
+    );
+}
+
+// REQ: OBS-025, FLT-006 (ADR-183) — behind a range extender that translates MACs, the kernel sees
+// one MAC (the extender's) for every address, while the router lists each device with its own. The
+// kernel's neighbor table is now read on every node, so the router's MAC is preferred (as it was
+// before the kernel's was there): unrelated devices are not merged into one, and don't all get the
+// extender's vendor. A device only the kernel saw is still known by the kernel's MAC, and a lease
+// with no usable MAC (mDNS) doesn't hide it.
+#[test]
+fn obs_025_a_routers_mac_beats_the_kernels_behind_an_extender() {
+    let extender = mac("02:00:00:00:00:ee");
+    let lease = |last: u8, mac: &str| crate::devices::Lease {
+        mac: mac.into(),
+        ip: std::net::Ipv4Addr::new(10, 0, 0, last),
+        hostname: Some(format!("device-{last}")),
+        expires: 0,
+        offline: false,
+        unsure: false,
+        stale: false,
+    };
+    let (tv, phone, printer) = (
+        lease(20, "aa:bb:cc:00:00:01"),
+        lease(21, "aa:bb:cc:00:00:02"),
+        lease(22, ""),
+    );
+    let device = |last: u8, l: &crate::devices::Lease, domain: &str| Device {
+        key: format!("10.0.0.{last}"),
+        ip: format!("10.0.0.{last}").parse().unwrap(),
+        mac: device_mac(Some(extender), Some(l), None),
+        names: l.hostname.clone().into_iter().collect(),
+        domains: vec![domain.to_owned()],
+    };
+    let mut devices = vec![
+        device(20, &tv, "netflix.com"),
+        device(21, &phone, "spotify.com"),
+        device(22, &printer, "hp.com"),
+    ];
+    assert_eq!(devices[0].mac, Some(mac("aa:bb:cc:00:00:01")));
+    assert_eq!(devices[1].mac, Some(mac("aa:bb:cc:00:00:02")));
+    assert_eq!(
+        devices[2].mac,
+        Some(extender),
+        "a lease with no MAC leaves the kernel's"
+    );
+    merge_by_mac(&mut devices);
+    assert_eq!(
+        devices[0].domains,
+        ["netflix.com"],
+        "not merged with the phone"
+    );
+    assert_eq!(devices[1].domains, ["spotify.com"]);
+    assert_eq!(devices[1].names, ["device-21"]);
+    // Without a lease the kernel's MAC names it; without either, nothing does.
+    assert_eq!(device_mac(Some(extender), None, None), Some(extender));
+    assert_eq!(
+        device_mac(None, Some(&tv), None),
+        Some(mac("aa:bb:cc:00:00:01"))
+    );
+    assert_eq!(device_mac(None, Some(&printer), Some(&printer)), None);
+    // A router lease with a MAC the kernel doesn't know: still the lease's.
+    assert_eq!(
+        device_mac(Some(extender), Some(&tv), Some(&phone)),
+        Some(mac("aa:bb:cc:00:00:01")),
+        "the router's, before mDNS's"
     );
 }

@@ -39,6 +39,7 @@ pub mod support_api;
 pub mod time;
 pub mod timeline;
 pub mod ui;
+pub mod update_api;
 pub mod vqlog;
 
 use std::net::IpAddr;
@@ -556,6 +557,18 @@ pub trait Backend: Send + Sync + 'static {
             "device identification isn't available on this node",
         ))
     }
+    /// REQ: FLT-006, CLU-002 (ADR-183) — this node's identity of a device as it answers another
+    /// node's read: [`Backend::identity`] without `recognition`, which only the entry node's own
+    /// view uses (it is not computed for a peer, nor are this node's MACs sent to it). A backend
+    /// that answers peers overrides it (the local one answers for itself, the federating one asks
+    /// its local backend and never every node); the default answers nothing, so a backend that
+    /// forgets cannot start a fan-out on a peer's behalf.
+    fn identity_for_peer(&self, client: &str) -> Result<model::DeviceIdentity, Problem> {
+        let _ = client;
+        Err(Problem::unavailable(
+            "device identification isn't available on this node",
+        ))
+    }
     /// REQ: OBS-024 (T13.1) — what the shared configuration `config` (JSON) would have done to
     /// the logged queries over `opts`' window, compared with the configuration in effect
     /// (`POST /api/v1/simulate`).
@@ -611,6 +624,21 @@ pub trait Backend: Send + Sync + 'static {
         Box::pin(async {
             Err(Problem::unavailable(
                 "maintenance isn't available on this node",
+            ))
+        })
+    }
+    /// REQ: OPS-014 (ADR-182) — asks `node` (`local`, or a cluster node's ID, site, or pod name)
+    /// to install a version, or reads its update state. A native node hands the request to its
+    /// root update service; it's the node's own business, so a cluster sends it to that node.
+    fn node_update(
+        &self,
+        node: &str,
+        call: NodeUpdateCall,
+    ) -> BoxFuture<Result<model::NodeUpdate, Problem>> {
+        let _ = (node, call);
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "updates from the cluster aren't available on this node",
             ))
         })
     }
@@ -745,6 +773,27 @@ pub enum MaintenanceWrite {
     },
     End {
         by: String,
+    },
+}
+
+/// REQ: OPS-014 — an update request or a read of a node's update state, as the API checked it
+/// (and as it crosses the cluster channel to the node it's for).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum NodeUpdateCall {
+    Request {
+        /// The version, checked to be a release or edge build version.
+        to: String,
+        /// Who: the actor's name.
+        by: String,
+    },
+    Status,
+    /// REQ: OPS-014, AGT-002 (ADR-182) — every check a request gets, and what it would do, with
+    /// nothing written. Its own variant, so a node that doesn't know it refuses it rather than
+    /// taking it for a request.
+    DryRun {
+        /// The version, as for a request.
+        to: String,
     },
 }
 
@@ -1021,6 +1070,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(kubernetes_api::routes(Arc::clone(&backend)))
         // REQ: CLU-014 — the running drill, reports, and the affinity view.
         .merge(drill_api::read_routes(Arc::clone(&backend)))
+        // REQ: OPS-014 — a node's version, update service, and latest update.
+        .merge(update_api::read_routes(Arc::clone(&backend)))
         .merge(rhythm_api::routes(Arc::clone(&backend)))
         .merge(timeline::routes(Arc::clone(&backend)))
         // REQ: CLU-013 — the rollout in progress and the kept versions.
@@ -1086,6 +1137,12 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(
             maintenance_api::routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: OPS-014 — installing a version replaces a node's binary: admin (agents:
+        // cluster:upgrade).
+        .merge(
+            update_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
         )
         // REQ: CLU-014 — drills need operator (agents: ops:drill).
         .merge(
@@ -1157,7 +1214,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
+        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, update_api::node_update_status, update_api::node_update_request, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -1172,7 +1229,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, model::NodeUpdate, model::NodeUpdateRequest, model::NodeUpdatePending, model::NodeUpdateRun, model::NodeUpdateHeld, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
@@ -1791,6 +1848,10 @@ fn listed(v: Option<&String>) -> bool {
     v.is_some_and(|s| s.split(',').any(|x| !x.trim().is_empty()))
 }
 
+/// REQ: OBS-003 — the most rows one query-log page has (`GET /api/v1/queries`' `limit`). A node
+/// answers another node's query-log read with at most this many too: the API never asks for more.
+pub const MAX_QUERY_PAGE: usize = 1_000;
+
 /// Search the query log.
 ///
 /// Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
@@ -1812,7 +1873,7 @@ async fn queries(
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), 0, now, "from")?;
     let to = time_param(p.to.as_deref(), 0, now, "to")?;
-    let limit = p.limit.unwrap_or(100).clamp(1, 1000);
+    let limit = p.limit.unwrap_or(100).clamp(1, MAX_QUERY_PAGE);
     if p.name_match.is_some_and(|m| m != NameMatch::Substring) && p.name.is_none() {
         return Err(Problem::invalid("`match` needs `name`"));
     }
@@ -1867,9 +1928,21 @@ async fn queries(
     responses((status = 200, body = Explanation, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn explain(
     State(b): State<Shared>,
+    ext: axum::http::Extensions,
     Query(p): Query<ExplainParams>,
 ) -> Result<Json<Explanation>, Problem> {
-    blocking(move || b.explain(&p)).await.map(Json)
+    // REQ: AGT-004, FLT-013 (ADR-183) — the kernel's neighbor table is read on every node, so the
+    // MAC of the client is known whether or not a device is named by its MAC: it goes only to a
+    // caller who may read the devices, or who gave it themselves.
+    let shows_macs =
+        auth::routes::principal(&ext).is_ok_and(|who| auth::agent::may_read_clients(&who));
+    let gave_mac = p.mac.is_some();
+    let mut e = blocking(move || b.explain(&p)).await?;
+    if !shows_macs && !gave_mac {
+        e.client.mac = None;
+        e.client.mac_from = None;
+    }
+    Ok(Json(e))
 }
 
 /// Filter lists and their download state.

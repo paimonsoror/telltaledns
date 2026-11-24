@@ -925,3 +925,95 @@ fn dns_005_oversized_cached_answer_is_truncated_not_missed() {
     assert_eq!(s.header.ancount, 20);
     assert_eq!(cache.stats().hits, 2);
 }
+
+/// The answer section of `resp`: each record's owner, type and RDATA, in order.
+fn answer_records(resp: &[u8]) -> Vec<(String, u16, Vec<u8>)> {
+    records(resp)
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|r| r.section == telltale_proto::Section::Answer)
+        .map(|r| {
+            let mut owner = NameBuf::default();
+            telltale_proto::read_name(resp, r.name_off, &mut owner).unwrap();
+            (owner.display().to_string(), r.rtype, r.rdata(resp).to_vec())
+        })
+        .collect()
+}
+
+/// REQ: DNS-011 (issue #78) — a validated answer is put in CNAME-chain order once, before it
+/// is cached; the cache then serves its records in the order they were stored: from a hit, as
+/// a stale answer, and after a dump and reload (`cache.bin`).
+#[test]
+fn dns_011_order_cache_hit_stale_and_reload_keep_the_record_order() {
+    let policy = CachePolicy {
+        stale_max_age: 100,
+        ..CachePolicy::default()
+    };
+    let cache = Cache::new(policy.clone());
+    let t0 = Instant::now();
+    let req = query_bytes("www.example.com", rtype::A, Some(EdnsOut::new(1232)), 1);
+    let q = parse_query(&req).unwrap();
+    let www = NameBuf::from_presentation("www.example.com").unwrap();
+    let cdn = NameBuf::from_presentation("cdn.example.net").unwrap();
+    // Stand-in RRSIG RDATA: the cache doesn't read it.
+    let sig = [7u8; 24];
+    let mut buf = [0u8; 1500];
+    let mut builder = ResponseBuilder::new(&q, &mut buf, rcode::NOERROR).unwrap();
+    builder
+        .answer_rdata(Some(&www), rtype::CNAME, 300, cdn.as_wire())
+        .unwrap();
+    builder
+        .answer_rdata(Some(&www), rtype::RRSIG, 300, &sig)
+        .unwrap();
+    builder
+        .answer_rdata(Some(&cdn), rtype::A, 60, &[192, 0, 2, 2])
+        .unwrap();
+    builder
+        .answer_rdata(Some(&cdn), rtype::A, 60, &[192, 0, 2, 1])
+        .unwrap();
+    builder
+        .answer_rdata(Some(&cdn), rtype::RRSIG, 60, &sig)
+        .unwrap();
+    let len = builder.finish(Some(EdnsOut::new(1232))).unwrap();
+    let stored = answer_records(&buf[..len]);
+    assert_eq!(stored.len(), 5);
+    cache.insert(&key(&q), &q, &buf[..len], t0).unwrap();
+    let client = Client::from_query(&q, Some(EdnsOut::new(1232)));
+    let mut out = [0u8; 1500];
+
+    let Lookup::Hit { len, .. } = cache.get(
+        &key(&q),
+        &q.qname,
+        &client,
+        t0 + Duration::from_secs(10),
+        &mut out,
+    ) else {
+        panic!("expected a hit");
+    };
+    assert_eq!(answer_records(&out[..len]), stored, "a hit");
+
+    // Past the addresses' 60 s, inside the stale window.
+    let stale_at = t0 + Duration::from_secs(90);
+    assert_eq!(
+        cache.get(&key(&q), &q.qname, &client, stale_at, &mut out),
+        Lookup::Expired
+    );
+    let len = cache
+        .get_stale(&key(&q), &q.qname, &client, stale_at, &mut out)
+        .unwrap();
+    assert_eq!(answer_records(&out[..len]), stored, "a stale answer");
+
+    let mut dump = Vec::new();
+    assert_eq!(cache.dump(t0, 1, &mut dump).unwrap(), 1);
+    let after = Cache::new(policy);
+    let hash = |wire: &[u8]| {
+        let mut name = NameBuf::default();
+        telltale_proto::read_name_uncompressed(wire, 0, &mut name).ok()?;
+        Some(name.hash64(SEED))
+    };
+    assert_eq!(after.load(&dump, t0, 1, hash).unwrap(), 1);
+    let Lookup::Hit { len, .. } = after.get(&key(&q), &q.qname, &client, t0, &mut out) else {
+        panic!("expected a hit after the reload");
+    };
+    assert_eq!(answer_records(&out[..len]), stored, "after a reload");
+}

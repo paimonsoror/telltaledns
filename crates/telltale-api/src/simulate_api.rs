@@ -93,7 +93,17 @@ pub(crate) async fn simulate(
 
 /// REQ: OBS-024, AGT-009 — what an agent sees of a simulation that couldn't download a list:
 /// that it couldn't, not why (the node would otherwise probe URLs on the agent's behalf).
-pub(crate) fn sanitize_problem(p: &crate::auth::Principal, e: Problem) -> Problem {
+pub(crate) fn sanitize_problem(p: &crate::auth::Principal, mut e: Problem) -> Problem {
+    // REQ: FLT-005, AGT-004 (GitHub issue #73) — a hint that says which address a device name
+    // belongs to is a lookup over every device, like reading the query log. The refusing node puts
+    // the plain text in `hint` and the fuller one beside it, so a node that doesn't know the field
+    // shows the plain one; this node (the one that answers the caller) upgrades it for everyone but
+    // an agent that may not simulate (no `querylog:read`, or limited to a group).
+    if let Some(fuller) = e.fuller_hint.take()
+        && (p.agent.is_none() || agent_may_simulate(p, None).is_ok())
+    {
+        e.hint = Some(*fuller);
+    }
     if p.agent.is_some() && e.detail.contains("to simulate it") {
         return Problem::new(
             e.code,
@@ -101,4 +111,105 @@ pub(crate) fn sanitize_problem(p: &crate::auth::Principal, e: Problem) -> Proble
         );
     }
     e
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{AgentGrant, Principal, Role, Via};
+
+    fn principal(agent: Option<AgentGrant>) -> Principal {
+        Principal {
+            user_id: 1,
+            username: "olga".into(),
+            role: Role::Operator,
+            via: Via::Token { id: "t".into() },
+            agent,
+            display: None,
+        }
+    }
+
+    /// An agent token with exactly `scopes`, perhaps limited to a group.
+    fn bot(scopes: &[&str], group: Option<&str>) -> Principal {
+        principal(Some(AgentGrant {
+            token_name: "bot".into(),
+            scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
+            group: group.map(str::to_owned),
+            rate_per_minute: None,
+            client: None,
+        }))
+    }
+
+    const PLAIN: &str = "Use the address, or name the device first.";
+    const FULLER: &str =
+        "`tv` is what your router calls 192.168.1.102. Use the address, or name the device first.";
+
+    fn refusal() -> Problem {
+        Problem::new(Code::InvalidConfig, "`tv` isn't a named device")
+            .hint(PLAIN)
+            .fuller_hint(FULLER)
+    }
+
+    /// REQ: FLT-005, AGT-004 (issue #73) — a refusal carries the plain hint in `hint` and the fuller
+    /// one beside it. Whoever may read every device's queries (a person, or an agent token with
+    /// `querylog:read` and no group) is given the fuller one; an agent token without that scope, or
+    /// limited to a group, keeps the plain one. This is also what a node does with a refusal that
+    /// came from the primary over the cluster channel (the problem is the same value there).
+    #[test]
+    fn agt_004_the_address_hint_goes_only_to_those_who_may_see_it() {
+        for (who, p, sees) in [
+            ("a person", principal(None), true),
+            (
+                "an agent with querylog:read",
+                bot(&["config:write:rules", "querylog:read"], None),
+                true,
+            ),
+            (
+                "an agent without it",
+                bot(&["config:write:rules", "config:read"], None),
+                false,
+            ),
+            (
+                "an agent limited to a group",
+                bot(&["config:write:rules", "querylog:read"], Some("kids")),
+                false,
+            ),
+        ] {
+            let e = sanitize_problem(&p, refusal());
+            assert_eq!(
+                e.hint.as_deref(),
+                Some(if sees { FULLER } else { PLAIN }),
+                "{who}"
+            );
+            assert!(
+                e.fuller_hint.is_none(),
+                "{who}: the fuller text is never kept after this point"
+            );
+        }
+    }
+
+    /// REQ: FLT-005, AGT-004 (issue #73) — a refusal from a node that doesn't know the fuller hint
+    /// (an older primary) has only the plain text in `hint`, and stays so for everyone.
+    #[test]
+    fn agt_004_a_refusal_without_a_fuller_hint_keeps_its_plain_one() {
+        for p in [
+            principal(None),
+            bot(&["querylog:read"], None),
+            bot(&[], None),
+        ] {
+            let e = sanitize_problem(&p, Problem::new(Code::InvalidConfig, "x").hint(PLAIN));
+            assert_eq!(e.hint.as_deref(), Some(PLAIN));
+        }
+    }
+
+    /// The public problem never carries the fuller text as a field of its own.
+    #[test]
+    fn agt_004_the_public_problem_has_no_extra_field() {
+        let json = serde_json::to_value(refusal()).unwrap();
+        assert!(
+            json.get("fullerHint").is_none() && json.get("fuller_hint").is_none(),
+            "{json}"
+        );
+        assert_eq!(json["hint"], PLAIN);
+    }
 }

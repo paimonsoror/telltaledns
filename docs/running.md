@@ -81,7 +81,7 @@ A summary comes before anything is installed. The answers become `/etc/telltale/
 - **Automation:** `--interactive` asks even without a terminal and reads the answers from stdin; `--config-only FILE` writes the config and stops (no root needed), to see what the answers produce.
 - **The first admin "now"** is created on the service's first start from an Argon2id hash in a root-only systemd drop-in, which the installer removes once the service is up. The password itself isn't stored.
 
-Re-running it upgrades the binary in place. `sudo telltale self-update --restart` does the same check-and-swap from the binary itself (`--channel edge` for builds from main, `--check` to only look): it verifies the signature with the release key built into the binary and the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as `telltale.old`. In containers it refuses (pull a new image instead).
+Re-running it upgrades the binary in place. `sudo telltale self-update --restart` does the same check-and-swap from the binary itself (`--channel edge` for builds from main, `--check` to only look): it verifies the signature with the release key built into the binary and the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as `telltale.old`. In containers it refuses (pull a new image instead). `--to 0.8.0` installs that version only, from its own release page (older than the running one too: that's how to go back), and `--to 0.8.0-edge.393` an edge build while it is still the newest on the edge channel (edge binaries are replaced on every build, so an older one can't be downloaded); the release's signed `releases.json` must name the version and list the same checksum. To let the cluster upgrade the node for you, see [Upgrading from the cluster](#upgrading-from-the-cluster) (`install.sh --cluster-updates`).
 
 **Uninstalling:** `sudo sh install.sh --uninstall` stops and disables the service and removes its unit and the binary (`telltale.old` too).
 - **The system resolver:** if the install turned off systemd-resolved's stub listener, it asks to restore it (the default). `/etc/resolv.conf` is put back as the install found it (the install records the link it replaced, or keeps a copy of the file), and systemd-resolved is restarted, so the machine resolves names again without TelltaleDNS. Without a terminal or with `--yes` it restores without asking; `--keep-resolver` leaves it as the install set it. Installs from before this was recorded get the usual stub link (`/run/systemd/resolve/stub-resolv.conf`).
@@ -185,12 +185,12 @@ The same build identity, and how the node was installed (`native`, `container`, 
 - **What's inside:** each binary carries its dependency list (`cargo audit bin telltale` reads it), and every release has a CycloneDX SBOM per binary (`telltale-<arch>-linux.cdx.json`, listed in the signed `SHA256SUMS`).
 - **Rebuilding:** a release builds the same bytes from the same commit. The build date in `--version` is the commit's time. To compare, build the Dockerfile's `bin` stage with the build arguments `--version` shows (`TELLTALE_BUILD_VERSION`, `TELLTALE_BUILD_COMMIT`, `TELLTALE_BUILD_DATE`, `TELLTALE_BUILD_CHANNEL`) and `SOURCE_DATE_EPOCH` set to the commit's Unix time, then compare checksums. A nightly job builds every commit twice from scratch and fails if the two differ.
 
-TelltaleDNS never updates itself from the UI. The panel shows the step for your install:
+The UI never replaces a node's binary itself. The panel shows the step for your install:
 - **Native:** `sudo telltale self-update --restart` (`--channel edge` for edge).
 - **Container:** `docker compose pull && docker compose up -d`.
 - **Helm:** `helm upgrade`, or bump the chart version in your GitOps values.
 
-In a cluster, upgrade replicas first.
+In a cluster, upgrade replicas first. A cluster can do this for its native nodes: see [Upgrading from the cluster](#upgrading-from-the-cluster).
 
 ## Backups and moving to a new machine
 ```sh
@@ -774,7 +774,7 @@ flowchart LR
   U -- all failed --> SF[SERVFAIL + EDE 22]
 ```
 - **Cache:** answers are cached for their TTL (clamped by `[cache] min_ttl`/`max_ttl`). Negative answers are cached when the upstream includes an SOA. SERVFAIL is cached for 5 seconds, and never served stale afterwards: an expired failure is asked again. Hot entries are refreshed in the background just before they expire.
-- **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. The last healthy upstream left to try (the only one, in a group of one) may wait for its answer for the rest of the query's 2 s (not just `timeout_ms`, 400 ms by default), so a name the upstream has to look up itself (often several hundred milliseconds) isn't cut short and answered SERVFAIL. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. A SERVFAIL or REFUSED answer counts toward "more than half the time" but not toward "3 in a row", so a client retrying one broken domain can't bench a healthy upstream. Identical concurrent questions share one upstream request.
+- **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. The last healthy upstream left to try (the only one, in a group of one) may wait for its answer for the rest of the query's 2 s (not just `timeout_ms`, 400 ms by default), so a name the upstream has to look up itself (often several hundred milliseconds) isn't cut short and answered SERVFAIL. With `strategy = "parallel"`, each healthy upstream asked at once may wait the same way, so the faster one's answer isn't thrown away. The price: one of them that stops answering is benched only after about 2 s (three timeouts) instead of almost at once, and until then a client whose other upstream answered SERVFAIL waits for it, up to the same 2 s (then up to its `timeout_ms`). An upstream that never answers costs each query up to those 2 s until three timeouts in a row bench it (in a group of one: the first three queries when they come one after another; every query started in the 2 s before those timeouts land waits the full 2 s), and then up to its `timeout_ms` for each query for as long as it still doesn't answer. Attempts still running when the client gets its answer finish in the background, each within its own timeout, so that their failures are counted: how many are in flight depends on the cache-miss rate and the 2 s budget. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. A SERVFAIL or REFUSED answer counts toward "more than half the time" but not toward "3 in a row", so a client retrying one broken domain can't bench a healthy upstream. A name an upstream takes longer than the 2 s to answer does count as a timeout, though: three of those in a row, with no other answer from it in between, bench even a healthy upstream for 10 seconds, and while it's benched, names it takes longer than its `timeout_ms` to look up get SERVFAIL until it's probed successfully. (Before 0.8.0 every attempt was cut at the shortest of `timeout_ms`, 3 × the upstream's usual time + 50 ms, and 1 s, often about 70 ms, so slower names counted the same way.) Identical concurrent questions share one upstream request.
 - **Serve-stale:** if upstreams don't answer within 1.8 s (`[cache] stale_answer_client_timeout_ms`) and an expired answer is still in the cache (up to a day old by default), it's served with TTL 30 and Extended DNS Error 3 ("Stale Answer"), while the refresh continues in the background.
 - **Answering recently expired names at once:** devices keep answers themselves, so most repeat questions reach the resolver just after the answer expired, and a plain cache misses them. With `stale_answer_client_timeout_ms = 0` an expired answer is given at once (TTL 30, EDE 3) while it's refreshed in the background, the way Pi-hole's cache optimizer works by default. `stale_max_age` bounds how old it may be (an hour matches Pi-hole), and `min_ttl` keeps short-lived answers a little longer (Technitium's default is 10 s):
   ```toml
@@ -1062,8 +1062,25 @@ name = "Office"
 match = ["10.0.5.0/24"]                  # no groups: its network's group, else "default"
 ```
 - A device in several groups gets every list of all of them. Other settings, such as block mode, come from its highest-priority group.
-- **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR → `default`.
-- **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. While any `[[client]]` matches by MAC, TelltaleDNS reads the kernel's neighbor table (ARP and IPv6 NDP) every 60 s (`[clients] neighbor_refresh_secs`); without one it isn't read, and `telltale_neighbors` stays 0. The table only holds devices on the node's own subnets, and only with host networking (as on a Pi): in a container's bridge network or a Kubernetes pod, every query appears to come from the gateway. Device recognition also gets MAC addresses from router integrations and mDNS, with or without the table.
+- **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the MAC table (the kernel's neighbor table, then the MAC addresses your routers report: see below) → exact IP → the most specific CIDR → `default`.
+- **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. Where a query's MAC address comes from, in this order (the first that has one for the address wins):
+  1. **The kernel's neighbor table** (ARP and IPv6 NDP), read every 60 s (`[clients] neighbor_refresh_secs`) while `[clients] neighbor_table` is on (the default). It only holds devices on the node's own subnets, and only with host networking (as on a Pi): in a container's bridge network or a Kubernetes pod, every query appears to come from the gateway.
+  2. **The MAC addresses this node's routers report** ([Names from your router](#names-from-your-router-unifi-opnsense)): UniFi's connected clients, OPNsense's DHCP leases.
+  3. **The ones another full cluster member's routers report.** Every node asks the members it has a direct stream to for what their routers know (once a minute, and every 5 seconds, for two minutes at most, until a member that reads a router has answered). A full member is one the cluster's member registry lists and that is not a resolver pod: what a node says about itself doesn't count. Replicas connect to the primary; under automatic failover (`failover = auto`, with three or more voters) the nodes that can be promoted also connect to each other, and in the default `manual` mode they don't. **A resolver pod connects to the primary alone**, so a pod gets the primary's own router view, not a replica's. A router read only by a replica reaches the primary (and, under automatic failover, the other voters), not the pods: **put the router's key on the primary** (and on the node a failover would promote).
+
+  With a router on this node or on a member it hears, a device is also recognized by MAC where the kernel can't see it: in Docker's bridge network (rootful Docker on Linux, which keeps the device's address; rootless Docker, Podman and Docker Desktop hide it), in Kubernetes with `externalTrafficPolicy: Local` (the Helm chart's setting, which keeps the device's address; a pod through the primary's router), and on other VLANs. A device that has no entry in either table is recognized by its address, network or `default`, as before.
+- **When a router's MAC doesn't count.** The kernel's table always wins over a router for an address. The routers' lists are IPv4 only (a device's IPv6 queries are recognized by MAC only through the kernel's NDP table). A router's MAC for an address is left out, and the address recognized as it would be without it (by address, network or `default`), when:
+  - the client is offline;
+  - the router or two of its rows give the address more than one MAC, or one MAC at two or more addresses (a range extender or bridge that shares its MAC: its devices can't be told apart, so a device named by that MAC is recognized at none of them);
+  - UniFi gives only the address the client had before, not the one it has now;
+  - the row's MAC is empty, all zeros, or a multicast one;
+  - the router hasn't answered for 15 minutes. While a device is named by its MAC, each router is read at least every 10 minutes whatever its `interval_secs` says, so an answer is never much older than that, and a read that fails is tried again every 15 seconds, well before the 15 minutes are up. Another node's answer counts for 15 minutes too, and only if the node is listed in the member registry as a full cluster member (not a resolver pod, and not a node that merely says it is the primary) and runs this version.
+
+  A router never makes a device: a binding only identifies a `[[client]]` that lists that MAC in `match`. This node's own routers come first: an address they bind is theirs. For an address they don't bind, another member's answer is used only if every member that has one agrees and none of them withholds it. A MAC a member withholds still counts toward "one MAC at two addresses". The rows of a router that has gone silent for 15 minutes do not: they never veto fresh data on any node, so a device that moved while such a router stays configured is recognized at its new address; the node that reads that router keeps the stale row's own address withheld, and no other node does. The kernel's table has no such rule: behind a MAC-translating extender it holds one MAC at every address behind it, and a device named by that MAC is recognized at all of them; the naming dialog flags such a MAC as shared (several IPv4 addresses with one MAC: a device's IPv6 addresses are its own, not an extender's) and doesn't preselect it.
+- **A block on a device named by its MAC applies only while the MAC is vouched for.** A private address that changes, an extender, 15 minutes of router silence, a restart, or a pod that doesn't hear the router all send the device back to its address, network or `default`, and a block on its name stops applying (an allowance is just as lost). A restriction you must enforce belongs on its network's group (**Groups for your networks**), not on a MAC alone.
+- **`[clients] router_macs`** (default `true`) turns the routers' MAC addresses off, leaving the kernel's table and EDNS MACs only. It's shared by the cluster and applied on reload. Set it to `false` only after every node is upgraded: an older replica refuses a shared configuration that has it (`shared configuration: unknown field …`; it keeps serving the last one it had), and an older build won't start with it in its own file. At the default the setting isn't written into what the primary shares, so older nodes aren't affected.
+- **Mixed versions.** A node on an earlier version recognizes a MAC-only device through its kernel table alone. During a rolling upgrade, devices are recognized by router data once the node that reads the router (usually the primary) runs this version.
+- If devices are named by MAC and no router MAC reaches a node, its log says so once, after a minute, and again only after MACs have come and gone: `devices are named by their MAC address, but no router MAC reaches this node: no router of its own is read here ... and no other full cluster member passes one on` (on a resolver pod: `... no router MAC reaches this resolver pod: a pod hears only the primary ...`). The text also names the other causes, because the same message comes from each of them: its router (or a member's, or the primary's) is silent, the members or the primary run an earlier version or haven't sent the member list yet, or the node refuses its configuration (a replica that refuses a configuration, with invalid files or a newer schema, keeps no member's bindings: it never writes the member list). A node whose configuration has no `[[router]]` is never told, in a cluster too (routers are shared settings, so a cluster with none gives every node nothing to read). The log also says when router MACs start and stop being used (`client identification: N addresses recognized by the MAC their routers report`).
 - If your router forwards queries with dnsmasq's `add-mac`, trust it explicitly. Any device could send that option and impersonate another, so it's ignored by default:
   ```toml
   [clients]
@@ -1071,7 +1088,7 @@ match = ["10.0.5.0/24"]                  # no groups: its network's group, else 
   ```
 - `$client=` rules match the device's name (`$client='Kids tablet'`), its client ID, or its IP or CIDR.
 - A group can also send its questions to its own upstream servers (for example, a family-filtering resolver): see [Upstream servers per group](#upstream-servers-per-group).
-- Changes apply on reload (`SIGHUP`). Metric: `telltale_neighbors` (entries in the neighbor table).
+- Changes apply on reload (`SIGHUP`). Metrics: `telltale_neighbors` (entries from the kernel's neighbor table, 0 while it isn't read), `telltale_router_macs{source="router"|"peer"}` (the bindings in use that this node's routers, and other full members' routers, report: 0 until a device is named by its MAC), and `telltale_router_macs_unsure` (bindings withheld, each address once).
 
 ### Groups for your networks (VLANs)
 A group can own networks: every device on them belongs to it, with no per-device setup. That
@@ -1366,10 +1383,15 @@ tls_ca = "/etc/telltale/mikrotik-ca.crt"   # the CA that signed the router's cer
 
   The plain `www` service (`http://`) works too, but sends the password unencrypted on every read; TelltaleDNS warns about it.
 - A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
-- Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
+- Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile. While a device is named by its MAC address and `[clients] router_macs` is on (the default), the MAC addresses a router lists identify devices, so it is read at least every 10 minutes (600 seconds) whatever `interval_secs` says: a list older than 15 minutes doesn't say who holds an address, and a read that fails is asked again every 15 seconds inside that time. With `interval_secs = 3600` that makes 600 while a device is named by its MAC, and 3600 otherwise: before the first device is named by a MAC, a list is older than 15 minutes for most of each hour, and the "Name this device…" dialog offers a router's MAC only while its list is fresher than that, so the first naming may have to wait for the next read (a shorter `interval_secs` avoids it).
 - Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).
+- **The routers' MAC addresses also recognize devices.** A device you named by its MAC address (`match = ["aa:bb:cc:dd:ee:ff"]`) is recognized at whatever address your router says it has now, so its name, groups and rules follow it when the router gives it another address, including where the kernel's neighbor table can't see it (in Docker, in a Kubernetes pod, on another VLAN: see [Groups and devices](#groups-and-devices)). A router only ever gives the address and the MAC: it never makes a device, and a host name or alias never recognizes one.
+  - **Read the router often enough.** A device that moves to a new address is recognized there at the next read, so `interval_secs = 60` is a good value when that matters (a router is never read more often than every 30 seconds). A router that is silent for 15 minutes stops recognizing devices until it answers again (they are recognized by address, network or `default` meanwhile), and while a device is named by its MAC every router is read at least every 10 minutes whatever `interval_secs` says.
+  - **Check the router's certificate.** A router's list is now something that decides which rules a device gets, so `tls_insecure_skip_verify = true` matters more than it did: anything on your network that poses as the console can bind any address to any MAC. The node logs a warning when a router with an unchecked certificate starts to recognize devices. Use `tls_ca` and `tls_server_name`.
+  - **High availability needs the key on two nodes, and the pods hear only the primary.** What the router says reaches the other nodes through the node that reads it, and only the nodes that have a direct stream to it: a replica's router reaches the primary (and, under automatic failover, the other voters), but a resolver pod connects to the primary alone and gets the primary's own router view. So the key belongs on the primary, and, for a failover, on the node that would be promoted. If the reading node goes away, devices named only by MAC fall back to recognition by address 15 minutes later. Put the router's key in `/etc/telltale-secrets/` or `/run/secrets/` on both, with the router defined in the configuration file. A key pasted in the UI stays on the node that saved it. While two nodes read one router they poll out of phase, so a device that has just moved can be withheld on both until both have polled (a MAC then sits at two addresses in their combined view). If one of the two loses its router (a key that stops working, a changed address), its old rows stop counting after 15 minutes of silence and withhold nothing on the other nodes.
+  - **Sites that reuse one private range.** Every full member's router counts, so in a cluster that spans sites using the same range (two homes both on 192.168.1.0/24), a member at another site can bind a local address to a MAC. Keep such clusters on one site's routers, or set `router_macs = false` (after every node is upgraded).
 - Credentials stay in files, out of the configuration (a key pasted in the UI is saved to a file too). Keep them in `/etc/telltale-secrets/<router>/` (mode 0600, owned by the service user; the folder 0700), as above, or in `/run/secrets/` for Docker: in a cluster those are the folders a replica reads a key from (below). Routers in the file apply at start and on reload (`SIGHUP`), within 5 seconds after the reads in progress end, as do ones added or changed in the UI, and a router made in the UI with the name of one in the file replaces it until it's removed (**Revert to the file**).
-- In a cluster, only one node needs to read the router (or hear mDNS). Every node asks the others for the device names they know, once a minute, so a resolver pod without the router's key names devices the same way the primary does.
+- In a cluster, only one node needs to read the router (or hear mDNS) for the names. Every node asks the nodes it has a direct stream to for the device names they know, once a minute, so a resolver pod without the router's key names devices the way the primary does (a pod hears only the primary: for MAC addresses see above).
 - **Which key files a node sends.** A node reads a router with a key file only if, for each of its key files: the file is in `/run/secrets/` (Docker, Compose) or `/etc/telltale-secrets/` (the Helm chart's `secretMounts`), on any node, links followed; or this node's own configuration files define that router with that file at the same address; or this node saved that key itself, through the UI, for that router and address. A key in those folders is read whatever the node's own file says (a replica's older copy of the primary's `[[router]]`, which it ignores anyway, doesn't stop it). A router made or changed in the UI may name only a key pasted there (in the data folder's `secrets/`) or the very key file and address the config file gives that router. So an override made in the UI that kept a key from the config file (in those folders or anywhere else) is used only while the config file gives that router the same key file and address: once the file moves the router to another address or removes it, the node that applies the UI's changes (a standalone node, or the primary) leaves the override out, logs a warning saying why, and the config file's router (if any) is the one in effect; the configuration it shares never carries the override, so no replica sends the key to the old address. (On a primary promoted after a failover, the configuration it was promoted with stands in for the config file.) Edit the router in the UI to save it for the new address, or remove the override (`DELETE /api/v1/routers/{name}`). An entry from the UI that names some other file in the data folder's `secrets/` (restored from a backup or edited in `state.db`, say) isn't left out: it stays in effect in place of the config file's router of that name, but no node reads it unless that node saved that key for that router and address itself; it is held back as below. A router held back is logged once as a warning, with why and what to do (information on a Helm resolver pod, which has no keys by design). On the node that takes configuration changes, its row says **key not used: enter it again** (or, when the file isn't there, **key missing** or **key file missing**). **A replica's Routers page shows the primary's status** (its own only while the primary can't be reached), not what the replica does: that is in the replica's log.
 - **On a replica, or a primary promoted after a failover,** a router that only the primary's configuration file defines is read when its key files are in one of those two folders on that node. Keys kept anywhere else (`/etc/telltale/opn-secret`, as earlier versions of this guide showed) aren't read there: in a cluster of native nodes, put the files in `/etc/telltale-secrets/` (for example `/etc/telltale-secrets/firewall/api_secret`, mode 0600, owned by the service user) on each node that should read the router, and name those paths. If a key under `/etc/telltale-secrets/` is a link, it must lead to a file inside that folder (`readlink -f` shows where it goes). Defining the router in a replica's own configuration file also lets that replica send the key, but the replica then logs, as for any shared setting in its file, that the section is ignored (the shared routers come from the primary, CLU-006): the folder is the cleaner way. With the Helm chart every pod has the same configuration and the controller mounts `secretMounts`, so nothing changes there.
 - Who decides that a node sends a key from those folders, and where to: whoever writes a configuration file or Git repository a node takes routers from. The UI and the API can't name a new file there for a router; an administrator's change can only keep the file a router already has, at the same address.
@@ -1392,6 +1414,20 @@ The Clients page's **Last hour** tab lists every address that asked in the last 
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 
 Devices named this way are stored in `state.db` (next to users and the audit log) and merged with `[[client]]` entries from the config files. The files win: a device defined in a file is read-only in the UI, and the UI can't reuse its name. If a stored device stops being valid (say its group was removed from the file), TelltaleDNS logs why and runs with the file config alone until it's fixed. Operators and admins can name devices; viewers see the names.
+
+**Recognize it by its MAC address, or by this address.** When the node knows the MAC address of the address you clicked (from your router, or from its own neighbor table), the dialog asks how to recognize the device:
+- **Its MAC address** follows the device when its address changes: its name, groups and rules stay with it, for as long as your router (or, for a MAC only this server sees, its neighbor table) keeps reporting that MAC at one address. A router's MAC is followed for IPv4 addresses only; a MAC that is shared by several addresses, or that changes, or a router that has gone silent, is not followed, and the device falls back to its address, network or `default`. The dialog offers a router's MAC only while that router has been read within the last 15 minutes: while a device is named by its MAC the router is read at least every 10 minutes, but before any device is named by a MAC, with `interval_secs` above 900, the first naming may have to wait for a fresh read (the dialog offers the address until then). The device is saved with the MAC address alone, not the address it has now: an address key would name whoever gets that address next. For a new device it is what the dialog starts with when the MAC comes from a router (every node that hears it can use it) and isn't shared.
+- **This address** stops matching if the device gets another address (a DHCP reservation in your router keeps it). It is what the dialog starts with for a device that already exists (re-saving it to change a group must not strip its address: the MAC is offered, not preselected), when only this node's own neighbor table knows the MAC (other servers in a cluster, or one in Docker or Kubernetes, won't recognize the device by it), or when the MAC is at more than one address (a range extender or bridge may share it, so it can't tell those devices apart: the router's list, or this server's neighbor table, says so). The dialog says which, and the MAC is still offered.
+
+If the address is already recognized as a device (by its address, or by a MAC it lists), the dialog edits that device instead of making a second one, and there is nothing to choose when it already lists the MAC. When you pick a MAC another device already lists, that device is the one edited, and the dialog says so.
+
+Some things to know about a MAC address:
+- **A "private" Wi-Fi address** (many phones and laptops make one up for each network) stays the same on your network unless the device is set to change it or forgets the network. If it changes, name the device again, or turn the private address off for your network. The dialog says when the MAC is one of these.
+- **A range extender or bridge** can show one MAC address for several devices; a MAC reported at more than one address recognizes none of them.
+- **A device can copy another's MAC address,** and is then that device. For an allowance worth protecting, use a client ID (DoT or DoH), which a MAC address isn't.
+- **A block on a device named by its MAC stops applying whenever the MAC isn't vouched for:** a private address that changes, an extender, 15 minutes of router silence, a restart, or a resolver pod that doesn't hear the router. A restriction you must enforce belongs on its network's group, not on a MAC alone.
+- **A device named only by its MAC address loses some views that need an address.** It isn't covered by its group's anomaly mutes, by change previews and simulations, by the Clients page's guess of what it is, or by look-ups of its identity and rhythm by name. A device with both keys in its `match` list (through the API or the configuration file) keeps those views, at the price that its address key names whoever gets that address next.
+- **Past queries are named by whoever holds the address now.** Names are looked up when data is read, so a query logged from an address that has since changed hands shows the new holder's name.
 
 The same through the API, for scripts and agents:
 ```sh
@@ -1444,8 +1480,19 @@ A quick rule allows or blocks a site, and everything under it, for one device, a
 - allow something a list blocks by mistake while you report it.
 
 **Making one:**
-- In the **query log**, press **Why?** on a query and use **Make a quick rule**. The site, the device, and its group are filled in.
+- In the **query log**, press **Why?** on a query and use **Make a quick rule**. The site is filled in, and so is who it's for (see below): the device TelltaleDNS recognizes at the address; when it recognizes none, a device you named that the log names, but only if its own IP (or network) holds the address or its MAC address could be this one (when TelltaleDNS knows the address's MAC, the device's MAC must be that one, and a device known only by a client ID is never taken this way); otherwise the address itself. Where TelltaleDNS can tell, a name that merely matches what a router calls another device doesn't count. For a Kubernetes workload the rule starts for its group, as it is now, only when an operator placed the workload in one (a pod or namespace label, or a rule: the form says which); a workload that falls to its network's group or `default` starts from the pod's address instead, because a rule for that group would cover every device in it. Put the workload in a group first (click its name, then **Add to group…**) to make a rule for all its pods.
 - On the **Quick rules** page (Filtering & DNS), which also lists what's in effect with a countdown, who made each rule, and Edit and Remove buttons.
+
+**Who a rule can be for:**
+- a **named device** (a `[[client]]`, or one you named with **Name this device…**), by its name in any case;
+- an **IP address**, or a **network** such as `192.168.1.0/24`;
+- a **group**, or everyone.
+
+The name the query log shows for a device nobody named here (for example `LGwebOSTV`) is what your router's DHCP or the device itself over mDNS calls it. It's good for recognizing the device, but it isn't a device TelltaleDNS knows, so a rule can't be for it: the form fills in the address and shows that name beside it ("shown in the log as …"), and the API refuses it (422) with a hint that names the address, or, when that address is a device you named, says to use its name. A MAC address typed as the device gets words of its own: name the device with that MAC in its `match` list, then use the name. Whether a rule is accepted never depends on a node's own router or mDNS tables, so every node gives the same answer; only the hint reads them (an agent token without `querylog:read` gets the plain hint, also from a replica that forwards the change to the primary; during a rolling upgrade an older node shows the plain hint to everyone).
+
+A rule for an address stops matching when the address changes (a new lease, a phone's private Wi-Fi address). Two ways to keep it:
+- give the device a fixed address in your router (a DHCP reservation);
+- **name the device** (click its address, then **Name this device…**) and make the rule for the name. Naming recognizes the device by the address it has now, so the name alone doesn't survive an address change, unless you name it by its MAC address, which follows the device when your router or the neighbor table sees it (**Name this device…** offers it when it knows the MAC: see [Naming devices in the UI](#naming-devices-in-the-ui)). What the name saves otherwise is the rules: change the device's `match` list once (in the config file, or `PUT /api/v1/clients/{name}`) instead of every rule. A device recognized by its MAC address (`match = ["aa:bb:cc:dd:ee:ff"]`) keeps its rules when its address changes, where TelltaleDNS can see MAC addresses (see **How a query's device is recognized** under Groups and devices).
 
 **Changing one:** press **Edit** on the rule. The form opens filled in, with the same preview as for a new rule, and **Save changes** replaces the rule under the same ID, so it applies on the next query. The rule keeps who made it and when (the audit log records who changed it, with the rule before and after). The end time stays as it was (**Keep the current end**) unless you pick a new duration, which counts from now. There is no Edit for rules in a config file (change the file), or for a rule made through the API for several devices or groups (use `PUT /api/v1/rules/{id}`).
 
@@ -1464,7 +1511,7 @@ A quick rule allows or blocks a site, and everything under it, for one device, a
 **Limits** (DNS can only do so much):
 - DNS sees **sites, not pages**: blocking a page means blocking its whole site.
 - An app often uses many sites, some shared with other apps. Unblocking one game server is precise; blocking a whole app is best done with a list.
-- A rule follows a device only as well as TelltaleDNS **recognizes** it. Give the device a fixed address (a DHCP reservation), or turn off its private Wi-Fi address for your network.
+- A rule follows a device only as well as TelltaleDNS **recognizes** it. Name the device by its MAC address (it follows the device where your router or the neighbor table reports the MAC), give it a fixed address (a DHCP reservation), or turn off its private Wi-Fi address for your network.
 - Devices keep answers they already have for a few minutes, so a change can take that long to show on the device. Unblocking needs no cache flush, because blocked answers are never cached here.
 - **Mobile data, a VPN, or a hard-coded DNS server** go around TelltaleDNS. To close that, have your router block outgoing DNS (ports 53 and 853) to anything but TelltaleDNS.
 
@@ -1511,6 +1558,8 @@ telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
 # route    upstream group default (default)
 ```
 - Options: `-t AAAA` for another query type, `--mac aa:bb:cc:dd:ee:ff` or `--client-id` to explain for a device recognized that way, and `--json` for the same data as JSON (the format the API's `GET /api/v1/explain` returns).
+- **Recognized by a MAC address:** `identified by` says how: `neighbor_mac` (a MAC the kernel's neighbor table, or `--mac`, gave) or `router_mac` (a MAC a router reported, this node's or another full member's). The API's `GET /api/v1/explain` also says where the MAC comes from, in `client.macFrom`: `given` (the request's), `neighbor`, `router` or `peer`. `client.mac` and `client.macFrom` are shown only to a caller who may read the devices (a person signed in with a session or an API token of any role, or an agent token with `config:read` that isn't restricted to a group; a display session isn't one), unless the caller gave the MAC, and not at query-log privacy level 2 and above (another reason the MAC can be missing: the caller may not read the devices there, or the node's level hides clients). The command line reads the kernel's neighbor table only, and has no router lists: for a device a router recognizes, ask the server (`GET /api/v1/explain`, or the UI's Explain).
+- `GET /api/v1/clients/{address}/identity` (and the agent tool `identify_device`) says how an address is recognized now, in `recognition`: the device, how, and the MAC a device at that address could be named by (`mac`, `macFrom`, `macShared`, `macRandomized`). The MAC is shown only to a caller who may read the devices (the same rule as for explain), `macShared` is true when a router reports the MAC at more than one address or the node's own neighbor table holds it at more than one, and `recognition` is left out at query-log privacy level 2 and above. `macRandomized` (a made-up Wi-Fi address) is shown with `device` and `identifiedBy` to every caller who may read identities, including one who may not read MACs: one bit that names no device and no MAC.
 - `-` marks rules from lists the device's groups don't use, so you can see what another group would get. `!` after `allow`/`block` marks `$important` rules.
 - It reads the config and the data directory (the newest compiled snapshot and the stored lists), so it works whether or not the server is running. A server that hasn't loaded the newest snapshot yet may still be using the previous one.
 - Line numbers come from the stored copy of each list. If a list was downloaded again after the snapshot was compiled, the output says so.
@@ -1542,7 +1591,7 @@ Explain answers for one name. A simulation answers for a whole change: before yo
 How it works, and its limits:
 - **Only the change is compiled.** The running filter is reused. Lists the change adds or edits are compiled on the side, in a temporary snapshot that is removed afterwards, and their matches are merged with the running ones by the usual precedence. A list being removed simply stops taking part.
 - **What is decided again:** who may query, local records and zones, quick rules (at each query's own time), schedules (likewise), list rewrites, the lists, the AAAA filter, group rewrites and safe search, and the upstream group a query would go to. Rate-limited, malformed, and dropped queries never reached those steps and count as unchanged. A pause of blocking isn't replayed: both sides are decided as if nothing were paused.
-- **Devices** are recognized again by address. A device that was recognized by its MAC address or client ID when it asked keeps the group its queries were logged with, and the result notes it.
+- **Devices** are recognized again by address. A device that was recognized by its MAC address or client ID when it asked keeps the group its queries were logged with, and the result notes it. A quick rule for a device named only by its MAC address (no address among its keys) isn't counted for it, because the log holds the address a query came from, not the MAC the device was recognized by.
 - **Bounds:** one simulation runs at a time per node (a second one gets `409 simulation_busy`, retry in a few seconds). Each node reads at most `[simulate] max_rows` queries, newest first, for at most `max_secs` seconds, at background priority; past either bound the answer says `partial`. The window is at most 7 days.
 - **Clusters:** every node replays its own log, and a controller also replays the logs its resolver pods ship to it. The counts are added up, and a node that didn't answer is listed in `missingNodes`.
 - **Local files:** a simulation run by someone who isn't an administrator can name only the local files (a list's `path`, a zone's `file`, `[local] hosts_files`, an upstream's `tls_ca`, `tls_client_cert` and `tls_client_key`) and plugin upstreams that the configuration in effect already names. Anything else is refused before it's read: `POST /api/v1/simulate` answers 422 naming the field, and a dry run's simulation answers `"available": false, "reason": "local_file"` (the dry run itself is unchanged). An administrator's simulation is unchanged (ADR-180).
@@ -1773,10 +1822,21 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
 - **Indeterminate** (validation couldn't finish, such as the validator's depth limit): the
   answer is fetched again without validation and served without AD, in both modes.
 - **Unsigned zones:** before refusing an answer, TelltaleDNS proves whether its zone is
-  simply unsigned (the parent's signed denial of the zone's DS, which must also show that
-  the name is a delegation: NS present, SOA and DS absent), and if so serves it as
-  insecure. This corrects the validation library's verdict on CNAME chains in unsigned zones
-  (`www.netflix.com`, `www.amazon.com`); proven zones are remembered for 15 minutes (ADR-098).
+  simply unsigned, and if so serves it as insecure. The proof is the parent's signed denial
+  of the zone's DS, made only of records of the parent zone (or of an unsigned top-level
+  domain), which must also show that the name is a delegation: the record at the name lists
+  NS and neither SOA nor DS; or, in an NSEC3 Opt-Out zone such as `.com` or `.org`, the
+  record of the name's parent (which must not itself be a delegation) and an Opt-Out record
+  covering the name. This corrects the validation library's verdict on CNAME chains in
+  unsigned zones (`www.netflix.com`, `www.amazon.com`) and on names below parked domains
+  whose servers answer an SOA for every name (`www.smithsonianmag.org`). From v0.3.0 to
+  v0.7.0 the proof didn't succeed under NSEC3 Opt-Out parents. Proven zones are remembered
+  per upstream group, as long as the proof's records' TTL allows and at most 15 minutes
+  (ADR-098, ADR-184). A name queried while TelltaleDNS hasn't cached its parent zone's keys
+  yet (right after a start, say) can still fail for up to a minute, and works again after
+  that minute; and
+  a parent zone whose NSEC3 records use more than 100 iterations can't prove its unsigned
+  zones.
   The whole validation, proof included, ends within twice the query budget (4 s by default),
   at most 8 proofs run at once, and a name that couldn't be proven isn't tried again for a
   minute: when it can't be proven, the answer stays bogus (or, with no answer at all, stale
@@ -1839,6 +1899,8 @@ groups, query log, and live query stream cover every node:
   - query-log rows interleave by time, and each row shows the node that answered it.
 - A node that doesn't answer within 2 seconds is left out, and the page says so ("Partial
   results: pi didn't answer"). It never hangs. The API lists those nodes in `missingNodes`.
+  A witness (see automatic failover, below) holds no data, so it is never asked and never
+  listed.
 - Other nodes are asked about a range of time up to a limit: a request for more than 256
   windows of 240 buckets a node (over 17 hours of seconds, 42 days of minutes, or 7 years of
   hours) is answered from this node alone, with the other nodes in `missingNodes`. Every range
@@ -2026,6 +2088,9 @@ DNS keeps answering throughout if your clients have two DNS servers (each node i
 - A replica older than its primary keeps working, unless the primary starts using settings
   the older version doesn't know. Then the replica keeps serving its last version, and its
   sync status says to upgrade it.
+- `telltale ctl upgrade` does the native nodes in this order for you, and the Helm chart's
+  `upgradeHook` runs it before the pods roll: see
+  [Upgrading from the cluster](#upgrading-from-the-cluster).
 
 **Certificates renew themselves.** Each node's cluster certificate lasts 90 days, and a node
 renews it when fewer than 30 days remain (checked every 6 hours). It keeps its key and node
@@ -2108,6 +2173,10 @@ telltale cluster set-failover auto
 - **Seeing it:** the Cluster page's **Failover** line (voters reachable, the lease, the latest
   vote) and the `failover` check. Metrics: `telltale_cluster_primary`, `telltale_cluster_epoch`,
   `telltale_cluster_failover_auto`, `telltale_cluster_lease_held`.
+- **A witness only votes.** What covers the whole cluster (the dashboard and the other views,
+  pausing blocking, the cache's table and flushes, drills, simulations, a cluster support
+  package) leaves it out, and never lists it as a node that didn't answer, up or down. The
+  Cluster page and the node-down alert still show it.
 - **Manual promotion is refused while automatic failover runs**; `telltale cluster
   set-failover manual` on the primary switches back. With fewer than three voters, `auto` acts
   as `manual`, and the Cluster page says so.
@@ -2262,6 +2331,212 @@ telltale cluster status
 - **Table** shows the same numbers with their 95 % intervals, such as `0.04 % (0.02–0.06 %)`: a wide interval means few answers. **Open in dashboard** opens the dashboard for that node alone. On a phone, pick one measure at a time.
 - The tab says **1 odd** from any tab of the Cluster page. It's a lens, not an alarm: it doesn't change the health icon or alert. Nodes that don't answer are listed and the rest compared; one node alone has nothing to compare.
 - `GET /api/v1/cluster/compare?from=-24h` and the MCP tool `compare_nodes` return the numbers and the findings. Grafana's **Nodes** row has the SERVFAIL and slow shares by node and a table that highlights a node with little traffic.
+
+## Upgrading from the cluster
+A cluster whose nodes run outside Kubernetes (installed with `install.sh`) can upgrade them for
+you, one at a time, in the order a cluster needs: **replicas first, the primary last**, each back
+on the new version, ready, and in sync before the next one starts. With the Helm chart's
+`upgradeHook`, bumping the chart (or merging the Renovate pull request in a GitOps repository)
+upgrades the native nodes first and the pods after them. It is off by default on both sides;
+treat it as experimental until you have watched it upgrade (and roll back) a node of yours.
+
+**How it works.** The node's service runs as the `telltale` user in a sandbox and can't replace
+its own binary, so it doesn't: asked for a version, it writes
+`/var/lib/telltale/update/request.json` (in the config's `[node] data_dir`) and nothing else. A
+second, root unit installed next to it, `telltale-update.path`, sees the file and starts
+`telltale-update.service`, which runs `telltale self-update --request …`. Of the data directory
+it may write only that `update/` folder:
+1. it reads the request (a small regular file written by `telltale`, opened without following a
+   link or waiting on it) and removes it;
+2. it refuses anything but a release or edge build **newer** than the one installed and on the
+   node's **channel** (below), a request more than an hour old, and a version whose new build
+   was installed on this node and didn't come up in the last 24 hours (a run that failed in the
+   downloads doesn't count);
+3. it checks that the binary sits where only root can write (owned by root, and neither it nor
+   any folder above it writable by a group or others), and that the health check's address in
+   its unit is one of this host's;
+4. it downloads the version, checks the release signature and the checksum (the release's
+   signed `releases.json` must be of the version's channel, name that version and list the same
+   checksum), test-runs it, and swaps it in, keeping the old binary as `telltale.old`. All the
+   downloads together get eight minutes; past that nothing is installed;
+5. it restarts the node (`systemctl restart`, waited for a minute; if that command is slow or
+   fails, the restart goes on in systemd and the health check decides) and waits up to **two
+   minutes** for it to answer ready twice in a row (`/readyz?startup=1`) at the address
+   `install.sh` wrote into its unit (below). If it doesn't, it puts `telltale.old` back and
+   restarts once more: `rolled_back`;
+6. it records the outcome in `/var/lib/telltale-update/result.json`: `installing`, `updated` (with
+   how its health was checked), `up_to_date`, `rolled_back` (with why), `unavailable` (an edge
+   build no longer served), `failed`, or `refused`, with the error. `journalctl -u
+   telltale-update` has its lines. Who asked (`by`) is the node's word for it: the update service
+   can't check it, and says so.
+
+So what anyone who can write that file can do is have the node restarted on a newer signed build
+of its channel. The whole run (at most about 15 minutes) fits in the unit's 16-minute limit with room to spare,
+so systemd never stops it between the install and the check.
+
+**The channel.** `install.sh` writes the node's update channel into its unit and the update
+service's: `edge` when you install with `--edge`, otherwise the channel of the version it
+installed (it prints which). A node on the **stable** channel takes only releases; a node on the
+**edge** channel takes edge builds and newer releases, and stays on edge after a release (the next
+edge build is still taken). The cluster never moves a node to the edge channel or backwards: to go
+back, run `sudo telltale self-update --to <version> --restart` on the node; to move a node to
+edge builds, run `sudo telltale self-update --channel edge --restart`, then
+`sudo sh install.sh --edge --cluster-updates`. Without `--edge`, `install.sh` installs the newest
+**release** and sets the stable channel, so on an edge node always give it `--edge`.
+
+**The health check's address.** `install.sh` writes it into the update service's unit
+(`TELLTALE_UPDATE_HEALTH_URL`) from the config's `[api]`: the `listen` address and port, with a
+wildcard (`0.0.0.0`, `[::]`) asked at loopback. The request never names one. Two things make every
+update roll back, so `install.sh --cluster-updates` checks the address answers before it turns
+the feature on: an `[access] allowed_networks` that leaves out this host's own address (loopback
+for a wildcard listen), and an API that isn't up. With the API off (`[api] enabled = false`) there
+is nothing to check, so updates from the cluster aren't available: `install.sh --cluster-updates`
+refuses, and the update service installs nothing (`refused: no health check configured`). A node that takes longer than two minutes to come up (very large lists on an SD card) is
+rolled back; upgrade such a node by hand.
+
+**`rolled_back` is an incident.** It means the new build didn't answer ready in time, so the
+previous one was put back. That can be the build, but it can also be the node's side: the node's
+own process answers the check, and any local user can occupy the port first. `ctl upgrade` stops
+at it; look at the node (`journalctl -u telltale -u telltale-update`) before you ask again. The
+node refuses the same version for 24 hours from that run (`update_failed_recently`; `GET` shows
+it as `held`, with until when), and says which run, when, and what failed; `sudo telltale
+self-update --to <version> --restart` by hand isn't held back. A run that failed before anything
+was installed (a network error, the eight-minute download limit, a signature or checksum, an edge
+build moved on) holds nothing back: the next request tries again.
+
+**Turning it on.** The update service is installed and **off**. On each native node:
+```sh
+sudo sh install.sh --cluster-updates          # on an edge node: sudo sh install.sh --edge --cluster-updates
+```
+It writes the units for the node's data directory, channel and API address, and turns them on
+once the node answers at that address (it prints the address it tried). It refuses, and on an
+existing install changes nothing, when the binary's folder isn't root's alone (a `TELLTALE_PREFIX`
+others can write; older Debian and Raspberry Pi OS images have `/usr/local` as `root:staff 2775`:
+check `stat -c '%U:%G %a' /usr/local /usr/local/bin`, and fix it with `sudo chmod g-w /usr/local
+/usr/local/bin`), the data directory is under `/home` or `/root` or in a folder that isn't
+root's, or the API is off. On a node that runs an edge build it also refuses unless you say which
+channel: `--edge` to stay on edge builds, or `--stable` to move to releases (without either, a
+re-run would install the newest release, an older version). A node installed before this feature needs one upgrade by hand first, on its own channel
+(`sudo telltale self-update --restart`, with `--channel edge` on an edge node), then
+`install.sh` as above. (`sudo systemctl enable --now telltale-update.path` also turns it on, but
+skips the check.)
+
+**Upgrading.** From anywhere with an admin's token (or an agent token with `analytics:read` and
+`cluster:upgrade`):
+```sh
+telltale ctl --url https://dns.example.com upgrade --to 0.8.0 --dry-run   # the order, nothing asked
+telltale ctl --url https://dns.example.com upgrade --to 0.8.0
+```
+- It reads the Cluster page's view and leaves alone Kubernetes pods (the chart's), witnesses
+  (they only vote: upgrade them by hand), containers (pull the new image), and nodes already on the
+  version or newer.
+- Before it asks any node it reads each one's update state. A node that is up but can't take the
+  request (its update service off, a request waiting or an update running, on the stable channel
+  while you ask for an edge build, or refusing the version for a day after a rollback) stops it
+  there, with nothing asked and every such node named, with why and how to fix it. A node that is
+  down stops it too; `--skip-down` leaves out nodes that are down, and only those.
+- Then it asks each node in turn and waits (`--timeout`, 15 minutes each by default: at least the update service's longest run) until the
+  node's update service has recorded `updated` for that request **and** the node is back on the
+  version, ready and in sync. A node that fails, is rolled back, or refuses stops it: the nodes
+  after it keep their version, and the error is the node's own. One node: `--node dns-02`.
+- Each request says why, for the audit log (`X-Telltale-Reason`; `--reason`, default
+  `telltale ctl upgrade --to <version>`): an agent token must.
+- The same call for one node is `POST /api/v1/nodes/{id}/update {"to": "0.8.0"}` (admin;
+  `?dryRun=true` checks without asking), and `GET` on the same path shows the node's version,
+  channel, whether its update service is on, a request it hasn't picked up yet, and the latest
+  outcome. One request at a time per node: another gets `update_in_progress` until the first is
+  done. The problems a node answers with: `update_unsupported` (a container, a pod, or a local
+  build), `update_not_enabled`, `update_invalid`, `update_downgrade`, `update_channel`,
+  `update_in_progress`, `update_failed_recently`.
+- **No maintenance window.** The node restarts without one, so a `node_down` alert can fire for
+  the few seconds it takes; put the node in maintenance first if that matters to you.
+
+**Edge builds.** An edge build can be installed only while it is the newest on the edge channel:
+edge binaries are replaced on every build. If a newer one was published since, the node records
+`unavailable` ("the edge channel now serves …"): ask for that one, or wait for the release.
+`--skip-unavailable` leaves such a node on its version, with a loud line, and goes on (the order is
+then lost for that node in that run).
+
+**With the Helm chart.** When the controller runs in Kubernetes and the other nodes don't, turn
+on the chart's hook: a Job that runs before the pods roll (`helm.sh/hook: pre-upgrade`, a
+PreSync hook in Argo CD), from the **new** image, with `telltale ctl upgrade --to-self`:
+```yaml
+image:
+  tag: sha-1a2b3c4             # pin the build (the default tag, edge, can run an older cached image)
+upgradeHook:
+  enabled: true
+  tokenSecret:
+    name: telltale-upgrade   # key `token`: an agent token with analytics:read and cluster:upgrade
+  whenUnavailable: fail      # or skip (see below)
+```
+- It upgrades every native node to the image's version and waits for each; only then does Helm
+  (or Argo CD) roll the pods. A node that fails fails the hook, and the pods keep their version.
+  The Job stays after a run (until the next one replaces it), so its log can be read: `kubectl
+  logs job/<release>-telltale-upgrade`.
+- **The image.** `--to-self` upgrades the nodes to the version of the image the hook runs. Pin
+  `image.tag` to a build (`sha-…`, or a version): with the chart's default tag (`edge`) and
+  `IfNotPresent`, a node can run an older cached `:edge` image.
+- **The token.** Make it in Settings → API tokens (for an AI agent) as an admin, with the scopes
+  `analytics:read` and `cluster:upgrade`. `cluster:upgrade` reaches only the update route;
+  `analytics:read` reads every analytics route too. The hook reads the cluster on every sync, so a
+  token that expires, is revoked, or stops working (`[agents] enabled = false`) fails **every**
+  sync from then on, a values-only `helm upgrade` too: make it without an expiry for this narrow
+  scope, or set yourself a reminder to rotate it (a new token in the Secret, then revoke the old
+  one). A missing Secret fails the hook at once ("set TELLTALE_TOKEN"). An OAuth sign-in for MCP
+  never gets `cluster:upgrade`.
+- **https.** The hook asks the release's API Service over plain HTTP inside the cluster; when the
+  API serves TLS (`[api] tls`), set `upgradeHook.url` to its `https://` address, and with a
+  self-signed certificate put the certificate in a Secret and name it in `upgradeHook.caSecret`
+  (`name`, and `key`, default `ca.crt`): without it the hook can't trust the API and fails.
+- **Timeouts.** Helm waits for a hook only `--timeout` (5 minutes by default), while the hook allows
+  15 minutes per node and 45 in all (`activeDeadlineSeconds: 2700`: two native nodes, the pre-flight and the pod's start; raise it for more): run `helm upgrade --timeout 45m` (or more), and give Argo CD's sync at least as long.
+- A NetworkPolicy that limits the API (`networkPolicy.apiFrom`) gets a rule that lets the hook in
+  (only while the hook is on).
+- **A native primary whose replicas are the chart's pods:** the hook upgrades native nodes first,
+  so it would upgrade that primary before its pod replicas. In that shape, run `telltale ctl
+  upgrade` by hand instead of the hook.
+
+**With Argo CD (GitOps).** Argo CD runs the hook as a PreSync hook on every sync:
+- **Pinned to a release:** the first sync after the bump upgrades each native node behind it,
+  then rolls the pods. Every later sync finds the nodes on it and asks nothing (no request, no
+  download). A node on the edge channel stays on it and takes the next edge pin.
+- **Pinned to an edge build:** the same while it is the newest edge build. Once main has
+  published a newer one, a native node still behind the pin can't fetch it: with
+  `whenUnavailable: fail` (the default) the sync stays blocked until you pin the newest edge
+  build or a release; with `skip` that node stays on its version (the hook says so loudly) and the
+  pods roll. Nodes already on the pin or newer are never asked, so a pin that has gone stale
+  blocks only while a node is behind it. Pin a release, or set `skip`, if you don't want a sync
+  to wait on that. A node on the stable channel stops the sync at an edge pin (said in full).
+- **The first install:** there is no cluster yet to make the token in. Keep the hook off until
+  the token exists, or create the Secret with a placeholder value: PreSync runs before anything of
+  the app exists, so nothing answers (the API Service's name doesn't resolve, or nothing listens)
+  and the hook succeeds and says so. Only that is skipped: a timeout, a TLS failure, packets a
+  policy drops, or a refused token fail the hook. The real Secret must exist before the first
+  sync that needs it (a PreSync hook runs before the app's own resources): create it outside the
+  app, or with an ExternalSecret or SealedSecret that is applied before it (an earlier sync wave
+  of another app, or a PreSync resource with a lower `argocd.argoproj.io/hook-weight`).
+- **The controller up but not ready:** on some CNIs (Cilium) a Service with no ready endpoints
+  drops the connection instead of refusing it, so the hook fails (it doesn't skip) and the sync
+  waits until the controller answers. That is intended. With the hook on and the controller
+  dead, turn the hook off in the chart to roll the fix.
+- **A node down:** the hook fails before asking any node (the pods keep their version) unless
+  `skipDown: true`. For the first 90 seconds after the node that answers starts, a native node
+  that hasn't connected since isn't listed at all, so a hook run then can pass without it.
+- **A node rolled back:** every sync stops at it for 24 hours from that run (the node refuses that
+  version, and says until when) unless the pin moves on. A run that failed in the downloads (a
+  GitHub or DNS outage) holds nothing: the next sync tries again. Look at the node; upgrade it by hand when it is fixed.
+
+**A known limit.** If `systemctl` itself fails without restarting anything (its binary missing,
+or a refusal on the system bus), the old process is still running and passes the health check,
+so the run is recorded `updated` while the old build runs; the new binary is installed, so the
+next request for that version answers `up_to_date`. `journalctl -u telltale-update` shows the
+restart command's error, and `telltale --version` against `GET …/update`'s version tells. Run
+`sudo systemctl restart telltale` on the node to start the new build. (Comparing the node's
+process before and after the restart is the planned follow-up.)
+
+**What it doesn't do.** It doesn't upgrade containers or Compose installs (pull the new image),
+it doesn't choose a version for you (that's your chart bump, or `--to`), it never downgrades or
+moves a node to edge builds, and it doesn't put the node in maintenance.
 
 ## Taking a node down for maintenance
 Swapping a Pi's SD card, moving a box, or upgrading a node by hand: put the node in maintenance
@@ -3000,7 +3275,7 @@ note    = "hourly reverse-DNS sweep"
 ```
 - **Recorded, not counted.** The finding is made as before and listed (turn on **Show muted** on the page, or `GET /api/v1/analytics/anomalies?muted=true`), marked with the mute that matched (`mutedBy`). It isn't counted in the sidebar badge, the `anomaly` alert rule, the health level, or `telltale_anomalies_total`; `telltale_anomalies_muted_total{kind}` counts it, so a mute never hides that something happened. The same kind of finding for any other device counts as usual.
 - **Decided when the finding is created.** Removing a mute or letting it expire doesn't change findings already recorded; ones made afterwards count. Muting is not blocking: nothing about the device's queries changes.
-- **Narrow on purpose.** A mute names at least one device or group and at least one kind: there is no mute for everyone or for every kind (to switch the detector off, `[telemetry.anomaly] enabled = false`). A MAC address isn't accepted: a device's address changes with its lease, and findings are made from addresses. Name the device (a `[[client]]` with an IP or network in its `match`) or give its IP. A group means its networks and the devices that name it.
+- **Narrow on purpose.** A mute names at least one device or group and at least one kind: there is no mute for everyone or for every kind (to switch the detector off, `[telemetry.anomaly] enabled = false`). A MAC address isn't accepted: a device's address changes with its lease, and findings are made from addresses. Name the device (a `[[client]]` with an IP or network in its `match`) or give its IP: a device named only by its MAC address can't be muted by name, because it has no address to match findings against (keep an address among its keys if you need a mute). A group means its networks and the devices that name it.
 - **In a cluster** a mute is shared like groups and schedules: set on the primary, it reaches every node, including ones that were down. In a cluster whose configuration comes from Git the page and the API refuse the change (409 `gitops_managed`): add the `[[anomaly_mute]]` block to the repository (or the Helm values' `config:`) instead. On a single node that loads its configuration from Git, a mute made here is saved and the response includes the TOML to keep.
 - **Through the API:** `PUT /api/v1/anomaly-mutes/<name>` with the same fields (add `?dryRun=true` to preview), `DELETE` to remove, `GET /api/v1/config/entries?kind=anomaly_mute` to list. The operator role; agents need `config:write:anomalies` (a mute can hide a compromised device, so it isn't part of any other scope, though `config:write:*` includes it) and use `plan_set_anomaly_mute` / `plan_remove_anomaly_mute`. Every change is audited as `config.anomaly_mute`.
 
@@ -3207,8 +3482,9 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `ops:pause`, `ops:cache`, `ops:anomalies`, `ops:maintenance`, `ops:annotate` | pause blocking; flush the cache; acknowledge device anomalies; start and end [node maintenance](#taking-a-node-down-for-maintenance) (at most 2 hours); leave [notes](#change-markers) on the time charts |
 | `ops:drill` | start and end [failover drills](#failover-drills) (at most 5 minutes; never a default scope) |
 | `cluster:admin` | promote a node to primary |
+| `cluster:upgrade` | ask native nodes to [install a newer version](#upgrading-from-the-cluster) (admin level, never a default scope, never granted to an OAuth sign-in for MCP: make an agent token for it, as the chart's upgrade hook needs) |
 
-The default is `analytics:read` and `config:read`: read-only, without the query log. A token never gets more than its owner's role allows.
+The default is `analytics:read` and `config:read`: read-only, without the query log. A token never gets more than its owner's role allows. `config:read` also lets an agent read the MAC address of any address it asks about, through `identify_device` and explain (the same MAC addresses the device keys in `GET /api/v1/clients` show); a token limited to a group, or with `analytics:read` alone, doesn't get them. The router's lease list (`/api/v1/dhcp/leases`) stays closed to agents.
 
 **What an agent can't do:**
 - Anything not listed above is refused. That covers users, tokens, passwords, backups, and the audit log.

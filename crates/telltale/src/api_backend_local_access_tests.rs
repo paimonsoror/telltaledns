@@ -145,6 +145,40 @@ impl Node {
         self.dir.path().to_str().unwrap().to_owned()
     }
 
+    /// An agent token (a viewer's) holding exactly `scopes` (space separated), optionally
+    /// restricted to one client group.
+    pub(super) fn agent(&self, scopes: &str, group: Option<&str>) -> Creds {
+        let name = format!("agent{}", auth::crypto::random_id());
+        let owner = self
+            .auth
+            .create_user(
+                &name,
+                "an agent owner's password",
+                Role::Viewer,
+                false,
+                now(),
+            )
+            .unwrap();
+        let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+        self.auth
+            .state()
+            .create_token(
+                &id,
+                owner.id,
+                "tests",
+                &auth::crypto::secret_hash(&secret),
+                "read",
+                None,
+                now(),
+            )
+            .unwrap();
+        self.auth
+            .state()
+            .set_token_agent(&id, scopes, group, None)
+            .unwrap();
+        bearer(&format!("tt_{id}_{secret}"))
+    }
+
     /// Everyone who may write the configuration: an operator, an admin (token and session), and
     /// agent tokens (an operator's and an admin's).
     pub(super) fn writers(&self) -> Vec<(&'static str, &Creds)> {

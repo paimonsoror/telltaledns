@@ -15,6 +15,24 @@
     block: 'block',
   };
 
+  // REQ: FLT-013, FLT-006 (ADR-183) — how the device was recognized, when it was by its MAC address,
+  // and where the MAC comes from: said as the server says it (`macFrom`), no more: "from your router"
+  // only for this node's own router, "seen on this network" only for the neighbor table. Any other
+  // `identifiedBy` is shown as the server says it. Without `macFrom` (a caller who may not read
+  // MACs) a router's MAC is "from a router".
+  const macFromLabel: Record<string, string> = {
+    given: 'given with the question',
+    neighbor: 'seen on this network',
+    router: 'from your router',
+    peer: 'from another server in your cluster',
+  };
+  const by = $derived.by(() => {
+    const b = x.client.identifiedBy;
+    if (b !== 'router_mac' && b !== 'neighbor_mac') return b;
+    const from = x.client.macFrom ? (macFromLabel[x.client.macFrom] ?? x.client.macFrom) : b === 'router_mac' ? 'from a router' : '';
+    return from ? `its MAC address, ${from}` : 'its MAC address';
+  });
+
   // REQ: API-011 — the decision as a diagram: which way this query goes.
   const path = $derived<FlowPath>(
     x.outcome === 'refused'
@@ -58,9 +76,9 @@
     <dl>
       <dt>Address</dt>
       <dd class="mono">{x.client.ip}</dd>
-      {#if x.client.mac}<dt>MAC</dt><dd class="mono">{x.client.mac}</dd>{/if}
+      {#if x.client.mac}<dt>MAC</dt><dd><span class="mono">{x.client.mac}</span>{#if x.client.macFrom} <span class="muted small" data-testid="explain-mac-from">({macFromLabel[x.client.macFrom] ?? x.client.macFrom})</span>{/if}</dd>{/if}
       <dt>Device</dt>
-      <dd>{x.client.device ?? 'not a configured device'} <span class="muted small">(by {x.client.identifiedBy})</span></dd>
+      <dd>{x.client.device ?? 'not a configured device'} <span class="muted small" data-testid="explain-identified-by">(by {by})</span></dd>
       <dt>Groups</dt>
       <dd>{x.client.groups.join(', ') || '–'}</dd>
       <dt>Query</dt>

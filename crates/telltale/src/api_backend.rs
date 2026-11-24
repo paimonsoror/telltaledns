@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use telltale_api::model::{
-    ClientChange, ClientInfo, ConfigChange, ExplainBlock, ExplainClient, ExplainFilter,
-    ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, FailureKinds, ForwardInfo,
-    GroupInfo, Hour, LatencyBy, LatencyRow, ListInfo, LocalName, NameMatch, QueryPage, QueryParams,
-    QueryRow, RecordInput, ScanStats, Step, SystemInfo, TimeBucket, TopItem, TopKind, UpstreamInfo,
+    ClientChange, ClientInfo, ConfigChange, DeviceRecognition, ExplainBlock, ExplainClient,
+    ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation,
+    FailureKinds, ForwardInfo, GroupInfo, Hour, LatencyBy, LatencyRow, ListInfo, LocalName,
+    NameMatch, QueryPage, QueryParams, QueryRow, RecordInput, ScanStats, Step, SystemInfo,
+    TimeBucket, TopItem, TopKind, UpstreamInfo,
 };
 use telltale_api::problem::{Code, Problem};
 use telltale_api::time::format_us;
@@ -139,6 +140,86 @@ pub(crate) fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
                     .find_map(|t| t.get(&v4).and_then(|l| l.hostname.clone()))
             })
     })
+}
+
+/// REQ: FLT-006, API-010 (ADR-183) — how the address `ip` is recognized on this node now, and the
+/// MAC a device there could be named by. The device is a configured `[[client]]` only, never a
+/// Kubernetes workload's text. The MAC is the kernel's entry for the address, else (while
+/// `router_macs` is on) what [`crate::devices::router_bindings`], the function the MAC table is
+/// built with, says: this node's router's sure binding, else a member's; a MAC at two or more
+/// addresses is given with `mac_shared`, and an address this node withholds has none. No kernel
+/// read happens here: the table is the task's.
+pub(crate) fn recognize(src: &Sources, ip: IpAddr) -> DeviceRecognition {
+    let ip = ip.to_canonical();
+    let state = src.pipeline.current();
+    let clients = &state.policy.clients;
+    let id = clients.identify(
+        ip,
+        None,
+        None,
+        &src.pipeline.neighbors,
+        &src.pipeline.workloads,
+    );
+    let mut r = DeviceRecognition {
+        device: clients.client(id).map(|c| c.name.to_string()),
+        identified_by: crate::explain::source_name(id.source).to_owned(),
+        ..DeviceRecognition::default()
+    };
+    // The kernel's entry first, as in the table; else, while `router_macs` is on, the routers'. A
+    // kernel MAC at two or more addresses (a MAC-translating extender) is shared: the kernel table
+    // has no such rule for identification, and the dialog must not offer it as one device's.
+    let table = src.pipeline.neighbors.table();
+    let (mac, from, shared) = match table.get(ip) {
+        Some(e) if e.from == telltale_policy::MacFrom::Kernel => (
+            Some(e.mac),
+            "neighbor",
+            table.kernel_addresses_of(e.mac) >= 2,
+        ),
+        _ => match router_mac_of(src, &state.policy.clients, ip) {
+            Some((mac, from, shared)) => (Some(mac), from, shared),
+            None => (None, "", false),
+        },
+    };
+    if let Some(mac) = mac {
+        r.mac = Some(crate::explain::mac_text(mac));
+        r.mac_from = Some(from.to_owned());
+        r.mac_shared = shared;
+        r.mac_randomized = mac[0] & 0x02 != 0;
+    }
+    r
+}
+
+/// REQ: FLT-006 (ADR-183) — what this node's routers, then other full members', say about `ip`, as
+/// the MAC table is built from it (`devices::router_bindings`), whether or not a device is named by
+/// its MAC yet: the MAC, whose router it is (`router`, `peer`), and whether it is shared (a MAC at
+/// two or more addresses: given, because the dialog says why it isn't the default). An address
+/// this node withholds (an `unsure` lease, a MAC that can't identify, a member's tombstone) and
+/// every address with `router_macs` off or an IPv6 one have none.
+fn router_mac_of(
+    src: &Sources,
+    clients: &telltale_policy::ClientTable,
+    ip: IpAddr,
+) -> Option<([u8; 6], &'static str, bool)> {
+    let IpAddr::V4(v4) = ip else { return None };
+    if !clients.router_macs() {
+        return None;
+    }
+    let own = src.pipeline.router_leases.load();
+    let peers = src.pipeline.peer_router_macs.load();
+    let b = crate::devices::router_bindings(&own, &peers);
+    if let Some(mac) = b.own.get(&v4) {
+        return Some((*mac, "router", false));
+    }
+    if let Some(mac) = b.peer.get(&v4) {
+        return Some((*mac, "peer", false));
+    }
+    let mac = *b.shared.get(&v4)?;
+    // Whose router says it: this node's own lease for the address, if it is a sure one with this MAC.
+    let own_says = own
+        .get(&v4)
+        .and_then(crate::devices::eligible)
+        .is_some_and(|m| m == mac);
+    Some((mac, if own_says { "router" } else { "peer" }, true))
 }
 
 /// The API backend over the server's shared state.
@@ -580,6 +661,49 @@ fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter
 }
 
 impl ApiBackend {
+    /// One device's identity (by address, or a named device's name), with the evidence, and, for an
+    /// address and when `with_recognition`, how it is recognized here (REQ: FLT-006, API-010,
+    /// ADR-183): the entry node's own read has it, what a node answers a peer doesn't.
+    fn identity_of(
+        &self,
+        client: &str,
+        with_recognition: bool,
+    ) -> Result<telltale_api::model::DeviceIdentity, Problem> {
+        // REQ: FLT-017 — a workload's identity is under its analytics key.
+        if let Some((_, key)) = self.workload(client) {
+            return Ok(self.src.identify.get(&key));
+        }
+        if let Ok(ip) = client.parse::<IpAddr>() {
+            let mut id = self.src.identify.get(client);
+            // REQ: FLT-006, API-010 (ADR-183) — how this address is recognized, and the MAC a
+            // device here could be named by: not at query-log privacy level 2 and above.
+            if with_recognition && self.src.config.load().telemetry.qlog.privacy_level < 2 {
+                id.recognition = Some(recognize(&self.src, ip));
+            }
+            return Ok(id);
+        }
+        let cfg = self.src.config.load();
+        let c = cfg
+            .client
+            .iter()
+            .find(|c| c.name.as_str().eq_ignore_ascii_case(client))
+            .ok_or_else(|| {
+                Problem::not_found(format!(
+                    "`{client}` is neither an address nor a named device"
+                ))
+                .hint("Give a device's IP address, or the name it has on the Clients page.")
+            })?;
+        let snap = self.src.identify.snapshot();
+        let addrs = device_addresses(c);
+        let addr = addrs
+            .iter()
+            .find(|a| snap.by_client.contains_key(*a))
+            .or(addrs.first())
+            .cloned()
+            .unwrap_or_else(|| client.to_owned());
+        Ok(self.src.identify.get(&addr))
+    }
+
     /// One query-log directory, as an API page. `node` labels its rows (shipped logs).
     fn search_dir(
         &self,
@@ -1039,7 +1163,9 @@ impl Backend for ApiBackend {
             (_, true) => ("blocked", telltale_telemetry::agg::TopKind::Blocked),
             _ => ("domains", telltale_telemetry::agg::TopKind::Domains),
         };
-        let n = usize::try_from((q.to_s - q.from_s).div_ceil(3600)).unwrap_or(0);
+        // REQ: OBS-029 — hours of the window, at most `MAX_SLOTS`; none when it doesn't end after
+        // it starts (a peer's read names its own window).
+        let n = telltale_api::heatmap::window_slots(q.from_s, q.to_s, 3600);
         let mut part = telltale_api::heatmap::KeyPart {
             values: vec![0; n],
             covered: vec![true; n],
@@ -1579,12 +1705,17 @@ impl Backend for ApiBackend {
             .pipeline
             .explain(&req, crate::lists::source_reader(&cfg))
             .map_err(|e| Problem::invalid(e).hint("Pass a domain name such as ads.example.com."))?;
+        // REQ: FLT-013, AGT-004 (ADR-183) — at query-log privacy level 2 and above (clients hidden)
+        // the node's own knowledge of the client's MAC isn't shown, as the identity's `recognition`
+        // isn't; a MAC the caller gave is theirs and comes back.
+        let hide_mac = mac.is_none() && cfg.telemetry.qlog.privacy_level >= 2;
         Ok(Explanation {
             name: e.name,
             qtype: qtype_name(e.qtype),
             client: ExplainClient {
                 ip: e.client.ip.to_string(),
-                mac: e.client.mac,
+                mac: e.client.mac.filter(|_| !hide_mac),
+                mac_from: e.client.mac_from.filter(|_| !hide_mac).map(str::to_owned),
                 device: e.client.device,
                 identified_by: e.client.identified_by.to_owned(),
                 groups: e.client.groups,
@@ -2053,33 +2184,17 @@ impl Backend for ApiBackend {
     }
 
     fn identity(&self, client: &str) -> Result<telltale_api::model::DeviceIdentity, Problem> {
-        // REQ: FLT-017 — a workload's identity is under its analytics key.
-        if let Some((_, key)) = self.workload(client) {
-            return Ok(self.src.identify.get(&key));
-        }
-        if client.parse::<IpAddr>().is_ok() {
-            return Ok(self.src.identify.get(client));
-        }
-        let cfg = self.src.config.load();
-        let c = cfg
-            .client
-            .iter()
-            .find(|c| c.name.as_str().eq_ignore_ascii_case(client))
-            .ok_or_else(|| {
-                Problem::not_found(format!(
-                    "`{client}` is neither an address nor a named device"
-                ))
-                .hint("Give a device's IP address, or the name it has on the Clients page.")
-            })?;
-        let snap = self.src.identify.snapshot();
-        let addrs = device_addresses(c);
-        let addr = addrs
-            .iter()
-            .find(|a| snap.by_client.contains_key(*a))
-            .or(addrs.first())
-            .cloned()
-            .unwrap_or_else(|| client.to_owned());
-        Ok(self.src.identify.get(&addr))
+        self.identity_of(client, true)
+    }
+
+    // REQ: FLT-006, CLU-002, API-010 (ADR-183) — what a node answers another node's identity read:
+    // the identity without `recognition`, which only the entry node's own view uses, so it is not
+    // computed here, nor are this node's MACs sent over the cluster channel.
+    fn identity_for_peer(
+        &self,
+        client: &str,
+    ) -> Result<telltale_api::model::DeviceIdentity, Problem> {
+        self.identity_of(client, false)
     }
 
     // REQ: OBS-033 — this node's change markers.
@@ -2342,6 +2457,16 @@ impl Backend for ApiBackend {
         w: telltale_api::MaintenanceWrite,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::MaintenanceResult, Problem>> {
         crate::maintenance::local_backend_call(Arc::clone(&self.src), node, w)
+    }
+
+    // REQ: OPS-014 (ADR-182) — this node's own update state and requests (in a cluster, the
+    // federated backend sends calls for other nodes to them).
+    fn node_update(
+        &self,
+        node: &str,
+        call: telltale_api::NodeUpdateCall,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::NodeUpdate, Problem>> {
+        crate::node_update::local_backend_call(Arc::clone(&self.src), node, call)
     }
 
     // REQ: CLU-014 (ADR-151) — failover drills on this node (a cluster routes them first).
@@ -3860,6 +3985,234 @@ fn rule_of(
     })
 }
 
+/// What a plain quick-rule device refusal's hint says (GitHub issue #73). It promises only what
+/// holds today: naming a device recognizes it by the address it has now, so a rule for the name
+/// stops matching when that address changes too (until the device's `match` list is changed, or it
+/// is recognized by its MAC address). It says to use the new name, not that rules then follow the
+/// device. Phase 1 (MAC addresses from the router) can say more.
+const RULE_DEVICE_HINT: &str = "Use the address, or name the device first (Clients → its address → Name this device…) and use that name.";
+
+/// How many refused devices of one rule a hint looks up (the others are refused all the same).
+const HINTED_DEVICES: usize = 4;
+
+/// What a hint says about one refused device.
+enum DeviceHint {
+    /// Words that need nothing of this node's tables and end the matter: a MAC address (how to
+    /// name the device by it), a Kubernetes workload's name (its pods' addresses change).
+    Plain(String),
+    /// The discovered name of an address that is a configured device. Learned from this node's
+    /// tables.
+    Configured(String),
+    /// A discovered name: which address(es). Learned from this node's tables; the plain sentence
+    /// still follows.
+    Discovered(String),
+    /// Nothing known about it: the plain sentence.
+    Unknown,
+}
+
+/// REQ: FLT-005 (GitHub issue #73) — what to do about a device a quick rule can't name. When the
+/// string is a name this node's router, mDNS, or the other nodes' tables give an address (what the
+/// query log shows for a device nobody named), the hint says which address, and which configured
+/// device that is if it is one; a MAC address gets words about MACs. Words only: whether a device
+/// is accepted is the validator's answer, from the configuration alone, so every node gives the
+/// same one; this reads node-local tables, off the DNS path, and only once a rule was refused, for
+/// the first few devices, each once. `hint` is the text without what the tables told it, and the
+/// text with it travels beside it (`fuller_hint`): the node that answers the caller gives the
+/// fuller one only to a caller who may read every device's queries, and a node that doesn't know
+/// the field shows the plain one.
+fn rule_device_hint(
+    src: &Sources,
+    file: &telltale_config::Config,
+    entries: &crate::managed::Entries,
+    rule: &serde_json::Value,
+    refusal: Problem,
+) -> Problem {
+    let clients: Vec<&telltale_config::ClientConfig> =
+        file.client.iter().chain(&entries.clients).collect();
+    let known: std::collections::HashSet<String> = clients
+        .iter()
+        .map(|c| c.name.as_str().to_ascii_lowercase())
+        .collect();
+    let mut once = std::collections::HashSet::new();
+    let refused: Vec<&str> = rule["devices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|d| !telltale_config::rule_device_known(&known, d))
+        .filter(|d| once.insert(d.to_ascii_lowercase()))
+        .take(HINTED_DEVICES)
+        .collect();
+    if refused.is_empty() {
+        return refusal; // refused for another reason
+    }
+    let (mut full, mut plain) = (Vec::new(), Vec::new());
+    let (mut full_ends_plain, mut plain_ends_plain) = (false, false);
+    for device in refused {
+        match device_hint(src, &clients, device) {
+            DeviceHint::Plain(says) => {
+                full.push(says.clone());
+                plain.push(says);
+            }
+            DeviceHint::Configured(says) => {
+                full.push(says);
+                plain_ends_plain = true;
+            }
+            DeviceHint::Discovered(says) => {
+                full.push(says);
+                (full_ends_plain, plain_ends_plain) = (true, true);
+            }
+            DeviceHint::Unknown => (full_ends_plain, plain_ends_plain) = (true, true),
+        }
+    }
+    if full_ends_plain {
+        full.push(RULE_DEVICE_HINT.to_owned());
+    }
+    if plain_ends_plain {
+        plain.push(RULE_DEVICE_HINT.to_owned());
+    }
+    let (full, plain) = (full.join(" "), plain.join(" "));
+    if plain == full {
+        refusal.hint(full)
+    } else {
+        refusal.hint(plain).fuller_hint(full)
+    }
+}
+
+/// What the hint says about one refused `device`.
+fn device_hint(
+    src: &Sources,
+    clients: &[&telltale_config::ClientConfig],
+    device: &str,
+) -> DeviceHint {
+    if matches!(
+        telltale_config::MatchKey::parse(device),
+        Ok(telltale_config::MatchKey::Mac(_))
+    ) {
+        return DeviceHint::Plain(format!(
+            "`{device}` is a MAC address, and a rule can't name one. Name the device with that MAC in its match list (a `[[client]]` in the config file, or `PUT /api/v1/clients/{{name}}`), then use that name. MAC addresses are recognized only where TelltaleDNS can see them."
+        ));
+    }
+    // What the query log calls a pod: `namespace/kind/name`. Its address is not a good thing to
+    // name: it changes with every restart.
+    let mut parts = device.split('/');
+    if let (Some(ns), Some(kind), Some(name), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+        && !ns.is_empty()
+        && !kind.is_empty()
+        && !name.is_empty()
+    {
+        return DeviceHint::Plain(format!(
+            "`{device}` looks like a Kubernetes workload's name, and a pod's address changes with every restart. A rule can be for the group an operator placed it in (click its name in the query log, then Add to group…), or, for a short time, for one pod's address."
+        ));
+    }
+    let found = discovered_addresses(src, device);
+    match found.len() {
+        0 => DeviceHint::Unknown,
+        1 => {
+            let Some((&ip, by)) = found.iter().next() else {
+                return DeviceHint::Unknown;
+            };
+            if let Some(named) = configured_device_at(clients, ip, &by.mac) {
+                let who = if by.router {
+                    format!("your router calls {ip}")
+                } else {
+                    format!("{ip} calls itself")
+                };
+                DeviceHint::Configured(format!(
+                    "`{device}` is what {who}, which is the device “{named}”: use its name."
+                ))
+            } else if by.router {
+                DeviceHint::Discovered(format!("`{device}` is what your router calls {ip}."))
+            } else {
+                DeviceHint::Discovered(format!("`{device}` is what {ip} calls itself."))
+            }
+        }
+        n => {
+            /// How many addresses a sentence lists before "and N more".
+            const SHOWN: usize = 4;
+            let mut list: Vec<String> = found.keys().take(SHOWN).map(ToString::to_string).collect();
+            if n > SHOWN {
+                list.push(format!("and {} more", n - SHOWN));
+            }
+            DeviceHint::Discovered(format!(
+                "`{device}` is the name of more than one device here ({}), so pick the address of the one you mean.",
+                list.join(", ")
+            ))
+        }
+    }
+}
+
+/// Who gave an address a name: a router (not the device itself over mDNS), and its MAC if known.
+#[derive(Debug, Clone)]
+struct NamedBy {
+    router: bool,
+    mac: String,
+}
+
+/// The addresses `name` is the discovered name of (any case): this node's router, then its mDNS,
+/// then the other nodes' routers and mDNS, as the query log reads them (the first table to know an
+/// address names it).
+fn discovered_addresses(
+    src: &Sources,
+    name: &str,
+) -> std::collections::BTreeMap<std::net::Ipv4Addr, NamedBy> {
+    let routers = src.pipeline.router_leases.load();
+    let mdns = src.pipeline.mdns_names.load();
+    let peers = src.pipeline.peer_names.load();
+    let mut found = std::collections::BTreeMap::<std::net::Ipv4Addr, NamedBy>::new();
+    for (table, router) in [
+        (&**routers, true),
+        (&**mdns, false),
+        (&peers.routers, true),
+        (&peers.mdns, false),
+    ] {
+        for (ip, lease) in table {
+            if lease
+                .hostname
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case(name))
+            {
+                let by = found.entry(*ip).or_insert_with(|| NamedBy {
+                    router,
+                    mac: String::new(),
+                });
+                if by.mac.is_empty() {
+                    by.mac.clone_from(&lease.mac);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The configured device that is exactly this address: it names the address, or the MAC the lease
+/// reports, in its `match` list. (A device that is a network, a CIDR, isn't "the device".)
+fn configured_device_at(
+    clients: &[&telltale_config::ClientConfig],
+    ip: std::net::Ipv4Addr,
+    mac: &str,
+) -> Option<String> {
+    use telltale_config::MatchKey;
+    let mac = MatchKey::parse(mac)
+        .ok()
+        .filter(|k| matches!(k, MatchKey::Mac(_)));
+    clients
+        .iter()
+        .find(|c| {
+            c.match_keys
+                .iter()
+                .any(|k| match MatchKey::parse(k.as_str()) {
+                    Ok(MatchKey::Ip(a)) => a == std::net::IpAddr::V4(ip),
+                    // `192.168.1.20/32` is one address too.
+                    Ok(MatchKey::Cidr(c)) => c.prefix == 32 && c.addr == std::net::IpAddr::V4(ip),
+                    Ok(m @ MatchKey::Mac(_)) => mac.as_ref() == Some(&m),
+                    _ => false,
+                })
+        })
+        .map(|c| c.name.to_string())
+}
+
 /// AGT-002 impact of a quick rule: recent queries for its domain (or names under it) and a
 /// sentence saying for whom it changes.
 fn rule_impact(src: &Sources, rule: &telltale_config::RuleConfig, setting: bool) -> (u64, String) {
@@ -4228,8 +4581,16 @@ fn plan_managed(
             "`{name}` wasn't created through the API"
         )));
     }
-    let merged = crate::managed::merge(&file, &entries)
-        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    let merged = crate::managed::merge(&file, &entries).map_err(|errs| {
+        let refusal = Problem::new(Code::InvalidConfig, errs.join("; "));
+        match (w.kind, after.as_ref()) {
+            // REQ: FLT-005 (GitHub issue #73) — a device a rule can't name says what to do.
+            (ManagedKind::Rule, Some(rule)) => {
+                rule_device_hint(src, &file, &entries, rule, refusal)
+            }
+            _ => refusal,
+        }
+    })?;
     let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
     let body = match (w.kind, &after) {
         (_, None) => None,
@@ -6388,6 +6749,8 @@ mod top_client_name_tests {
             hostname: Some(name.into()),
             expires: 0,
             offline: false,
+            unsure: false,
+            stale: false,
         }
     }
 
@@ -6596,3 +6959,19 @@ mod local_file_tests;
 #[cfg(test)]
 #[path = "api_backend_router_tests.rs"]
 mod router_tests;
+
+// REQ: FLT-005 (issue #73) — a quick rule's device: what a rule can name, and the refusal's hint.
+#[cfg(test)]
+#[path = "api_backend_rule_device_tests.rs"]
+mod rule_device_tests;
+
+// REQ: AGT-004, FLT-013 (ADR-183) — explain's MAC is for those who may read the devices.
+#[cfg(test)]
+#[path = "api_backend_explain_mac_tests.rs"]
+mod explain_mac_tests;
+
+// REQ: FLT-006, API-010, AGT-004 (ADR-183) — an identity says how its address is recognized, and
+// by which MAC, to who may see MACs.
+#[cfg(test)]
+#[path = "api_backend_recognition_tests.rs"]
+mod recognition_tests;

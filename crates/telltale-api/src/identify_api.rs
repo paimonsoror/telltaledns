@@ -52,10 +52,22 @@ pub(crate) async fn identities(State(b): State<Shared>) -> Json<Items<DeviceIden
     ))]
 pub(crate) async fn identity(
     State(b): State<Shared>,
+    ext: axum::http::Extensions,
     Path(id): Path<String>,
 ) -> Result<Json<DeviceIdentity>, Problem> {
-    tokio::task::spawn_blocking(move || b.identity(&id))
+    // REQ: FLT-006, AGT-004 (ADR-183) — the MAC a device here could be named by, where it comes
+    // from and whether it is shared go only to a caller who may read the devices: a MAC is what
+    // `/api/v1/clients` shows in a device's keys. (MCP's `identify_device` reaches this route as
+    // the caller, so it follows.)
+    let shows_macs = crate::auth::routes::principal(&ext)
+        .is_ok_and(|who| crate::auth::agent::may_read_clients(&who));
+    let mut found = tokio::task::spawn_blocking(move || b.identity(&id))
         .await
-        .map_err(|e| Problem::internal(format!("request worker failed: {e}")))?
-        .map(Json)
+        .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??;
+    if !shows_macs && let Some(r) = found.recognition.as_mut() {
+        r.mac = None;
+        r.mac_from = None;
+        r.mac_shared = false;
+    }
+    Ok(Json(found))
 }

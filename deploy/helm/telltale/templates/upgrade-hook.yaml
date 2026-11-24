@@ -1,0 +1,100 @@
+{{- /*
+REQ: OPS-014, CLU-010 (ADR-182) — before the chart's pods roll, upgrade the cluster's native nodes
+(outside Kubernetes) to this image's version, one at a time, replicas first: the image's own
+`telltale ctl upgrade --to-self`, against the running controller's API. A node that fails stops
+the upgrade, so the pods keep their version. Helm runs it before an upgrade; Argo CD as a
+PreSync hook on every sync (nothing to do when every node already runs the version, and nothing
+answering yet on a first install). With `whenUnavailable: skip`, a node that can't fetch the
+image's edge build any more is left on its version (loudly) instead of failing the hook. The Job
+stays after a run that succeeded (deleted only before the next one), so a skip's warning can be
+read until the next sync. A missing token Secret fails the run at once (`set TELLTALE_TOKEN`).
+*/}}
+{{- $h := .Values.upgradeHook }}
+{{- if $h.enabled }}
+{{- if not $h.tokenSecret.name }}
+{{- fail "upgradeHook.enabled needs upgradeHook.tokenSecret.name: a Secret holding an agent token with the scopes analytics:read and cluster:upgrade" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "telltale.fullname" . }}-upgrade
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $h.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "telltale.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: upgrade-hook
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: upgrade
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - ctl
+            - --url
+            - {{ $h.url | default (printf "http://%s-api.%s.svc:%v" (include "telltale.fullname" .) .Release.Namespace .Values.service.api.port) | quote }}
+            - upgrade
+            - --to-self
+            - --skip-if-unreachable
+            - --timeout
+            - {{ $h.timeout | quote }}
+            {{- if $h.skipDown }}
+            - --skip-down
+            {{- end }}
+            {{- if eq ($h.whenUnavailable | default "fail") "skip" }}
+            - --skip-unavailable
+            {{- end }}
+            {{- with $h.caSecret }}{{ if .name }}
+            - --ca-file
+            - /etc/telltale-hook-ca/{{ .key | default "ca.crt" }}
+            {{- end }}{{ end }}
+          env:
+            - name: TELLTALE_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ $h.tokenSecret.name }}, key: {{ $h.tokenSecret.key }}, optional: true }
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml $h.resources | nindent 12 }}
+          {{- with $h.caSecret }}{{ if .name }}
+          volumeMounts:
+            - name: api-ca
+              mountPath: /etc/telltale-hook-ca
+              readOnly: true
+          {{- end }}{{ end }}
+      {{- with $h.caSecret }}{{ if .name }}
+      volumes:
+        - name: api-ca
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ .key | default "ca.crt" }}
+                path: {{ .key | default "ca.crt" }}
+      {{- end }}{{ end }}
+{{- end }}

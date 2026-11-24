@@ -23,4 +23,4 @@ thiserror = "2.0.21"
 toml = "1.1.6"
 # REQ: FLT-010 (T7.10) — schedule time zones from the system tz database (/usr/share/zoneinfo;
 # the image ships it). Small, no bundled tzdb.
-jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+jiff = { version = "1.0", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }

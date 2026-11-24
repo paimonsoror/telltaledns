@@ -343,7 +343,7 @@ pub fn tools() -> Vec<Tool> {
         // REQ: OBS-025 (T13.3)
         Tool {
             name: "identify_device",
-            description: "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against TelltaleDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
+            description: "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against TelltaleDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. For an IP it also says how that address is recognized now (`recognition`: the configured device and how, `identifiedBy`), and, with config:read (not restricted to a group), the MAC address a device there could be named by (`mac`, where it comes from in `macFrom`: neighbor, router or peer, `macShared` when the router reports it at several addresses and `macRandomized` for a made-up Wi-Fi address). Needs analytics:read.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "The device's IP, or its name."}
@@ -885,7 +885,7 @@ fn rule(action: &'static str, a: &Value) -> Result<Write, String> {
 fn rule_schema(what: &str) -> Value {
     json!({"type": "object", "properties": {
         "domain": {"type": "string", "description": format!("The domain to {what}; its subdomains are included.")},
-        "devices": {"type": "array", "items": {"type": "string"}, "description": "Only for these devices (names, IPs, or CIDRs)."},
+        "devices": {"type": "array", "items": {"type": "string"}, "description": "Only for these devices: names of configured devices, IPs, or CIDRs. A name from a query's clientName that no configured device has (what a router or mDNS calls an address) is refused: use the address. A Kubernetes pod (`namespace/kind/name`) changes address with every restart: use `groups` with the group an operator placed it in instead."},
         "groups": {"type": "array", "items": {"type": "string"}, "description": "Only for these groups. With neither devices nor groups: everyone."},
         "forMinutes": {"type": "integer", "minimum": 1, "description": "Stop after this many minutes (default: until removed)."},
         "reason": reason_schema()
@@ -938,7 +938,7 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_assign_client",
-            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). Needs the config:write:clients scope.",
+            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A MAC in `match` keeps recognizing the device when its address changes (identify_device's recognition.mac, when macShared is false); give it without the IP, which would name whoever gets that address next. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). Needs the config:write:clients scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "The device's name (new or existing), an IP, or a Kubernetes workload (namespace/kind/name)."},

@@ -1,0 +1,17 @@
+# TelltaleDNS: install the versions the cluster asks for (REQ: OPS-014, ADR-182). Installed by
+# deploy/systemd/install.sh, which writes the node's data directory into it (/var/lib/telltale is
+# the default), and off until enabled:
+#   sudo systemctl enable --now telltale-update.path     (or install.sh --cluster-updates)
+# The node writes <data_dir>/update/request.json when an admin (or `telltale ctl upgrade`, or the
+# Helm chart's upgradeHook) asks it for a version; this starts telltale-update.service, which
+# checks the request, verifies the signed build, installs it, restarts the node, and puts the
+# previous binary back if the new one isn't healthy.
+[Unit]
+Description=TelltaleDNS update requests from the cluster
+Documentation=https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#upgrading-from-the-cluster
+
+[Path]
+PathExists=/var/lib/telltale/update/request.json
+
+[Install]
+WantedBy=paths.target

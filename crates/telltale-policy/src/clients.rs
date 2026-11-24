@@ -1,9 +1,11 @@
 //! Client identification and group membership (`spec/03` §3 step 2, `spec/05` §1).
 //!
 //! REQ: FLT-005, FLT-006. Precedence: client ID (DoH path / DoT SNI) → EDNS MAC (only from
-//! trusted forwarders) → MAC from the neighbor table → Kubernetes workload (FLT-017) → exact
-//! IP → most specific CIDR → the `default` group. All lookups are hash maps or a short prefix
-//! list built once per config, so identifying a client allocates nothing.
+//! trusted forwarders) → MAC from the MAC table (the kernel's neighbor table, then the MACs
+//! this node's routers report, then those other full cluster members' routers report: ADR-183)
+//! → Kubernetes workload (FLT-017) → exact IP → most specific CIDR → the `default` group. All
+//! lookups are hash maps or a short prefix list built once per config, so identifying a
+//! client allocates nothing.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -271,6 +273,9 @@ pub enum IdSource {
     ClientId,
     EdnsMac,
     NeighborMac,
+    /// REQ: FLT-006 (ADR-183) — the MAC a router (this node's, or another full member's) reports
+    /// for the address, when the kernel's neighbor table has none for it.
+    RouterMac,
     /// REQ: FLT-017 — a Kubernetes pod address, named by its workload.
     Workload,
     Ip,
@@ -289,31 +294,201 @@ pub struct Identity {
     pub net: Option<u16>,
 }
 
-/// The kernel neighbor table (IP → MAC), refreshed in the background and read lock-free.
+/// Where a MAC table entry came from (REQ: FLT-006, ADR-183).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacFrom {
+    /// This host's kernel neighbor table (ARP/NDP): what it saw on its own link.
+    Kernel,
+    /// A MAC one of this node's own routers reports for the address.
+    Router,
+    /// A MAC another full cluster member's router reports for the address.
+    Peer,
+}
+
+/// A MAC address, and which source gave it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MacEntry {
+    pub mac: [u8; 6],
+    pub from: MacFrom,
+}
+
+/// REQ: FLT-006 (ADR-183) — the table the MAC step of [`ClientTable::identify`] reads: an address
+/// to the MAC it has, from the first source that has one (the kernel's neighbor table, then this
+/// node's routers, then other full members' routers). Built off the query path and swapped in
+/// whole.
+#[derive(Debug, Default)]
+pub struct MacTable {
+    map: HashMap<IpAddr, MacEntry>,
+    kernel: usize,
+    router: usize,
+    peer: usize,
+    unsure: usize,
+}
+
+impl MacTable {
+    /// The table of three sources. An address goes to the first source that has it: a later
+    /// source never replaces an earlier one's entry (a later duplicate within one source does,
+    /// as a kernel table always did). Keys are canonical (an IPv4-mapped address is the IPv4
+    /// one). `unsure` is how many bindings were withheld (a count for the metrics).
+    pub fn from_sources(
+        kernel: impl IntoIterator<Item = (IpAddr, [u8; 6])>,
+        router: impl IntoIterator<Item = (IpAddr, [u8; 6])>,
+        peer: impl IntoIterator<Item = (IpAddr, [u8; 6])>,
+        unsure: usize,
+    ) -> Self {
+        let mut t = Self {
+            unsure,
+            ..Self::default()
+        };
+        t.kernel = t.insert_source(MacFrom::Kernel, kernel);
+        t.router = t.insert_source(MacFrom::Router, router);
+        t.peer = t.insert_source(MacFrom::Peer, peer);
+        t
+    }
+
+    /// Adds one source's entries, in the order given, and returns how many addresses it added.
+    /// An address an earlier source holds is left alone; a later duplicate in this source
+    /// replaces the earlier one (and isn't counted twice).
+    fn insert_source(
+        &mut self,
+        from: MacFrom,
+        entries: impl IntoIterator<Item = (IpAddr, [u8; 6])>,
+    ) -> usize {
+        let mut added = 0;
+        for (ip, mac) in entries {
+            let ip = ip.to_canonical();
+            match self.map.get(&ip) {
+                Some(held) if held.from != from => {}
+                Some(_) => {
+                    self.map.insert(ip, MacEntry { mac, from });
+                }
+                None => {
+                    self.map.insert(ip, MacEntry { mac, from });
+                    added += 1;
+                }
+            }
+        }
+        added
+    }
+
+    /// The entry for `ip` (a canonical address).
+    #[inline]
+    pub fn get(&self, ip: IpAddr) -> Option<MacEntry> {
+        self.map.get(&ip).copied()
+    }
+
+    /// REQ: FLT-006, API-010 (ADR-183) — how many IPv4 addresses the kernel's neighbor table gives
+    /// `mac`: behind a MAC-translating extender it is the entry of every address behind it. IPv6
+    /// entries are not counted (D6): a dual-stack device has a link-local and one or more global
+    /// IPv6 entries beside its IPv4 one, all the same device, and the routers' bindings are IPv4
+    /// only. One pass over the table: for an API read (the dialog's `macShared`), never the
+    /// query path.
+    pub fn kernel_addresses_of(&self, mac: [u8; 6]) -> usize {
+        self.map
+            .iter()
+            .filter(|(ip, e)| ip.is_ipv4() && e.from == MacFrom::Kernel && e.mac == mac)
+            .count()
+    }
+
+    /// Entries, from every source.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Entries the kernel's neighbor table gave.
+    pub fn kernel(&self) -> usize {
+        self.kernel
+    }
+
+    /// Entries this node's routers gave (those the kernel had no entry for).
+    pub fn router(&self) -> usize {
+        self.router
+    }
+
+    /// Entries other full members' routers gave (those no earlier source had).
+    pub fn peer(&self) -> usize {
+        self.peer
+    }
+
+    /// Bindings withheld because they weren't sure.
+    pub fn unsure(&self) -> usize {
+        self.unsure
+    }
+}
+
+/// The MAC table (IP → MAC, and where each MAC came from), refreshed in the background and
+/// read lock-free (one atomic load and one hash lookup).
 #[derive(Debug, Default)]
 pub struct Neighbors {
-    map: ArcSwap<HashMap<IpAddr, [u8; 6]>>,
+    map: ArcSwap<MacTable>,
 }
 
 impl Neighbors {
+    /// Replaces the table with the kernel's neighbor table (every entry `Kernel`; a later
+    /// duplicate address wins).
     pub fn replace(&self, entries: impl IntoIterator<Item = (IpAddr, [u8; 6])>) {
-        let map: HashMap<IpAddr, [u8; 6]> = entries
-            .into_iter()
-            .map(|(ip, mac)| (ip.to_canonical(), mac))
-            .collect();
-        self.map.store(Arc::new(map));
+        self.map.store(Arc::new(MacTable::from_sources(
+            entries,
+            std::iter::empty(),
+            std::iter::empty(),
+            0,
+        )));
     }
 
+    /// Swaps in a whole table and returns the old one, for the caller to free off the query
+    /// path.
+    pub fn swap(&self, table: MacTable) -> Arc<MacTable> {
+        self.map.swap(Arc::new(table))
+    }
+
+    /// The table in use now, as one value: counts read from it agree with each other (a scrape
+    /// reads one table, not two swapped between loads).
+    pub fn table(&self) -> Arc<MacTable> {
+        self.map.load_full()
+    }
+
+    #[inline]
     pub fn get(&self, ip: IpAddr) -> Option<[u8; 6]> {
-        self.map.load().get(&ip).copied()
+        self.map.load().get(ip).map(|e| e.mac)
     }
 
+    /// The MAC for `ip` and where it came from.
+    #[inline]
+    pub fn entry(&self, ip: IpAddr) -> Option<MacEntry> {
+        self.map.load().get(ip)
+    }
+
+    /// Entries, from every source.
     pub fn len(&self) -> usize {
         self.map.load().len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Entries from the kernel's neighbor table.
+    pub fn kernel_len(&self) -> usize {
+        self.map.load().kernel()
+    }
+
+    /// Entries from this node's routers.
+    pub fn router_len(&self) -> usize {
+        self.map.load().router()
+    }
+
+    /// Entries from other full members' routers.
+    pub fn peer_len(&self) -> usize {
+        self.map.load().peer()
+    }
+
+    /// Router bindings withheld because they weren't sure.
+    pub fn unsure_len(&self) -> usize {
+        self.map.load().unsure()
     }
 }
 
@@ -335,6 +510,9 @@ pub struct ClientTable {
     single: Vec<[u16; 1]>,
     single_names: Vec<[Box<str>; 1]>,
     trust_mac: Vec<Cidr>,
+    /// REQ: FLT-006 (ADR-183) — `[clients] router_macs`: a router's or a member's entry in the
+    /// MAC table identifies a device (the kernel's always does).
+    router_macs: bool,
     /// Index of the `default` group, and its name for unknown clients.
     default_group: [u16; 1],
     default_names: Vec<Box<str>>,
@@ -417,6 +595,7 @@ impl Group {
 impl ClientTable {
     /// Builds the table. The config is assumed validated (`telltale config check` rules);
     /// unparseable keys and unknown groups are skipped.
+    #[allow(clippy::too_many_lines)] // one pass over the groups, then the clients, then the keys
     pub fn from_config(cfg: &Config) -> Self {
         let mut groups: Vec<Group> = cfg.group.iter().map(Group::from_config).collect();
         let default_idx = if let Some(i) = groups.iter().position(|g| &*g.name == "default") {
@@ -460,6 +639,7 @@ impl ClientTable {
             single: Vec::new(),
             single_names: Vec::new(),
             trust_mac: cfg.clients.trust_edns_mac_from.clone(),
+            router_macs: cfg.clients.router_macs,
             default_group: [u16::try_from(default_idx).unwrap_or(0)],
             default_names: vec!["default".into()],
             clients: Vec::new(),
@@ -525,6 +705,13 @@ impl ClientTable {
         !self.by_mac.is_empty()
     }
 
+    /// REQ: FLT-006 (ADR-183) — whether the MACs routers report (this node's, and other full
+    /// members') identify a device, as the kernel's neighbor table always does (`[clients]
+    /// router_macs`).
+    pub fn router_macs(&self) -> bool {
+        self.router_macs
+    }
+
     /// REQ: FLT-015 — whether any group filters answer addresses.
     pub fn any_answers(&self) -> bool {
         self.any_answers
@@ -586,10 +773,20 @@ impl ClientTable {
             {
                 return found(c, IdSource::EdnsMac);
             }
-            if let Some(mac) = neighbors.get(peer)
-                && let Some(&c) = self.by_mac.get(&mac)
-            {
-                return found(c, IdSource::NeighborMac);
+            // REQ: FLT-006 (ADR-183) — the MAC table: the kernel's entry, else (with
+            // `router_macs`) the MAC a router reports. One load, one lookup, a 7-byte copy.
+            // (Written as a `match` and with the lookups inlined: measured 2 ns cheaper than
+            // the same test as a condition, `flt_006_identify_mac`.)
+            if let Some(e) = neighbors.entry(peer) {
+                let source = match e.from {
+                    MacFrom::Kernel => IdSource::NeighborMac,
+                    MacFrom::Router | MacFrom::Peer => IdSource::RouterMac,
+                };
+                if (source == IdSource::NeighborMac || self.router_macs)
+                    && let Some(&c) = self.by_mac.get(&e.mac)
+                {
+                    return found(c, source);
+                }
             }
         }
         // REQ: FLT-017 (ADR-150) — a pod address is its workload, before IP and CIDR: a
@@ -917,5 +1114,336 @@ trust_edns_mac_from = ["192.168.1.1/32"]
             Workloads::none(),
         );
         assert_eq!(&*t.primary_group(office).name, "default");
+    }
+
+    const TABLET: [u8; 6] = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01];
+    const PHONE: [u8; 6] = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02];
+    /// A MAC no configured device has.
+    const STRANGER: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x99];
+
+    fn addr(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn from_toml(toml: &str) -> ClientTable {
+        let cfg: Config = telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        ClientTable::from_config(&cfg)
+    }
+
+    /// Two devices named by MAC, one by IP (the same devices as `table()`, plus the phone).
+    fn mac_devices(clients_section: &str) -> ClientTable {
+        from_toml(&format!(
+            "{clients_section}
+[[client]]
+name = \"tablet\"
+match = [\"aa:bb:cc:dd:ee:01\"]
+[[client]]
+name = \"phone\"
+match = [\"AA-BB-CC-DD-EE-02\"]
+[[client]]
+name = \"tv\"
+match = [\"192.168.1.30\"]
+"
+        ))
+    }
+
+    // REQ: FLT-006 (ADR-183) — a MAC a router reports identifies the device named by it, at any
+    // address; this node's routers and another full member's both do, as `RouterMac`. A MAC no
+    // device has identifies nothing, and a router MAC beats a device named by the exact address
+    // (as a kernel entry does) until the table has nothing for it.
+    #[test]
+    fn flt_006_router_mac_identifies_named_device() {
+        let t = mac_devices("");
+        let n = Neighbors::default();
+        assert!(t.router_macs(), "on by default");
+        assert_eq!(
+            who(&t, "192.168.1.77", None, None, &n),
+            ("-".into(), IdSource::Default)
+        );
+        // This node's router reports the tablet at .77 (and a mapped peer address is the same).
+        n.swap(MacTable::from_sources(
+            [],
+            [(addr("192.168.1.77"), TABLET)],
+            [],
+            0,
+        ));
+        assert_eq!(
+            who(&t, "192.168.1.77", None, None, &n),
+            ("tablet".into(), IdSource::RouterMac)
+        );
+        assert_eq!(
+            who(&t, "::ffff:192.168.1.77", None, None, &n),
+            ("tablet".into(), IdSource::RouterMac)
+        );
+        // Another full member's router: the same step, the same source.
+        n.swap(MacTable::from_sources(
+            [],
+            [],
+            [(addr("192.168.1.78"), PHONE)],
+            0,
+        ));
+        assert_eq!(
+            who(&t, "192.168.1.78", None, None, &n),
+            ("phone".into(), IdSource::RouterMac),
+            "a MAC key written AA-BB-... is the same device"
+        );
+        // A MAC no device has: nothing.
+        n.swap(MacTable::from_sources(
+            [],
+            [(addr("192.168.1.79"), STRANGER)],
+            [],
+            0,
+        ));
+        assert_eq!(
+            who(&t, "192.168.1.79", None, None, &n),
+            ("-".into(), IdSource::Default)
+        );
+        // The device named by the exact address loses to the MAC the router reports there, and
+        // is back when the table has nothing.
+        n.swap(MacTable::from_sources(
+            [],
+            [(addr("192.168.1.30"), TABLET)],
+            [],
+            0,
+        ));
+        assert_eq!(
+            who(&t, "192.168.1.30", None, None, &n),
+            ("tablet".into(), IdSource::RouterMac)
+        );
+        n.swap(MacTable::default());
+        assert_eq!(
+            who(&t, "192.168.1.30", None, None, &n),
+            ("tv".into(), IdSource::Ip)
+        );
+    }
+
+    // REQ: FLT-006 (ADR-183) — the kernel's entry for an address wins over what routers report,
+    // even when its MAC is no named device's (the kernel saw it on its own link), and an
+    // IPv4-mapped key is the same address in every source.
+    #[test]
+    fn flt_006_kernel_entry_wins_over_router_and_peer() {
+        let t = mac_devices("");
+        let n = Neighbors::default();
+        n.swap(MacTable::from_sources(
+            [
+                (addr("192.168.1.50"), TABLET),
+                (addr("::ffff:192.168.1.51"), PHONE),
+                (addr("192.168.1.52"), STRANGER),
+            ],
+            [
+                (addr("192.168.1.50"), PHONE),
+                (addr("192.168.1.51"), TABLET),
+                (addr("192.168.1.52"), TABLET),
+                (addr("192.168.1.53"), TABLET),
+            ],
+            [
+                (addr("192.168.1.50"), PHONE),
+                (addr("192.168.1.53"), PHONE),
+                (addr("::ffff:192.168.1.54"), PHONE),
+            ],
+            0,
+        ));
+        let who_at = |ip: &str| who(&t, ip, None, None, &n);
+        assert_eq!(
+            who_at("192.168.1.50"),
+            ("tablet".into(), IdSource::NeighborMac)
+        );
+        assert_eq!(
+            who_at("192.168.1.51"),
+            ("phone".into(), IdSource::NeighborMac),
+            "a mapped kernel key is the IPv4 address"
+        );
+        assert_eq!(
+            who_at("::ffff:192.168.1.51"),
+            ("phone".into(), IdSource::NeighborMac)
+        );
+        assert_eq!(
+            who_at("192.168.1.52"),
+            ("-".into(), IdSource::Default),
+            "the kernel saw another device there"
+        );
+        assert_eq!(
+            who_at("192.168.1.53"),
+            ("tablet".into(), IdSource::RouterMac),
+            "this node's router before another member's"
+        );
+        assert_eq!(
+            who_at("192.168.1.54"),
+            ("phone".into(), IdSource::RouterMac),
+            "a mapped member key is the IPv4 address"
+        );
+    }
+
+    // REQ: FLT-006, OBS-005 (ADR-183) — what each source put in the table is counted (the
+    // metrics); an entry an earlier source holds isn't counted for a later one.
+    #[test]
+    fn flt_006_router_macs_counted_by_source() {
+        let n = Neighbors::default();
+        assert_eq!(
+            (
+                n.len(),
+                n.kernel_len(),
+                n.router_len(),
+                n.peer_len(),
+                n.unsure_len()
+            ),
+            (0, 0, 0, 0, 0)
+        );
+        let table = MacTable::from_sources(
+            [
+                (addr("10.0.0.1"), TABLET),
+                (addr("10.0.0.2"), PHONE),
+                (addr("::ffff:10.0.0.2"), STRANGER),
+            ],
+            [
+                (addr("10.0.0.2"), TABLET),
+                (addr("10.0.0.3"), TABLET),
+                (addr("10.0.0.4"), PHONE),
+            ],
+            [
+                (addr("10.0.0.4"), TABLET),
+                (addr("10.0.0.5"), TABLET),
+                (addr("10.0.0.6"), PHONE),
+                (addr("10.0.0.1"), PHONE),
+            ],
+            7,
+        );
+        assert_eq!(
+            (
+                table.len(),
+                table.kernel(),
+                table.router(),
+                table.peer(),
+                table.unsure()
+            ),
+            (6, 2, 2, 2, 7)
+        );
+        assert_eq!(
+            table.get(addr("10.0.0.2")).map(|e| (e.mac, e.from)),
+            Some((STRANGER, MacFrom::Kernel)),
+            "within one source a later duplicate wins, as a kernel table always did"
+        );
+        assert_eq!(
+            table.get(addr("10.0.0.4")).map(|e| e.from),
+            Some(MacFrom::Router)
+        );
+        assert_eq!(
+            table.get(addr("10.0.0.6")).map(|e| e.from),
+            Some(MacFrom::Peer)
+        );
+        assert!(table.get(addr("10.0.0.99")).is_none());
+        // Through `Neighbors`: the same counts, and `swap` returns the table it replaced.
+        assert!(n.swap(table).is_empty());
+        assert_eq!(
+            (
+                n.len(),
+                n.kernel_len(),
+                n.router_len(),
+                n.peer_len(),
+                n.unsure_len()
+            ),
+            (6, 2, 2, 2, 7)
+        );
+        assert_eq!(
+            n.entry(addr("10.0.0.3")).map(|e| e.from),
+            Some(MacFrom::Router)
+        );
+        assert_eq!(n.get(addr("10.0.0.3")), Some(TABLET));
+        let old = n.swap(MacTable::default());
+        assert_eq!(old.len(), 6);
+        // `replace` is the kernel's table, as before.
+        n.replace([(addr("10.1.1.1"), PHONE)]);
+        assert_eq!((n.kernel_len(), n.router_len(), n.peer_len()), (1, 0, 0));
+        assert_eq!(
+            n.entry(addr("10.1.1.1")).map(|e| e.from),
+            Some(MacFrom::Kernel)
+        );
+    }
+
+    // REQ: FLT-006 (ADR-183) — without a device named by its MAC the table is never read: what
+    // is in it changes nothing, whatever it holds.
+    #[test]
+    fn flt_006_no_mac_clients_never_read_the_table() {
+        let t = from_toml(
+            "[[client]]
+name = \"tv\"
+match = [\"192.168.1.30\"]
+",
+        );
+        assert!(!t.uses_macs());
+        let empty = Neighbors::default();
+        let full = Neighbors::default();
+        full.swap(MacTable::from_sources(
+            [
+                (addr("192.168.1.30"), TABLET),
+                (addr("192.168.1.31"), PHONE),
+            ],
+            [
+                (addr("192.168.1.32"), TABLET),
+                (addr("192.168.1.30"), PHONE),
+            ],
+            [(addr("192.168.1.33"), PHONE)],
+            0,
+        ));
+        for ip in [
+            "192.168.1.30",
+            "192.168.1.31",
+            "192.168.1.32",
+            "192.168.1.33",
+        ] {
+            assert_eq!(
+                who(&t, ip, None, None, &full),
+                who(&t, ip, None, None, &empty),
+                "{ip}"
+            );
+        }
+        assert_eq!(
+            who(&t, "192.168.1.30", None, None, &full),
+            ("tv".into(), IdSource::Ip)
+        );
+    }
+
+    // REQ: FLT-006, CLU-010 (ADR-183) — `[clients] router_macs = false`: the kernel's entries and
+    // trusted EDNS MACs identify as before, and the MACs routers report (this node's and other
+    // members') don't.
+    #[test]
+    fn flt_006_router_macs_off_ignores_router_entries() {
+        let t = mac_devices("[clients]\nrouter_macs = false\n");
+        assert!(!t.router_macs());
+        let n = Neighbors::default();
+        n.swap(MacTable::from_sources(
+            [(addr("192.168.1.60"), TABLET)],
+            [(addr("192.168.1.61"), TABLET)],
+            [(addr("192.168.1.62"), PHONE)],
+            0,
+        ));
+        assert_eq!(
+            who(&t, "192.168.1.60", None, None, &n),
+            ("tablet".into(), IdSource::NeighborMac)
+        );
+        assert_eq!(
+            who(&t, "192.168.1.61", None, None, &n),
+            ("-".into(), IdSource::Default)
+        );
+        assert_eq!(
+            who(&t, "192.168.1.62", None, None, &n),
+            ("-".into(), IdSource::Default)
+        );
+        // The device named by the exact address is not displaced by a router MAC.
+        n.swap(MacTable::from_sources(
+            [],
+            [(addr("192.168.1.30"), TABLET)],
+            [],
+            0,
+        ));
+        assert_eq!(
+            who(&t, "192.168.1.30", None, None, &n),
+            ("tv".into(), IdSource::Ip)
+        );
     }
 }

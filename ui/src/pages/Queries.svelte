@@ -13,6 +13,7 @@
   import QuickRuleForm from '../lib/components/QuickRuleForm.svelte';
   import CacheCard from '../lib/components/CacheCard.svelte';
   import { can } from '../lib/session.svelte';
+  import { mayBeAt } from '../lib/deviceKeys';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
 
   const STATUSES = ['blocked', 'cached', 'refreshed', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
@@ -77,6 +78,9 @@
   let live = $state(false);
   let why = $state<S['QueryRow'] | null>(null);
   let explained = $state<S['Explanation'] | null>(null);
+  // The configured devices, for the quick rule form's pre-fill: null until they have arrived.
+  let configured = $state<S['ClientInfo'][] | null>(null);
+  let whySeq = 0;
   let whyError = $state<unknown>(null);
 
   function query(): Record<string, string> {
@@ -218,14 +222,64 @@
   }
 
   async function explain(r: S['QueryRow']) {
+    const mine = ++whySeq;
     why = r;
     explained = null;
+    configured = null;
     whyError = null;
+    // The configured devices are for the quick rule form, which only someone who makes rules sees:
+    // asked beside the explanation (a read from every node that must not hold it up), and not at all
+    // for anyone else.
+    const devices = can('operator')
+      ? api
+          .clients()
+          .then((c) => c.items)
+          .catch(() => [] as S['ClientInfo'][])
+      : null;
     try {
-      explained = await api.explain({ name: r.name, client: r.client, qtype: r.qtype });
+      const x = await api.explain({ name: r.name, client: r.client, qtype: r.qtype });
+      if (mine === whySeq) explained = x;
     } catch (e) {
-      whyError = e;
+      if (mine === whySeq) whyError = e;
+      return;
     }
+    if (devices) void devices.then((items) => mine === whySeq && (configured = items));
+  }
+
+  /**
+   * REQ: FLT-005, FLT-017 (issue #73) — what the quick rule form starts with. A rule can name a
+   * configured device, an IP, or a CIDR; never a name a router or mDNS gives an address, nor a pod's
+   * `namespace/kind/name`. So, in order:
+   * - a pod (this node's explanation has the workload; the shape of a name decides nothing, as a
+   *   device or a router may call itself anything): its address, and today's group of the workload
+   *   from the same explanation (the row's own group is the one it was logged with, which may be
+   *   from before the workload was placed);
+   * - the device this node's explanation recognized;
+   * - a configured device the log names, when the explanation has none (the row may come from a node
+   *   that recognized it by a MAC address this node can't see) and the device's own keys could be
+   *   this address (`mayBeAt`: its IP holds it, or its MAC is not ruled out by the MAC the
+   *   explanation knows): a name that merely equals what a router or mDNS calls another device is
+   *   not that device;
+   * - the address, with what the log shows for it as a label, not as the value.
+   */
+  function prefillOf(row: S['QueryRow'], x: S['Explanation'], devices: S['ClientInfo'][]) {
+    const pod = x.client.workload ?? undefined;
+    const logged = row.clientName ?? '';
+    if (pod) {
+      return { device: row.client, seenAs: '', workload: pod.name, workloadFrom: pod.groupFrom, group: x.client.groups[0] ?? '' };
+    }
+    const own = x.client.device ?? undefined;
+    const named = own
+      ? undefined
+      : devices.find((d) => d.name.toLowerCase() === logged.toLowerCase() && mayBeAt(d, row.client, x.client.mac))?.name;
+    const device = own ?? named ?? row.client;
+    return {
+      device,
+      seenAs: device === row.client && logged ? logged : '',
+      workload: '',
+      workloadFrom: '',
+      group: row.group ?? '',
+    };
   }
 
   const maxMs = $derived(Math.max(1, ...rows.map((r) => r.totalMs)));
@@ -392,7 +446,22 @@
         <!-- REQ: FLT-005 (T6.12) — act on it: a quick rule for this device or its group. -->
         <section class="card quick-card">
           <h2>Make a quick rule<HelpButton id="quick-rules" /></h2>
-          <QuickRuleForm domain={why.name} device={why.clientName ?? why.client} group={why.group ?? ''} />
+          {#if configured}
+            {@const pre = prefillOf(why, explained, configured)}
+            <!-- REQ: FLT-005, FLT-017 (issue #73) — what a rule can name; see prefillOf. -->
+            <QuickRuleForm
+              domain={why.name}
+              device={pre.device}
+              address={why.client}
+              seenAs={pre.seenAs}
+              workload={pre.workload}
+              workloadFrom={pre.workloadFrom}
+              group={pre.group}
+              known={configured}
+            />
+          {:else}
+            <p class="muted small" role="status">Loading devices…</p>
+          {/if}
         </section>
       {/if}
       <!-- REQ: DNS-006 (T6.13) — what the cache holds for this name, and flushing it. -->

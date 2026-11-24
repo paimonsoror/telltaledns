@@ -5,8 +5,10 @@
 #   2. tags main's head vX.Y.Z and starts the image workflow on the tag (a tag pushed with
 #      this workflow's token starts no workflows by itself). That run builds, signs, and
 #      publishes the binaries, images, chart, and GitHub release, then verifies them;
-#   3. moves main to the next version (`deploy/release/bump.sh`), so edge builds become
-#      `<next>-edge.N`, newer than the release, and starts CI and edge for that commit.
+#   3. opens a pull request that moves main to the next version (`deploy/release/bump.sh`),
+#      so that edge builds become `<next>-edge.N`, newer than the release. Main's branch
+#      protection wants a pull request, so the workflow never pushes to main: a person
+#      merges it (CI and edge then start by themselves, as for any push).
 name: release
 on:
   workflow_dispatch:
@@ -21,6 +23,7 @@ on:
 permissions:
   contents: write
   actions: write
+  pull-requests: write
 
 concurrency:
   group: release
@@ -56,13 +59,32 @@ jobs:
           gh workflow run image.yml --ref "v$VERSION"
           echo "::notice title=building::the image workflow publishes and verifies v$VERSION (Actions → image, ref v$VERSION)"
 
-      - name: Move main to the next version
+      # Main's branch protection requires a pull request, so this step pushes a branch and
+      # opens one. It needs Settings → Actions → General → "Allow GitHub Actions to create
+      # and approve pull requests"; without it the branch is still pushed and the step says
+      # where to open the pull request by hand. Merging it is a person's step: the code-owner
+      # review, or an administrator's bypass, applies as for any change to main.
+      - name: Open a pull request that moves main to the next version
         run: |
           next=${NEXT:-$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}')}
+          branch="release/start-$next"
+          title="chore: start $next development (after v$VERSION) [OPS-004]"
+          git checkout -b "$branch"
           sh deploy/release/bump.sh "$next"
-          git commit -am "chore: start $next development (after v$VERSION) [OPS-004]"
-          git push origin HEAD:main
-          # A push with this workflow's token starts no workflows: start CI and edge.
-          gh workflow run ci.yml --ref main
-          gh workflow run image.yml --ref main
-          echo "::notice title=main moved on::$next (edge builds are now $next-edge.N)"
+          git commit -am "$title"
+          # A branch only this workflow writes: a re-run replaces it.
+          git push --force origin "$branch"
+          # Nothing started by this workflow's token starts a workflow: run CI on the branch,
+          # so that the pull request shows a result.
+          gh workflow run ci.yml --ref "$branch"
+          existing=$(gh pr list --head "$branch" --base main --state open --json url --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "::notice title=pull request already open::$existing"
+            exit 0
+          fi
+          body="Moves main from $VERSION to $next after v$VERSION was tagged, so that edge builds ($next-edge.N) sort above the release. Made by the release workflow with deploy/release/bump.sh and nothing else: the workspace version, the crates' requirements on each other, the chart version, the OpenAPI document's version and Cargo.lock's entries for the workspace crates. CI runs on this branch. It can be merged while the tag's image run (Actions, image, ref v$VERSION) is still going: that run builds the tag, not main. Merging needs a code owner's approval or an administrator's bypass; after the merge, CI and the edge build start by themselves."
+          if ! gh pr create --base main --head "$branch" --title "$title" --body "$body"; then
+            echo "::error title=the pull request could not be opened::The branch $branch is pushed. Open it from https://github.com/$GITHUB_REPOSITORY/compare/main...$branch?expand=1 , or enable Settings → Actions → General → Allow GitHub Actions to create and approve pull requests and re-run this job."
+            exit 1
+          fi
+          echo "::notice title=merge the pull request::main moves to $next when it is merged (edge builds are then $next-edge.N)"

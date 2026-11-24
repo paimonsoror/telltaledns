@@ -193,6 +193,23 @@ pub(crate) struct Device {
     pub(crate) domains: Vec<String>,
 }
 
+/// REQ: OBS-025, FLT-006 (ADR-183) — the MAC a device is known by here: the one its router lists,
+/// else the neighbor table's, else the one mDNS gave. The neighbor table is read on every node now,
+/// and behind a range extender that translates MACs it holds the extender's MAC for every
+/// device, where a router lists each with its own: unrelated devices would be merged
+/// ([`merge_by_mac`]) and all get the extender's vendor. So the router's MAC comes first, as it
+/// did while a node without a device named by its MAC kept no table.
+pub(crate) fn device_mac(
+    neighbor: Option<[u8; 6]>,
+    router: Option<&crate::devices::Lease>,
+    mdns: Option<&crate::devices::Lease>,
+) -> Option<[u8; 6]> {
+    router
+        .and_then(|l| oui::parse_mac(&l.mac))
+        .or(neighbor)
+        .or_else(|| mdns.and_then(|l| oui::parse_mac(&l.mac)))
+}
+
 /// Devices with the same MAC (IPv4 and IPv6 of one device) share names and domains.
 pub(crate) fn merge_by_mac(devices: &mut [Device]) {
     let mut by_mac: HashMap<[u8; 6], (Vec<String>, Vec<String>)> = HashMap::new();
@@ -243,6 +260,7 @@ pub(crate) fn to_identity(key: &str, g: &Guess, inp: &Inputs, at_s: u64) -> Devi
         node: None,
         changed_at: None,
         previous: None,
+        recognition: None,
         evidence: Some(IdentityEvidence {
             domains: g
                 .domains
@@ -301,6 +319,7 @@ pub(crate) fn workload_identity(
         node: None,
         changed_at: None,
         previous: None,
+        recognition: None,
         evidence: Some(IdentityEvidence {
             kubernetes: Some(telltale_api::model::WorkloadEvidence {
                 workload: w.text.to_string(),
@@ -347,6 +366,7 @@ pub(crate) fn override_identity(key: &str, kind: DeviceClass, at_s: u64) -> Devi
         evidence: None,
         changed_at: None,
         previous: None,
+        recognition: None,
     }
 }
 
@@ -563,12 +583,11 @@ impl Identifier {
                     v4.and_then(|a| own.get(&a).or_else(|| peer.get(&a)).cloned())
                 };
                 let (r, m) = (lease(&routers, &peers.routers), lease(&mdns, &peers.mdns));
-                let mac = src
-                    .pipeline
-                    .neighbors
-                    .get(ip.to_canonical())
-                    .or_else(|| r.as_ref().and_then(|l| oui::parse_mac(&l.mac)))
-                    .or_else(|| m.as_ref().and_then(|l| oui::parse_mac(&l.mac)));
+                let mac = device_mac(
+                    src.pipeline.neighbors.get(ip.to_canonical()),
+                    r.as_ref(),
+                    m.as_ref(),
+                );
                 let names = [r, m]
                     .into_iter()
                     .flatten()

@@ -1393,6 +1393,42 @@ impl Cluster {
         outbox.keys().cloned().collect()
     }
 
+    /// REQ: CLU-002 (ADR-056) — the node IDs the registry marks as witnesses. A witness only
+    /// votes in elections: it serves no DNS and answers no reads.
+    pub fn witnesses(&self) -> Vec<String> {
+        self.identity
+            .registry()
+            .into_iter()
+            .filter(|n| n.witness)
+            .map(|n| n.node_id)
+            .collect()
+    }
+
+    /// REQ: CLU-002 (ADR-056) — the reachable peers that answer reads: [`Self::reachable_peers`]
+    /// without the witnesses. A read that fans out across the cluster (statistics, the query
+    /// log, a live tail) asks these, so a witness is never asked, and never reported as a
+    /// node that didn't answer.
+    pub fn serving_peers(&self) -> Vec<String> {
+        let witnesses = self.witnesses();
+        self.reachable_peers()
+            .into_iter()
+            .filter(|p| !witnesses.contains(p))
+            .collect()
+    }
+
+    /// REQ: CLU-002 (ADR-056) — the members that serve: [`Self::members`] without the witnesses.
+    /// A cluster-wide call that asks each node for its data, or to act on its own DNS state, and
+    /// lists the nodes that didn't (pausing blocking, the cache, drills, a support package, a
+    /// simulation), goes over these, so a witness is neither asked nor listed, up or down. What
+    /// reports on every member (the Cluster page, the node-down alert) keeps [`Self::members`].
+    pub fn serving_members(&self) -> Vec<Member> {
+        let witnesses = self.witnesses();
+        self.members()
+            .into_iter()
+            .filter(|m| !witnesses.contains(&m.node_id))
+            .collect()
+    }
+
     /// Calls `kind` on `peer` over its stream; fails fast when no stream is open, and after
     /// `timeout` when the peer doesn't answer (CLU-002: a dead node never hangs a read).
     pub async fn call(

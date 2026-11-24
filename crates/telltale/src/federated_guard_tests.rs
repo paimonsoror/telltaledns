@@ -170,10 +170,11 @@ const ALLOWED: &[Allowed] = &[
         file: "telltale/src/federated.rs",
         in_fn: "answer",
         method: "*",
-        count: 32,
+        count: 31,
         why: "`answer` runs a peer's read on this node's own backend (`b` is the local \
               `ApiBackend`): one call for each kind of read. A new kind of read adds a call, and \
-              has to be looked at",
+              has to be looked at. (`Read::Identity` calls `identity_for_peer`, which asks the \
+              local backend alone and never federates, so it isn't counted: ADR-183)",
     },
     Allowed {
         file: "telltale/src/health.rs",

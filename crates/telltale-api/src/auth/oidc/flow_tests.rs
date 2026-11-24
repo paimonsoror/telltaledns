@@ -1228,6 +1228,55 @@ async fn mcp_call(
         .unwrap()
 }
 
+/// REQ: OPS-014, AGT-008 (ADR-182) — `cluster:upgrade` (a root service installs a build on the
+/// native nodes) is for an agent API token an admin made, never for an OAuth access token: the
+/// metadata doesn't offer it, and an identity provider's token that names it (an admin's, even)
+/// doesn't get it, so the update route answers 403.
+#[tokio::test]
+async fn ops_014_an_oauth_token_never_carries_cluster_upgrade() {
+    let h = harness(Settings::default());
+    let r = h
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/.well-known/oauth-protected-resource")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap())
+            .unwrap();
+    let offered = meta["scopes_supported"].as_array().unwrap();
+    assert!(offered.contains(&"cluster:admin".into()), "{meta}");
+    assert!(!offered.contains(&"cluster:upgrade".into()), "{meta}");
+    h.auth
+        .state()
+        .create_oidc_user("carol", "admin", "fake", "sub-carol", 1)
+        .unwrap();
+    let now = chrono::Utc::now().timestamp().unsigned_abs();
+    let token = access_token(
+        &serde_json::json!({"iss": ISSUER, "aud": "https://dns.test/mcp",
+        "exp": now + 300, "iat": now, "sub": "sub-carol", "azp": "claude-desktop",
+        "scope": "openid analytics:read cluster:upgrade"}),
+    );
+    let r = h
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/nodes/dns-02/update")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .header("x-telltale-reason", "release day")
+                .body(Body::from(r#"{"to":"0.8.0"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+}
+
 /// REQ: AGT-008 (T7.4) — OAuth for MCP: the metadata names the provider; a 401 says where
 /// to sign in; a valid access token acts as an agent with the consented scopes (never above
 /// the user's role); wrong audience, expiry, and unknown users are refused.

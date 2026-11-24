@@ -6,7 +6,7 @@
     "license": {
       "name": "Apache-2.0 OR MIT"
     },
-    "version": "0.8.0"
+    "version": "0.9.0"
   },
   "paths": {
     "/api/v1/alerts": {
@@ -5417,6 +5417,149 @@
         }
       }
     },
+    "/api/v1/nodes/{id}/update": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "A node's version and update state.",
+        "description": "The version it runs, how it was installed, the channel it follows, whether its root update\nservice (`telltale-update.path`) is enabled, a request it hasn't picked up yet, and the\nservice's latest run (`installing`, `updated`, `up_to_date`, `rolled_back`, `unavailable`,\n`failed`, or `refused`, with the error and how the new build's health was checked): after a\nrestart the new build must come up healthy, or the previous one is put back (`rolled_back`,\nan incident to look into); an edge build the channel no longer serves is `unavailable`. `id`\nis `local` (the node answering) or a cluster node's ID, site, or pod name: the read goes to\nthat node over the cluster channel.",
+        "operationId": "node_update_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`local`, or a node's ID, site, or pod name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node's version and update state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeUpdate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such node (`node_unknown`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node isn't reachable over the cluster channel (`node_unreachable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Install a version on a node.",
+        "description": "A native node (installed with `install.sh`) hands the request to its root update service,\nwhich verifies the release's signature and checksum, installs the binary, and restarts the\nnode; `GET` on the same path shows how it went. The version is a release (`0.8.0`) or an edge\nbuild (`0.8.0-edge.393`); an edge build can be installed only while it is the newest on the\nedge channel. Never older than the node's version (`update_downgrade`: downgrade by hand), and\nnever a change of channel: a node on the stable channel takes only a release\n(`update_channel`); one on the edge channel takes both and stays on it. The same version\nanswers `up_to_date` without a request. One at a time per node: while a request waits for the\nupdate service or an update runs, another gets `update_in_progress`. A version whose new\nbuild was installed on the node and didn't come up in the last 24 hours is refused\n(`update_failed_recently`, `held` in the state: install it by hand, or wait); a run that\nfailed in the downloads holds nothing back. A node in a\ncontainer or Kubernetes is upgraded by its image (`update_unsupported`), and a node whose\nupdate service isn't enabled says so (`update_not_enabled`). In a cluster, upgrade replicas\nbefore the primary, one at a time: `telltale ctl upgrade` does this. `id` as for the read.\n`?dryRun=true` makes every check and writes nothing. It changes no configuration, so a\nGitOps-managed cluster takes it too. Needs the admin role (agents: the `cluster:upgrade`\nscope); audit-logged as `node.update.request`.",
+        "operationId": "node_update_request",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`local`, or a node's ID, site, or pod name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "REQ: AGT-002 — run every check the node makes and say what would happen; nothing is\nwritten and nothing installed (`state: would_request` or `up_to_date`).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`state`: `requested` (handed to the update service) or `up_to_date`; with `dryRun`, `would_request` or `up_to_date`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeUpdate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such node (`node_unknown`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The node is upgraded by its image (`update_unsupported`), its update service is off (`update_not_enabled`), the version is older than its own (`update_downgrade`) or on another channel (`update_channel`), an update is already under way there (`update_in_progress`), or its build was installed there and didn't come up in the last 24 hours (`update_failed_recently`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not a release or edge build version (`update_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node isn't reachable over the cluster channel (`node_unreachable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/plans": {
       "get": {
         "tags": [
@@ -6606,7 +6749,7 @@
           "config"
         ],
         "summary": "Create or replace a quick rule (T6.12, ADR-067).",
-        "description": "Allows or blocks `domain` and its subdomains for `devices`, `groups`, or everyone (neither\ngiven), before any list: a device rule beats a group rule beats an everyone rule; within one\nscope the longer domain wins, then allow. With `expires` or `forMinutes` it stops applying\nthen (and is removed). It takes effect on the next query, without recompiling the lists.\nRules from the config files are read-only here (409). Needs the operator role (or the\n`config:write:rules` agent scope, with a reason).",
+        "description": "Allows or blocks `domain` and its subdomains for `devices`, `groups`, or everyone (neither\ngiven), before any list: a device rule beats a group rule beats an everyone rule; within one\nscope the longer domain wins, then allow. With `expires` or `forMinutes` it stops applying\nthen (and is removed). It takes effect on the next query, without recompiling the lists.\n`devices` takes the names of configured devices, IPs, or CIDRs; the name a router or mDNS gives\nan address (a query's `clientName` for a device nobody named) is refused (422, with a hint):\nuse the address, or name the device first. A rule for an address stops matching when the\naddress changes (a Kubernetes pod's does with every restart: use `groups`, with the group an\noperator placed the workload in).\nRules from the config files are read-only here (409). Needs the operator role (or the\n`config:write:rules` agent scope, with a reason).",
         "operationId": "put_rule",
         "parameters": [
           {
@@ -6688,7 +6831,7 @@
             }
           },
           "422": {
-            "description": "An unknown device or group, a bad domain, or an expiry in the past.",
+            "description": "A device that isn't a configured device's name, an IP, or a CIDR (the hint says what to do; a name a router or mDNS gives an address is one), an unknown group, a bad domain, or an expiry in the past.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12178,7 +12321,14 @@
           "drill_targets",
           "node_is_primary",
           "node_is_up",
-          "change_in_progress"
+          "change_in_progress",
+          "update_unsupported",
+          "update_not_enabled",
+          "update_downgrade",
+          "update_invalid",
+          "update_channel",
+          "update_in_progress",
+          "update_failed_recently"
         ]
       },
       "ConfigChange": {
@@ -12385,7 +12535,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,\n`config:write:clients`, `config:write:records`, `config:write:forwards`\n(`config:write:*` for all three), `ops:pause`, `ops:cache`, `ops:anomalies`,\n`cluster:admin`.\nDefault: `analytics:read` and `config:read` (read-only, no query log). Each needs a\nrole you have."
+            "description": "Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,\n`config:write:clients`, `config:write:records`, `config:write:forwards`\n(`config:write:*` for all three), `ops:pause`, `ops:cache`, `ops:anomalies`,\n`cluster:admin`, `cluster:upgrade`.\nDefault: `analytics:read` and `config:read` (read-only, no query log). Each needs a\nrole you have."
           }
         }
       },
@@ -12504,6 +12654,17 @@
             ],
             "description": "`disabled`, `privacy_level`, or `not_seen` (no queries from it in the last day)."
           },
+          "recognition": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceRecognition",
+                "description": "REQ: FLT-006, API-010 (ADR-183) — how this address is recognized now, by the node that\nanswered, and the MAC a device there could be named by (`GET /api/v1/clients/{address}/identity`\nonly, for an address; left out at query-log privacy level 2 and above)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "score": {
             "type": "number",
             "format": "float",
@@ -12527,6 +12688,48 @@
               "null"
             ],
             "description": "The MAC's registered vendor."
+          }
+        }
+      },
+      "DeviceRecognition": {
+        "type": "object",
+        "description": "REQ: FLT-006, API-010 (ADR-183) — how an address is recognized on the node that answered, and\nthe MAC a device at that address could be named by. A device named by that MAC (`[[client]]\nmatch = [\"aa:bb:cc:dd:ee:ff\"]`) is recognized wherever the MAC is seen, and so are the rules\nthat name it. `mac`, `macFrom` and `macShared` go only to a caller who may read the devices\n(`/api/v1/clients`: a person signed in with a session or an API token of any role, or an agent\ntoken with `config:read` that isn't restricted to a group; not a display session); anyone else\ngets the rest. The MAC may also be missing because the node's query-log privacy level hides\nclients (2 and above leave out `recognition` altogether).",
+        "properties": {
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The configured device (`[[client]]`) the address is recognized as now. Never the name a\nrouter or mDNS gives it, and never a Kubernetes workload.",
+            "example": "tablet"
+          },
+          "identifiedBy": {
+            "type": "string",
+            "description": "How: `client_id`, `edns_mac`, `neighbor_mac`, `router_mac`, `kubernetes`, `ip`, `cidr`, or\n`default`.",
+            "example": "router_mac"
+          },
+          "mac": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MAC a device at this address could be named by (`aa:bb:cc:dd:ee:ff`): the kernel's\nneighbor table's, else one a router reported, when it is sure of it."
+          },
+          "macFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where `mac` comes from: `neighbor` (this node's kernel table: other nodes may not see it),\n`router` (this node's router) or `peer` (another full cluster member's router).",
+            "example": "router"
+          },
+          "macRandomized": {
+            "type": "boolean",
+            "description": "True when the MAC is locally administered (a \"private\" Wi-Fi address the device made up):\nit stays the same on a network unless the device is set to change it. Unlike `mac`, `macFrom`\nand `macShared` it is shown, with `device` and `identifiedBy`, to every caller who may read\nidentities, including one who may not read MACs: one bit, which names no device and no MAC."
+          },
+          "macShared": {
+            "type": "boolean",
+            "description": "True when the routers report this MAC at more than one address, or this node's kernel\nneighbor table holds it at more than one IPv4 address (a range extender or bridge shares it;\na device's own IPv6 addresses don't count): it can't tell\nthese devices apart, so a device named by a router's MAC isn't recognized at any of them, and\nthe naming dialog doesn't offer it as one device's."
           }
         }
       },
@@ -13353,7 +13556,7 @@
           },
           "identifiedBy": {
             "type": "string",
-            "description": "`client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`."
+            "description": "`client_id`, `edns_mac`, `neighbor_mac` (a MAC the kernel's table gave, or the request),\n`router_mac` (a MAC a router reported, this node's or another full member's),\n`kubernetes`, `ip`, `cidr`, or `default`."
           },
           "ip": {
             "type": "string"
@@ -13362,7 +13565,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The client's MAC address: the one the request gave, else the one this node knows for the\naddress. Shown only to a caller who may read the devices (`config:read` for an agent token,\nnot restricted to a group), unless the caller gave it."
+          },
+          "macFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: FLT-006 (ADR-183) — where the MAC comes from: `given` (the request's), `neighbor`\n(this host's kernel table), `router` (this node's router) or `peer` (another full cluster\nmember's router). Withheld with `mac`."
           },
           "workload": {
             "oneOf": [
@@ -15221,6 +15432,17 @@
                     "null"
                   ],
                   "description": "`disabled`, `privacy_level`, or `not_seen` (no queries from it in the last day)."
+                },
+                "recognition": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/DeviceRecognition",
+                      "description": "REQ: FLT-006, API-010 (ADR-183) — how this address is recognized now, by the node that\nanswered, and the MAC a device there could be named by (`GET /api/v1/clients/{address}/identity`\nonly, for an address; left out at query-log privacy level 2 and above)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "score": {
                   "type": "number",
@@ -18194,6 +18416,201 @@
           }
         }
       },
+      "NodeUpdate": {
+        "type": "object",
+        "description": "REQ: OPS-014 (ADR-182) — a node's update state (`GET`), or what it did with a request\n(`POST`).",
+        "required": [
+          "node",
+          "version",
+          "install",
+          "enabled"
+        ],
+        "properties": {
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The channel it follows, `edge` or `stable`: as `install.sh` set it (`--edge`), or, on an\ninstall from before that, its version's. A stable node takes only releases; an edge node\nedge builds and releases, and stays on edge. Absent from an older node. REQ: OPS-014\n(ADR-182)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Its root update service (`telltale-update.path`) is enabled, so a request is picked up."
+          },
+          "held": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeUpdateHeld",
+                "description": "A version the node refuses for now (`update_failed_recently`): one whose new build was\ninstalled here and didn't come up, for 24 hours after that run. REQ: OPS-014 (ADR-182)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "install": {
+            "type": "string",
+            "description": "`native`, `container`, or `helm`. Only a native node installs a version itself; the others\nare upgraded by their image."
+          },
+          "last": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeUpdateRun",
+                "description": "The update service's latest run."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "node": {
+            "type": "string",
+            "description": "The node (its pod, site, or ID)."
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeUpdatePending",
+                "description": "A request the update service hasn't picked up yet."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "After a `POST`: `requested` (handed to the update service) or `up_to_date` (it already runs\nthat version). Absent from a `GET`."
+          },
+          "version": {
+            "type": "string",
+            "description": "The version it runs.",
+            "example": "0.7.0"
+          }
+        }
+      },
+      "NodeUpdateHeld": {
+        "type": "object",
+        "description": "REQ: OPS-014 (ADR-182) — a version a node holds back after a run whose new build was\ninstalled and didn't come up (`rolled_back`, or `failed` once installed). A run that failed\nbefore installing anything (a download, a signature, an edge build moved on) holds nothing.",
+        "required": [
+          "to",
+          "until",
+          "why"
+        ],
+        "properties": {
+          "to": {
+            "type": "string",
+            "example": "0.8.0"
+          },
+          "until": {
+            "type": "string",
+            "description": "Until when (RFC 3339): 24 hours after that run, by the node's own record."
+          },
+          "why": {
+            "type": "string",
+            "description": "Which run, when, what failed, and the ways out (by hand with `self-update --to`, or wait)."
+          }
+        }
+      },
+      "NodeUpdatePending": {
+        "type": "object",
+        "description": "REQ: OPS-014 — a request handed to a node's update service and not picked up yet.",
+        "required": [
+          "id",
+          "to",
+          "by",
+          "requestedAt"
+        ],
+        "properties": {
+          "by": {
+            "type": "string",
+            "description": "Who asked: a user, `<user> via <site>` from another node, or an agent."
+          },
+          "id": {
+            "type": "string"
+          },
+          "requestedAt": {
+            "type": "string",
+            "description": "When (RFC 3339)."
+          },
+          "to": {
+            "type": "string",
+            "example": "0.8.0"
+          }
+        }
+      },
+      "NodeUpdateRequest": {
+        "type": "object",
+        "description": "REQ: OPS-014 (ADR-182) — `POST /api/v1/nodes/{id}/update`: install this version on the node.",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "A release (`0.8.0`) or an edge build (`0.8.0-edge.393`), never older than the version the\nnode runs. An edge build can only be installed while it is the newest on the edge channel.",
+            "example": "0.8.0"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NodeUpdateRun": {
+        "type": "object",
+        "description": "REQ: OPS-014 — the update service's latest run on a node.",
+        "required": [
+          "id",
+          "to",
+          "from",
+          "state",
+          "by",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "When the state was written (RFC 3339)."
+          },
+          "by": {
+            "type": "string",
+            "description": "Who asked, as the node wrote it in the request: the update service can't check it\n(unverified)."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What went wrong, for `failed`, `rolled_back`, `unavailable` and `refused`."
+          },
+          "from": {
+            "type": "string",
+            "description": "The version the node ran when the run started.",
+            "example": "0.7.0"
+          },
+          "health": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `updated`: how the new build's health was checked (`checked at <url>`, with any trouble\nthe restart command had), or why it wasn't (`not checked: the node wasn't restarted`, for a\nrun without `--restart`). REQ: OPS-014 (ADR-182)."
+          },
+          "id": {
+            "type": "string",
+            "description": "The request it answers."
+          },
+          "state": {
+            "type": "string",
+            "description": "`installing` (also while the restarted node is checked), `updated` (installed, restarted,\nand healthy: see `health`), `up_to_date`, `rolled_back` (the new build\nwasn't healthy after the restart: the previous binary is back in place; an incident to\nlook into, see `error`), `unavailable` (an edge build the edge channel no longer serves:\nnothing installed; the error names the one it serves), `failed` (not installed, or the\nprevious binary couldn't be put back), or `refused` (the request was stale, malformed,\nolder than the node's version, on another channel, of a version whose build was installed\nthere and didn't come up in the last day, or the host wasn't set up for it). REQ: OPS-014 (ADR-182).",
+            "example": "updated"
+          },
+          "to": {
+            "type": "string",
+            "example": "0.8.0"
+          }
+        }
+      },
       "NoteRequest": {
         "type": "object",
         "description": "REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart.",
@@ -18871,7 +19288,7 @@
               "string",
               "null"
             ],
-            "description": "The configured device name, when known."
+            "description": "The name shown for the client: a configured device's name, else what the router or mDNS\nreports for the address (or a Kubernetes workload's `namespace/kind/name`). Only a\nconfigured device's name works in a quick rule's `devices`; use the address for the others."
           },
           "group": {
             "type": [
@@ -19444,7 +19861,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Device names, IPs, or CIDRs it applies to."
+            "description": "Who it applies to: the names of configured devices (`[[client]]`, any case), IPs, or CIDRs.\nA name a router or a device gives an address (the query log's `clientName` for an unnamed\ndevice) isn't a device here and is refused (422, with a hint): use the address, or name the\ndevice first. A rule for an address stops matching when the address changes. A Kubernetes\npod's address changes with every restart (its `clientName` is `namespace/kind/name`): for a\npod use `groups` with the group an operator placed the workload in, not the pod's address."
           },
           "domain": {
             "type": "string",

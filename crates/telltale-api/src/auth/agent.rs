@@ -11,7 +11,7 @@ use std::sync::{Mutex, PoisonError};
 
 use axum::http::Method;
 
-use super::Role;
+use super::{Principal, Role};
 use crate::problem::{Code, Problem};
 
 /// Every scope an agent token can hold, with what it allows.
@@ -95,14 +95,30 @@ pub const SCOPES: &[(&str, &str)] = &[
         "cluster:admin",
         "promote a node to primary; change the staged-rollout settings; promote or abort a rollout; pin and unpin the cluster",
     ),
+    (
+        "cluster:upgrade",
+        "ask native nodes to install a newer TelltaleDNS release or edge build (their update service verifies and installs it, then restarts them)",
+    ),
 ];
 
 /// What an agent token gets when none are named: read-only, without the query log.
 pub const DEFAULT_SCOPES: &[&str] = &["analytics:read", "config:read"];
 
+/// REQ: OPS-014, AGT-008 (ADR-182) — scopes an agent API token may hold but an OAuth access
+/// token for MCP may not: they are neither advertised (`scopes_supported`) nor taken from an
+/// identity provider's token. `cluster:upgrade` makes a root service install a build on the
+/// native nodes; it is for a token an admin made for that job (the chart's upgrade hook), not
+/// for an assistant signed in through a provider.
+pub const NOT_FOR_OAUTH: &[&str] = &["cluster:upgrade"];
+
+/// REQ: AGT-008 (ADR-182) — whether an OAuth access token for MCP may carry `scope`.
+pub fn oauth_scope(scope: &str) -> bool {
+    !NOT_FOR_OAUTH.contains(&scope)
+}
+
 /// The role a scope needs from the token's owner (a token never exceeds its owner).
 fn scope_role(scope: &str) -> Role {
-    if scope == "cluster:admin" {
+    if scope == "cluster:admin" || scope == "cluster:upgrade" {
         Role::Admin
     } else if scope.starts_with("config:write:") || scope.starts_with("ops:") {
         Role::Operator
@@ -310,6 +326,15 @@ fn analytics_extra(p: &str) -> bool {
             .is_some_and(|id| !id.is_empty() && !id.contains('/'))
         || drill_path(p)
         || p == "/api/v1/clients/affinity"
+        // REQ: OPS-014 — a node's version and update state.
+        || update_path(p)
+}
+
+/// REQ: OPS-014 — `/api/v1/nodes/{id}/update`.
+fn update_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/nodes/")
+        .and_then(|r| r.strip_suffix("/update"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
 /// REQ: CLU-014 — `/api/v1/nodes/{id}/drill`.
@@ -351,6 +376,8 @@ fn post_need(p: &str) -> Option<Need> {
     Some(match p {
         // REQ: OPS-010 — maintenance is an immediate op (agents at most two hours).
         _ if maintenance_path(p) => Need::Scope("ops:maintenance"),
+        // REQ: OPS-014 — installing a version on a node (admin; never in the default scopes).
+        _ if update_path(p) => Need::Scope("cluster:upgrade"),
         // REQ: CLU-014 — a drill (at most five minutes; never in the default scopes).
         _ if drill_path(p) => Need::Scope("ops:drill"),
         _ if p.starts_with("/api/v1/alerts/destinations/") && p.ends_with("/test") => {
@@ -544,6 +571,27 @@ pub fn check(
     Ok(())
 }
 
+/// REQ: AGT-004, FLT-013 (ADR-183) — whether the caller may read the devices (`GET /api/v1/clients`,
+/// which shows the MACs in their keys), and so the MAC addresses the nodes see: a signed-in person
+/// or an API token of any role does; an agent token only with the scope that route needs and not
+/// restricted to a client group; a display session never does. Anything that names a MAC the
+/// caller didn't give (explain's `client.mac`, an identity's `recognition.mac`) is for them alone.
+pub(crate) fn may_read_clients(p: &Principal) -> bool {
+    if p.display.is_some() {
+        return false;
+    }
+    match &p.agent {
+        None => true,
+        Some(g) => {
+            g.group.is_none()
+                && matches!(
+                    required(&Method::GET, "/api/v1/clients"),
+                    Need::Scope(s) if g.scopes.contains(s)
+                )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,6 +769,30 @@ mod tests {
         assert_eq!(
             implied_role(&parse_scopes(&["ops:maintenance".into()]).unwrap()),
             Role::Operator
+        );
+    }
+
+    /// REQ: OPS-014, AGT-004 — asking a node to install a version needs `cluster:upgrade` (an
+    /// admin scope, and nothing else grants it); reading its update state is analytics.
+    #[test]
+    fn ops_014_update_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        for node in ["local", "dns-02", "4846e5a9974bc21c"] {
+            let p = format!("/api/v1/nodes/{node}/update");
+            assert_eq!(required(&Method::POST, &p), Scope("cluster:upgrade"));
+            assert_eq!(required(&Method::GET, &p), Scope("analytics:read"));
+        }
+        for (m, p) in [
+            (Method::PUT, "/api/v1/nodes/pi/update"),
+            (Method::DELETE, "/api/v1/nodes/pi/update"),
+            (Method::POST, "/api/v1/nodes//update"),
+            (Method::POST, "/api/v1/nodes/a/b/update"),
+        ] {
+            assert_eq!(required(&m, p), Forbidden, "{m} {p}");
+        }
+        assert_eq!(
+            implied_role(&parse_scopes(&["cluster:upgrade".into()]).unwrap()),
+            Role::Admin
         );
     }
 
@@ -927,6 +999,52 @@ mod tests {
         assert!(
             rr("/api/v1/analytics/vqlog").is_err(),
             "vqlog has no group view"
+        );
+    }
+
+    // REQ: AGT-004, FLT-013 (ADR-183) — who may read the devices, and so the MACs the nodes see: a
+    // person or token of any role; an agent only with `config:read` and no group restriction; a
+    // display session never.
+    #[test]
+    fn agt_004_may_read_clients_follows_the_clients_route() {
+        use super::super::Via;
+        let who = |role: Role, agent: Option<super::super::AgentGrant>, display: Option<&str>| {
+            Principal {
+                user_id: 1,
+                username: "x".into(),
+                role,
+                via: Via::Basic,
+                agent,
+                display: display.map(str::to_owned),
+            }
+        };
+        for role in [Role::Viewer, Role::Operator, Role::Admin] {
+            assert!(may_read_clients(&who(role, None, None)), "{role:?}");
+        }
+        assert!(may_read_clients(&who(
+            Role::Viewer,
+            Some(grant(&["analytics:read", "config:read"], None)),
+            None
+        )));
+        assert!(
+            !may_read_clients(&who(
+                Role::Viewer,
+                Some(grant(&["analytics:read", "querylog:read"], None)),
+                None
+            )),
+            "without the scope the devices route needs"
+        );
+        assert!(
+            !may_read_clients(&who(
+                Role::Viewer,
+                Some(grant(&["analytics:read", "config:read"], Some("kids"))),
+                None
+            )),
+            "restricted to a group"
+        );
+        assert!(
+            !may_read_clients(&who(Role::Viewer, None, Some("wall"))),
+            "a display session"
         );
     }
 }

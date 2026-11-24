@@ -705,7 +705,7 @@ pub struct CreateToken {
     /// Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,
     /// `config:write:clients`, `config:write:records`, `config:write:forwards`
     /// (`config:write:*` for all three), `ops:pause`, `ops:cache`, `ops:anomalies`,
-    /// `cluster:admin`.
+    /// `cluster:admin`, `cluster:upgrade`.
     /// Default: `analytics:read` and `config:read` (read-only, no query log). Each needs a
     /// role you have.
     #[serde(default)]

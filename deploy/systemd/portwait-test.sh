@@ -525,6 +525,11 @@ tail_run() {
       DROPIN=$TREE/etc/systemd/system/telltale.service.d/10-first-admin.conf
       ADMIN=token; ADMIN_USER=admin; WAIT_PORT53=no
       : "${DISABLE_STUB:=ask}" "${START:=yes}"
+      # REQ: OPS-014 (ADR-182) — what install.sh sets before this part for the update units: no
+      # --cluster-updates and no health address found (the readiness wait asks `telltale health`
+      # as before), unless a test says otherwise.
+      : "${CLUSTER_UPDATES:=no}" "${HEALTH_KNOWN:=no}" "${UPDATE_CHANNEL:=stable}"
+      UPDATE_HEALTH_URL=${UPDATE_HEALTH_URL-}
       . "$1"; . "$2"' sh "$T/lib.sh" "$T/tail.sh" < /dev/null 2>&1)
   RC=$?
   set -e
@@ -592,6 +597,22 @@ tail_run DISABLE_STUB=yes START=yes TELLTALE_PORT_WAIT=1
 l_start=$(call_line 'systemctl restart telltale'); last_ss=$(ss_last)
 [ "$last_ss" -lt "$l_start" ] || fail "ops_004_install_starts_once_even_when_port_53_stays_held: it looked at the sockets after the start: $(cat "$FAKE/calls")"
 ok ops_004_install_starts_once_even_when_port_53_stays_held
+# T7: REQ: OPS-014 (ADR-182) — with --cluster-updates the update service is turned on only after
+# the one start, once the node answers at the health check's address; when it doesn't, it is
+# turned off and the run fails, and the one start is still the only one.
+URL='http://127.0.0.1:8053/readyz?startup=1'
+fixture 2 "$DEFAULT_CONFIG"; tail_tree
+tail_run DISABLE_STUB=no START=yes CLUSTER_UPDATES=yes HEALTH_KNOWN=yes UPDATE_HEALTH_URL="$URL"
+l_start=$(call_line 'systemctl restart telltale'); l_on=$(call_line 'systemctl enable --now telltale-update.path')
+{ [ "$RC" = 0 ] && [ "$(starts)" = 1 ] && [ -n "$l_on" ] && [ "$l_start" -lt "$l_on" ] \
+  && has "the health check after each update asks $URL, which answers now"; } \
+  || fail "ops_014_install_turns_cluster_updates_on_after_the_node_answers: rc=$RC start=$l_start on=$l_on: $OUT $(cat "$FAKE/calls")"
+fixture 2 "$DEFAULT_CONFIG"; tail_tree; touch "$FAKE/health_fails"
+tail_run DISABLE_STUB=no START=yes CLUSTER_UPDATES=yes HEALTH_KNOWN=yes UPDATE_HEALTH_URL="$URL"
+{ [ "$RC" = 1 ] && [ "$(starts)" = 1 ] && [ "$(call_count 'systemctl enable --now telltale-update.path')" = 0 ] \
+  && [ "$(call_count 'systemctl disable --now telltale-update.path')" = 1 ] && has "Updates from the cluster stay off"; } \
+  || fail "ops_014_install_turns_cluster_updates_on_after_the_node_answers: not answering: rc=$RC: $OUT $(cat "$FAKE/calls")"
+ok ops_014_install_turns_cluster_updates_on_after_the_node_answers
 fi
 
 # ---- 8. the real binary prints the effective config the way install.sh reads it ----------------
