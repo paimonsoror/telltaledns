@@ -2065,6 +2065,8 @@ async fn obs_008_live_tail_streams_server_sent_events() {
         .await
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
+    // Firefox needs a byte before it reports the stream open; the first event is that hello.
+    assert!(text.starts_with(": connected\n\n"), "{text}");
     assert!(text.contains("event: query\n"), "{text}");
     assert!(text.contains("id: 1791072000000000\n"), "{text}");
     assert!(text.contains("\"name\":\"ads.example.com\""), "{text}");
