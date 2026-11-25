@@ -3,7 +3,7 @@
 // drawn at once, not after the next poll. (The page behaviour is `obs_033 change markers` in
 // `1-ui.spec.ts`, which used to fail whenever it saved its note in a minute's first moments.)
 import { expect, test } from '@playwright/test';
-import { CLOCK_SKEW_S, visibleMarkers } from '../../src/lib/markers';
+import { CLOCK_SKEW_S, markerColumns, visibleMarkers } from '../../src/lib/markers';
 
 const mark = (time: number) => ({ time });
 // A chart whose last bucket starts at T and ends at T + 60 (a minute step), loaded just before the
@@ -44,6 +44,20 @@ test('obs_033 the data may end later than now, and a chart that ended in the pas
   // A chart whose window ended an hour ago passes that end, and a later change is not on it.
   const past = T - 3600;
   expect(visibleMarkers([mark(past - 10), mark(past + 600)], FROM, past, past)).toHaveLength(1);
+});
+
+test('obs_033 marker columns keep distinct keys when two round to one pixel', () => {
+  // With many markers, columns are 8 px wide. 3.6 and 4.4 fall in adjacent columns but both
+  // round to x = 4; keying the buttons by x made Svelte reject the duplicate key.
+  const groups = markerColumns(
+    [
+      { x: 3.6, mark: 'a' },
+      { x: 4.4, mark: 'b' },
+    ],
+    8,
+  );
+  expect(groups.map((g) => g.x)).toEqual([4, 4]);
+  expect(new Set(groups.map((g) => g.k)).size).toBe(2);
 });
 
 test('obs_033 it keeps the order and the objects it was given', () => {

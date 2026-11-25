@@ -23,3 +23,26 @@ export function visibleMarkers<T extends { time: number }>(markers: T[], from: n
   const to = Math.max(dataEnd, nowS + CLOCK_SKEW_S);
   return markers.filter((m) => m.time >= from && m.time < to);
 }
+
+/** One drawn marker group: `k` identifies the column it occupies, `x` where it is drawn. */
+export interface MarkerColumn<T> {
+  k: number;
+  x: number;
+  marks: T[];
+}
+
+/**
+ * Group markers by the column they occupy. `col` is the column width in pixels (8 when many
+ * markers are in view). Adjacent columns can round to the same pixel, so `k`, the unrounded
+ * column, is what identifies a group; the chart keys its marker buttons by it.
+ */
+export function markerColumns<T>(points: { x: number; mark: T }[], col: number): MarkerColumn<T>[] {
+  const cols = new Map<number, MarkerColumn<T>>();
+  for (const { x, mark } of points) {
+    const k = Math.round(x / col);
+    const c = cols.get(k);
+    if (c) c.marks.push(mark);
+    else cols.set(k, { k, x: Math.round(x), marks: [mark] });
+  }
+  return [...cols.values()].sort((a, b) => a.x - b.x);
+}

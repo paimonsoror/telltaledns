@@ -5,7 +5,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { clock, num } from '../format';
   import type { Marker } from '../annotations.svelte';
-  import { visibleMarkers } from '../markers';
+  import { markerColumns, visibleMarkers } from '../markers';
 
   export interface Series {
     label: string;
@@ -44,7 +44,7 @@
   // a count.
   const MAX_SINGLE = 40;
   let wrap = $state<HTMLDivElement | undefined>();
-  let placed = $state<{ x: number; marks: Marker[] }[]>([]);
+  let placed = $state<{ k: number; x: number; marks: Marker[] }[]>([]);
   let box = $state({ left: 0, top: 0, width: 0, height: 0 });
   let tip = $state<{ x: number; marks: Marker[] } | null>(null);
 
@@ -64,15 +64,13 @@
     const step = times.length > 1 ? times[times.length - 1] - times[times.length - 2] : 60;
     const shown = visibleMarkers(markers, min, max + step, Date.now() / 1000);
     const col = shown.length > MAX_SINGLE ? 8 : 1;
-    const cols = new Map<number, { x: number; marks: Marker[] }>();
-    for (const m of shown) {
-      const x = Math.min(u.valToPos(Math.min(m.time, max), 'x'), o.width - 1);
-      const k = Math.round(x / col);
-      const c = cols.get(k);
-      if (c) c.marks.push(m);
-      else cols.set(k, { x: Math.round(x), marks: [m] });
-    }
-    placed = [...cols.values()].sort((a, b) => a.x - b.x);
+    placed = markerColumns(
+      shown.map((m) => ({
+        x: Math.min(u.valToPos(Math.min(m.time, max), 'x'), o.width - 1),
+        mark: m,
+      })),
+      col,
+    );
   }
 
   const markLabel = (marks: Marker[]) =>
@@ -285,7 +283,8 @@
         style:width={`${box.width}px`}
         style:height={`${box.height}px`}
       >
-        {#each placed as p (p.x)}
+        <!-- Adjacent columns can round to the same pixel: key by the column, not by x. -->
+        {#each placed as p (p.k)}
           <button
             type="button"
             class="mk"
