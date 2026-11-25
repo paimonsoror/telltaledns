@@ -917,6 +917,11 @@
           "description": "A steady fast rhythm to one domain (informational).",
           "type": "string",
           "const": "chatty_loop"
+        },
+        {
+          "description": "A sweep of the reverse names of private addresses (scanning the local network). A mute of\n`nxdomain_storm` doesn't cover it.",
+          "type": "string",
+          "const": "reverse_sweep"
         }
       ]
     },
@@ -3779,6 +3784,10 @@
           "description": "CHAOS-class `version.bind`, `id.server`, ... → REFUSED.",
           "type": "boolean",
           "default": true
+        },
+        "resolver_arpa": {
+          "description": "REQ: DNS-019 (ADR-187) — `resolver.arpa` and the names below it, such as\n`_dns.resolver.arpa` (encrypted-DNS discovery, RFC 9462) → NOERROR with no records, never\nforwarded (RFC 9462 §6.4: a locally served zone), unless a local record or a route for\n`resolver.arpa` or a name below it covers them (a route for `arpa` doesn't). On by default.\nThe cluster shares it, and it is not written while it is on. Don't write this key, `true` or\n`false`, until every node runs this version: an older node refuses it in its own file, and\nin a shared configuration (where only `false` is written).",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

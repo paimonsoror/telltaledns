@@ -450,7 +450,14 @@ fn observe(
             .cluster()
             .nodes
             .into_iter()
-            .filter(|n| !n.this_node && n.connected && n.config_lag > 0 && !Paused::node(n))
+            // REQ: CLU-008 (ADR-056) — a witness applies no configuration.
+            .filter(|n| {
+                !n.this_node
+                    && !n.witness
+                    && n.connected
+                    && n.config_lag > 0
+                    && !Paused::node(n)
+            })
             .map(|n| {
                 let s = format!(
                     "{} is {} configuration version(s) behind the primary{}",
@@ -764,27 +771,48 @@ fn observe(
                 _ => Vec::new(),
             }
         }
-        // REQ: CLU-014 (owner 2026-10-19) — once per drill report, from every node, for reports
-        // that ended in the last 2 hours (a restart doesn't send old ones again).
-        AlertWhen::DrillReport => {
-            let Ok(h) = tokio::runtime::Handle::try_current() else {
-                return Vec::new();
-            };
-            let page = h.block_on(b.drills(20, 0)).unwrap_or_default();
-            let since = i64::try_from(now).unwrap_or(i64::MAX) - 2 * 3600;
-            page.items
-                .into_iter()
-                .filter(|d| d.status == "complete")
-                .filter(|d| {
-                    d.ended
-                        .as_deref()
-                        .and_then(telltale_config::parse_rfc3339)
-                        .is_some_and(|t| t >= since)
-                })
-                .map(|d| (d.id.clone(), drill_text(&d)))
-                .collect()
-        }
+        AlertWhen::DrillReport => drill_reports(b, now),
     }
+}
+
+/// REQ: CLU-004, CLU-014 (ADR-174) — how long the drill-report alert waits for the drill
+/// reports; the bridge adds its 250 ms grace. The alert runs only on the primary or a standalone
+/// node (`run`), where the read asks each member for 2 s at most (`drill::READ_DEADLINE`) and
+/// relays nothing (`drill::via_primary` is a replica's): a second to spare. A node that stops being
+/// the primary during the round relays through the new one, 2.5 s (its 2 s and a hop), which
+/// still fits.
+const DRILL_READ_DEADLINE: Duration = Duration::from_secs(3);
+
+/// REQ: CLU-014 (owner 2026-10-19) — the `drill_report` alert's subjects: once per drill report,
+/// from every node, for reports that ended in the last 2 hours (a restart doesn't send old ones
+/// again). Blocking: run it on a blocking-pool thread, as [`observe`] is.
+pub(crate) fn drill_reports(b: &dyn Backend, now: u64) -> Observed {
+    let Ok(h) = tokio::runtime::Handle::try_current() else {
+        return Vec::new();
+    };
+    // REQ: CLU-004 (ADR-174's known leftover; GitHub issue #7) — through the bridge, with a
+    // deadline of the operating system's, never `Handle::block_on`: a runtime that can't run the
+    // read costs this round its reports (each is sent once, so the next round sends it), never
+    // this thread for as long as the runtime is stuck. The debug log says why a round had none.
+    let page = crate::federated::read_within(
+        &h,
+        "the drill reports",
+        b.drills(20, 0),
+        DRILL_READ_DEADLINE,
+    )
+    .unwrap_or_default();
+    let since = i64::try_from(now).unwrap_or(i64::MAX) - 2 * 3600;
+    page.items
+        .into_iter()
+        .filter(|d| d.status == "complete")
+        .filter(|d| {
+            d.ended
+                .as_deref()
+                .and_then(telltale_config::parse_rfc3339)
+                .is_some_and(|t| t >= since)
+        })
+        .map(|d| (d.id.clone(), drill_text(&d)))
+        .collect()
 }
 
 /// REQ: CLU-014 — a drill report in one sentence (the `drill_report` alert).
@@ -1285,6 +1313,7 @@ mod tests {
             rhythm: None,
             informational,
             muted_by: None,
+            storm_mute: None,
         };
         let b = Stub {
             view: telltale_api::model::ClusterView {
@@ -1314,6 +1343,63 @@ mod tests {
         assert!(anomaly.iter().all(|(k, _)| k.starts_with("beacon|")));
         assert_eq!(chatty.len(), 1, "{chatty:?}");
         assert!(chatty.iter().all(|(k, _)| k.starts_with("chatty_loop|")));
+    }
+
+    /// REQ: OBS-013, OBS-009 (ADR-186) — a sweep of private reverse names is counted, not
+    /// informational: the `anomaly` rule takes it, as it takes a storm; `chatty_loop` doesn't.
+    #[test]
+    fn obs_013_the_anomaly_rule_alerts_on_a_reverse_sweep() {
+        let sweep = telltale_api::model::AnomalyFinding {
+            id: "reverse_sweep".into(),
+            kind: "reverse_sweep".into(),
+            client: "192.168.1.30".into(),
+            client_name: Some("lg-tv".into()),
+            domain: None,
+            window_start: "2026-11-23T10:14:00.000Z".into(),
+            window_seconds: 60,
+            observed: 247.0,
+            baseline: 254.0,
+            spread: 0.0,
+            threshold: 30.0,
+            detail: "247 NXDOMAIN answers to reverse lookups of private addresses in a minute"
+                .into(),
+            nodes: Vec::new(),
+            acknowledged: None,
+            rhythm: None,
+            informational: false,
+            muted_by: None,
+            storm_mute: None,
+        };
+        let b = Stub {
+            view: telltale_api::model::ClusterView {
+                enabled: false,
+                cluster_id: None,
+                name: None,
+                this_node: None,
+                newest_config_seq: 0,
+                healthy: true,
+                checks: Vec::new(),
+                nodes: Vec::new(),
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                host: None,
+                rollout: None,
+            },
+            probes: Vec::new(),
+            findings: vec![sweep],
+        };
+        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &Paused::default());
+        let anomaly = o(AlertWhen::Anomaly);
+        assert_eq!(anomaly.len(), 1, "{anomaly:?}");
+        assert!(anomaly[0].0.starts_with("reverse_sweep|192.168.1.30|"));
+        assert!(
+            anomaly[0].1.starts_with("lg-tv: 247 NXDOMAIN"),
+            "{anomaly:?}"
+        );
+        assert_eq!(o(AlertWhen::ChattyLoop), Vec::<(String, String)>::new());
     }
 
     /// REQ: OBS-010 (review 04-10) — past the cap, only the oldest one-off subjects are
@@ -1407,6 +1493,68 @@ mod tests {
         fn upstreams(&self) -> Vec<telltale_api::model::UpstreamInfo> {
             Vec::new()
         }
+    }
+
+    /// REQ: CLU-008 (ADR-056) — `sync_lag` names a replica that is behind but never a witness,
+    /// which applies no configuration; a witness that isn't connected still raises `node_down`.
+    #[test]
+    fn clu_008_sync_lag_alert_leaves_a_witness_out() {
+        use telltale_api::model::{ClusterNode, ClusterView};
+        let node = |id: &str, site: &str| ClusterNode {
+            node_id: id.into(),
+            site: site.into(),
+            connected: true,
+            up: true,
+            ..ClusterNode::default()
+        };
+        let mut me = node("id-pi", "home");
+        me.this_node = true;
+        me.role = "primary".into();
+        let mut replica = node("id-hall", "hall");
+        replica.config_lag = 3;
+        // What a healthy witness reports: version 0, so behind for as long as it runs.
+        let mut witness = node("id-attic", "attic");
+        witness.witness = true;
+        witness.config_lag = 12;
+        witness.behind_seconds = Some(86_400);
+        let stub = |nodes: Vec<ClusterNode>| Stub {
+            view: ClusterView {
+                enabled: true,
+                cluster_id: None,
+                name: None,
+                this_node: None,
+                newest_config_seq: 12,
+                healthy: true,
+                checks: Vec::new(),
+                nodes,
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                rollout: None,
+                host: None,
+            },
+            probes: Vec::new(),
+            findings: Vec::new(),
+        };
+        let o = |b: &Stub, w: AlertWhen| observe(b, &rule(w, 0), 1000, &[], &Paused::default());
+        let subjects = |found: &Observed| found.iter().map(|(x, _)| x.clone()).collect::<Vec<_>>();
+        let connected = stub(vec![me.clone(), replica.clone(), witness.clone()]);
+        assert_eq!(
+            o(&connected, AlertWhen::SyncLag),
+            [(
+                "hall".to_owned(),
+                "hall is 3 configuration version(s) behind the primary".to_owned()
+            )]
+        );
+        assert_eq!(o(&connected, AlertWhen::NodeDown), Observed::new());
+        // A witness that isn't connected is still reported, by `node_down`.
+        witness.connected = false;
+        witness.up = false;
+        let away = stub(vec![me, replica, witness]);
+        assert_eq!(subjects(&o(&away, AlertWhen::SyncLag)), ["hall"]);
+        assert_eq!(subjects(&o(&away, AlertWhen::NodeDown)), ["attic"]);
     }
 
     /// REQ: OPS-010 (ADR-118) — a node in maintenance raises no `node_down` or probe alert;

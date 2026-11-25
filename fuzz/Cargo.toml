@@ -72,5 +72,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "anomaly_observe"
+path = "fuzz_targets/anomaly_observe.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

@@ -1115,6 +1115,9 @@ pub enum AnomalyKind {
     Dga,
     /// A steady fast rhythm to one domain (informational).
     ChattyLoop,
+    /// A sweep of the reverse names of private addresses (scanning the local network). A mute of
+    /// `nxdomain_storm` doesn't cover it.
+    ReverseSweep,
 }
 
 impl AnomalyKind {
@@ -1129,6 +1132,7 @@ impl AnomalyKind {
             Self::NxdomainStorm => "nxdomain_storm",
             Self::Dga => "dga",
             Self::ChattyLoop => "chatty_loop",
+            Self::ReverseSweep => "reverse_sweep",
         }
     }
 }
@@ -2043,6 +2047,22 @@ pub struct SpecialConfig {
     pub private_ptr_nxdomain: bool,
     /// CHAOS-class `version.bind`, `id.server`, ... → REFUSED.
     pub refuse_chaos: bool,
+    /// REQ: DNS-019 (ADR-187) — `resolver.arpa` and the names below it, such as
+    /// `_dns.resolver.arpa` (encrypted-DNS discovery, RFC 9462) → NOERROR with no records, never
+    /// forwarded (RFC 9462 §6.4: a locally served zone), unless a local record or a route for
+    /// `resolver.arpa` or a name below it covers them (a route for `arpa` doesn't). On by default.
+    /// The cluster shares it, and it is not written while it is on. Don't write this key, `true` or
+    /// `false`, until every node runs this version: an older node refuses it in its own file, and
+    /// in a shared configuration (where only `false` is written).
+    #[serde(skip_serializing_if = "is_default_resolver_arpa")]
+    pub resolver_arpa: bool,
+}
+
+// REQ: DNS-019, CLU-010 (ADR-187) — not written while it is on, so a node that doesn't know the
+// key (a rolling upgrade; the section refuses unknown fields) still reads the shared config.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` takes a reference
+const fn is_default_resolver_arpa(on: &bool) -> bool {
+    *on
 }
 
 impl Default for SpecialConfig {
@@ -2052,6 +2072,7 @@ impl Default for SpecialConfig {
             localhost: true,
             private_ptr_nxdomain: true,
             refuse_chaos: true,
+            resolver_arpa: true,
         }
     }
 }

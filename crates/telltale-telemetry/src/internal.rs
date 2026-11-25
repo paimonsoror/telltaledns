@@ -68,13 +68,16 @@ impl InternalNames {
 
 /// True for reverse names inside private/local address space, as the resolver's special-name
 /// handling defines it (RFC 6303: `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`,
-/// `127/8`, `0/8`; `fc00::/7`, `fe80::/10`, `::1`).
-fn is_private_reverse(name: &[u8]) -> bool {
+/// `127/8`, `0/8`; `fc00::/7`, `fe80::/10`, `::1`). Also what a sweep of private reverse names
+/// is made of (REQ: OBS-009, ADR-186: the anomaly engine calls it once per event); a test in the
+/// server keeps it equal to the resolver's copy. The zone is matched by labels, as the resolver
+/// matches it: a label that only ends in the zone's bytes isn't under it.
+pub(crate) fn is_private_reverse(name: &[u8]) -> bool {
     let v4 = name.ends_with(IN_ADDR);
     if !v4 && !name.ends_with(IP6) {
         return false;
     }
-    // The labels, most significant last (wire order), without the trailing `in-addr.arpa`.
+    // The labels, most significant last (wire order).
     let mut labels: [&[u8]; MAX_REVERSE_LABELS] = [&[]; MAX_REVERSE_LABELS];
     let mut count = 0;
     let mut pos = 0;
@@ -92,7 +95,13 @@ fn is_private_reverse(name: &[u8]) -> bool {
         count += 1;
         pos += usize::from(len) + 1;
     }
-    let count = count.saturating_sub(2);
+    // REQ: OBS-009, OBS-037 (ADR-186) — the last two labels are the zone's own.
+    let zone: &[u8] = if v4 { b"in-addr" } else { b"ip6" };
+    if count < 2 || labels[count - 1] != b"arpa" || labels[count - 2] != zone {
+        return false;
+    }
+    // Without the trailing `in-addr.arpa` / `ip6.arpa`.
+    let count = count - 2;
     // k = 0 is the most significant part.
     let from_top = |k: usize| count.checked_sub(k + 1).map(|i| labels[i]);
     if v4 {
@@ -175,6 +184,15 @@ mod tests {
             "10.in-addr.arpa.example.com",
         ] {
             assert!(!x.is_internal(&wire(name)), "{name}");
+        }
+        // REQ: OBS-037 (ADR-186) — by labels, as the resolver's check: a label that only ends in
+        // the zone's bytes (a length byte 7 or 3 inside it) isn't `in-addr`/`ip6`.
+        for name in [
+            "1.0.0.10.x\u{7}in-addr.arpa",
+            "10.\u{7}in-addr.arpa",
+            "1.d.f.x\u{3}ip6.arpa",
+        ] {
+            assert!(!x.is_internal(&wire(name)), "{name:?}");
         }
         assert!(!x.is_internal(&[0]), "the root");
         assert!(!x.is_internal(&[]));

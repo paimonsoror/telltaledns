@@ -288,6 +288,7 @@ internal_names = ["lan", "home.arpa"]</code></pre>
     <li>Press <b>Acknowledge</b> on the card (or <b>Acknowledge all</b>). It stops counting as new: the sidebar badge and anomaly alerts skip it. <b>Show acknowledged</b> shows it again with who acknowledged it, when, and the note; <b>Undo acknowledge</b> takes it back.</li>
   </ol>
   <p class="muted">It needs the operator role and is recorded in the audit log. API: <code>POST /api/v1/analytics/anomalies/acknowledge</code> with the finding's <code>id</code>; MCP: <code>acknowledge_anomalies</code>. An acknowledgement on any node reaches every node within seconds.</p>
+  <p><b>A TV or NAS that looks up every address on your network?</b> That is a <b>Sweep of local addresses</b>, a kind of finding of its own. Choose <b>Mute for this device…</b> on it: its hourly sweep stops counting, and a real burst of failed lookups from the same device still does. A mute made for it before 0.9 names <b>Burst of failed lookups</b> and no longer covers it; the finding points that mute out. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#muting-a-kind-of-finding-for-a-device">Muting a kind of finding</a>.</p>
   <p><b>Too noisy, or too quiet?</b> Tune detection, or ignore domains you expect:</p>
 <pre><code>[telemetry.anomaly]
 enabled = true

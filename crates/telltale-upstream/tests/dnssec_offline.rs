@@ -45,6 +45,9 @@ struct Zone {
     forge: AtomicBool,
     /// NFR-004 — milliseconds every answer is held back (a slow upstream).
     lag_ms: AtomicU64,
+    /// NFR-004 (ADR-188) — milliseconds the answers to CNAME questions, which only link-by-link
+    /// validation asks, are held back, without holding up the other questions.
+    link_lag_ms: AtomicU64,
     /// ADR-184 — the NSEC3 Opt-Out top-level domain `t.` and the zones below it.
     tld: Tld,
 }
@@ -213,6 +216,7 @@ fn zone_with(proof_ttl: u32) -> Zone {
         key: key_rdata,
         forge: AtomicBool::new(false),
         lag_ms: AtomicU64::new(0),
+        link_lag_ms: AtomicU64::new(0),
         tld,
     }
 }
@@ -246,6 +250,61 @@ struct Tld {
     replay: AtomicBool,
     /// The same test: as `replay`, with a DS answer whose insecure record is another zone's.
     other_soa: AtomicBool,
+    /// `dns_011_offline_links_that_do_not_hold_stay_bogus`: what `s.t.`'s answers are changed to
+    /// ([`tamper`]).
+    tamper: AtomicUsize,
+    /// A signature of `*.w.s.t.`'s address by another key of `s.t.`, one that isn't in its key set
+    /// ([`tampering::SECOND_SIGNATURE`]).
+    second_signature: Record,
+    /// `z3.s.t.`'s zone ([`hashed_zone`]): signed with NSEC3 under its own key, its NSEC3 chain
+    /// included.
+    hashed: BTreeMap<(Name, RecordType), Vec<Record>>,
+    /// That chain: each record's hash and owner, in hash order.
+    hashed_chain: Vec<(Vec<u8>, Name)>,
+}
+
+/// Ways to tamper with `s.t.`'s answers.
+mod tampering {
+    /// Nothing is changed.
+    pub(super) const NONE: usize = 0;
+    /// `www.s.t. A` is denied with another name's records.
+    pub(super) const HIDE_TARGET: usize = 1;
+    /// `www.s.t.` is an unsigned CNAME to `own.w.s.t.`, with that name's genuine denial.
+    pub(super) const INJECT_CNAME: usize = 2;
+    /// `own.w.s.t. A` is answered with the wildcard's address.
+    pub(super) const REPLAY_WILDCARD: usize = 3;
+    /// A wildcard's answers come without NSEC records.
+    pub(super) const NO_WILDCARD_PROOF: usize = 4;
+    /// A wildcard's answers come with another name's NSEC.
+    pub(super) const OTHER_WILDCARD_PROOF: usize = 5;
+    /// A wildcard's address is another one, under the genuine signature and NSEC.
+    pub(super) const FORGE_WILDCARD: usize = 6;
+    /// `ent.w.s.t. A` (an empty non-terminal) is answered with the wildcard's address and the
+    /// NSEC that covers the name.
+    pub(super) const REPLAY_WILDCARD_AT_ENT: usize = 7;
+    /// `www.s.t. AAAA` (NODATA) comes with another name's signed address in the answer section.
+    pub(super) const EXTRA_RECORD: usize = 8;
+    /// `alias.s.t. NSEC` is answered as if the CNAME were followed: the CNAME, and the target's
+    /// NSEC in the authority section.
+    pub(super) const CNAME_FOR_NSEC: usize = 9;
+    /// `a.own.w.s.t. A` is answered from `*.w.s.t.`, with the NSEC that covers the name (the one of
+    /// `own.w.s.t.`, the name between them).
+    pub(super) const REPLAY_WILDCARD_BELOW_NAME: usize = 10;
+    /// As `REPLAY_WILDCARD_BELOW_NAME`, with an unsigned NSEC3 record owned directly below `s.t.`
+    /// beside the NSEC.
+    pub(super) const BESIDE_UNSIGNED_NSEC3: usize = 11;
+    /// A wildcard's answers come with only an unsigned NSEC3 record of the unsigned zone `u.`, and
+    /// `own.w.s.t. A` is answered with the wildcard's address.
+    pub(super) const UNSIGNED_ZONE_NSEC3_PROOF: usize = 12;
+    /// A wildcard's answers come with only `t.`'s signed NSEC3 record covering the name, and
+    /// `own.w.s.t. A` is answered with the wildcard's address.
+    pub(super) const OTHER_ZONE_NSEC3_PROOF: usize = 13;
+    /// `*.w.s.t.`'s address comes with a second signature, by another key of `s.t.` that isn't in
+    /// its key set (as during a key rollover).
+    pub(super) const SECOND_SIGNATURE: usize = 14;
+    /// `a.b.c.s.t. A` is answered with the wildcard's CNAME, its signature and NSEC only: the chain
+    /// stops there, without the target's records.
+    pub(super) const CHAIN_CUT_SHORT: usize = 15;
 }
 
 /// `name`'s NSEC3 hash with `t.`'s parameters.
@@ -277,6 +336,28 @@ fn b32hex(data: &[u8]) -> String {
 /// The owner of `name`'s NSEC3 in `t.`.
 fn h3_owner(name: &Name) -> Name {
     n(&format!("{}.t.", b32hex(&h3(name))))
+}
+
+/// The owner of `name`'s NSEC3 in `zone`, with `t.`'s parameters.
+fn hashed_owner(name: &Name, zone: &str) -> Name {
+    n(&format!("{}.{zone}", b32hex(&h3(name))))
+}
+
+/// An NSEC3 record without a signature, owned directly below `zone` at `name`'s hash.
+fn unsigned_nsec3(name: &Name, zone: &str) -> Record {
+    let nsec3 = NSEC3::new(
+        Nsec3HashAlgorithm::SHA1,
+        false,
+        0,
+        Vec::new(),
+        vec![0xff; 20],
+        [RecordType::A, RecordType::RRSIG],
+    );
+    Record::from_rdata(
+        hashed_owner(name, zone),
+        300,
+        RData::DNSSEC(DNSSECRData::NSEC3(nsec3)),
+    )
 }
 
 fn soa_of(zone: &str) -> SOA {
@@ -334,6 +415,87 @@ fn signed(
     sets
 }
 
+/// The CNAMEs in `s.t.`'s signed zone.
+const ALIASES: [(&str, &str); 12] = [
+    ("alias.s.t.", "www.s.t."),
+    ("twice.s.t.", "alias.s.t."),
+    ("gone.s.t.", "nope.s.t."),
+    ("wild.s.t.", "any.w.s.t."),
+    ("via.s.t.", "any.c.s.t."),
+    ("forged.s.t.", "www.s.t."),
+    ("loop1.s.t.", "loop2.s.t."),
+    ("loop2.s.t.", "loop1.s.t."),
+    // Into `t.`, signed with NSEC3, and into `v.t.`, unsigned.
+    ("up.s.t.", "x.t."),
+    ("out.s.t.", "x.l.v.t."),
+    // Through `v.t.` and back.
+    ("round.s.t.", "back.v.t."),
+    // Into `u.t.`, whose answers the validation library judges bogus.
+    ("parked.s.t.", "www.u.t."),
+];
+
+/// [`hashed_zone`]: the zone's record sets with their signatures (the NSEC3 chain included), that
+/// chain (each record's hash and owner, in hash order), and the DS for it.
+struct HashedZone {
+    sets: BTreeMap<(Name, RecordType), Vec<Record>>,
+    chain: Vec<(Vec<u8>, Name)>,
+    ds: DS,
+}
+
+/// The zone `z3.s.t.`, delegated from `s.t.` with a DS: signed with NSEC3 under its own key (`t.`'s
+/// parameters, without Opt-Out), with a wildcard address right below its apex.
+fn hashed_zone() -> HashedZone {
+    let apex = n("z3.s.t.");
+    let (signer, dnskey) = zone_signer(&apex);
+    let ds = DS::from_key(dnskey.public_key(), &apex, DigestType::SHA256).unwrap();
+    let mut chain = [
+        (
+            apex.clone(),
+            vec![
+                RecordType::NS,
+                RecordType::SOA,
+                RecordType::RRSIG,
+                RecordType::DNSKEY,
+                RecordType::NSEC3PARAM,
+            ],
+        ),
+        (n("*.z3.s.t."), vec![RecordType::A, RecordType::RRSIG]),
+    ];
+    chain.sort_by_key(|(name, _)| h3(name));
+    let mut rrsets: Vec<(Name, Vec<RData>)> = vec![
+        (apex.clone(), vec![RData::SOA(soa_of("z3.s.t."))]),
+        (apex.clone(), vec![RData::NS(NS(n("ns.z3.s.t.")))]),
+        (
+            apex.clone(),
+            vec![RData::DNSSEC(DNSSECRData::DNSKEY(dnskey))],
+        ),
+        (n("*.z3.s.t."), vec![RData::A(A::new(192, 0, 2, 34))]),
+    ];
+    for (i, (name, types)) in chain.iter().enumerate() {
+        let next = h3(&chain[(i + 1) % chain.len()].0);
+        let nsec3 = NSEC3::new(
+            Nsec3HashAlgorithm::SHA1,
+            false,
+            0,
+            Vec::new(),
+            next,
+            types.iter().copied(),
+        );
+        rrsets.push((
+            hashed_owner(name, "z3.s.t."),
+            vec![RData::DNSSEC(DNSSECRData::NSEC3(nsec3))],
+        ));
+    }
+    HashedZone {
+        sets: signed(rrsets, &signer, 3600),
+        chain: chain
+            .iter()
+            .map(|(name, _)| (h3(name), hashed_owner(name, "z3.s.t.")))
+            .collect(),
+        ds,
+    }
+}
+
 /// `t.`, its SOA and NSEC3 records (what its denials are made of) with TTL `proof_ttl`, the
 /// rest with an hour.
 fn tld(proof_ttl: u32) -> Tld {
@@ -386,44 +548,88 @@ fn tld(proof_ttl: u32) -> Tld {
     }
     let mut sets = signed(rrsets, &signer, 3600);
     sets.extend(signed(denials, &signer, proof_ttl));
-    let child = signed(
-        vec![
-            (n("s.t."), vec![RData::SOA(soa_of("s.t."))]),
-            (n("s.t."), vec![RData::NS(NS(n("ns.s.t.")))]),
-            (
-                n("s.t."),
-                vec![RData::DNSSEC(DNSSECRData::DNSKEY(child_key))],
-            ),
-            (
-                n("s.t."),
-                vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
-                    n("www.s.t."),
-                    [
-                        RecordType::NS,
-                        RecordType::SOA,
-                        RecordType::RRSIG,
-                        RecordType::NSEC,
-                        RecordType::DNSKEY,
-                    ],
-                )))],
-            ),
-            (n("www.s.t."), vec![RData::A(A::new(192, 0, 2, 30))]),
-            (
-                n("www.s.t."),
-                vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
-                    n("s.t."),
-                    [RecordType::A, RecordType::RRSIG, RecordType::NSEC],
-                )))],
-            ),
-        ],
-        &child_signer,
+    let HashedZone {
+        sets: hashed,
+        chain: hashed_chain,
+        ds: hashed_ds,
+    } = hashed_zone();
+    let mut child_sets = vec![
+        (n("s.t."), vec![RData::SOA(soa_of("s.t."))]),
+        (n("s.t."), vec![RData::NS(NS(n("ns.s.t.")))]),
+        (
+            n("s.t."),
+            vec![RData::DNSSEC(DNSSECRData::DNSKEY(child_key))],
+        ),
+        (n("www.s.t."), vec![RData::A(A::new(192, 0, 2, 30))]),
+        // Wildcards right below the apex's children: an address, and a CNAME.
+        (n("*.w.s.t."), vec![RData::A(A::new(192, 0, 2, 31))]),
+        (n("*.c.s.t."), vec![RData::CNAME(CNAME(n("www.s.t.")))]),
+        (n("*.o.s.t."), vec![RData::CNAME(CNAME(n("out.s.t.")))]),
+        // A wildcard CNAME to a name that doesn't exist, below one that does.
+        (n("*.k.s.t."), vec![RData::CNAME(CNAME(n("a.own.w.s.t.")))]),
+        // A name below `w.s.t.` that exists, and one below that makes an empty non-terminal.
+        (n("own.w.s.t."), vec![RData::A(A::new(192, 0, 2, 32))]),
+        (n("x.ent.w.s.t."), vec![RData::A(A::new(192, 0, 2, 33))]),
+        // A signed delegation to `z3.s.t.`, a zone signed with NSEC3. It sorts after every other
+        // name, so of their NSEC records only the last one's (`www.s.t.`'s) changes.
+        (n("z3.s.t."), vec![RData::NS(NS(n("ns.z3.s.t.")))]),
+        (
+            n("z3.s.t."),
+            vec![RData::DNSSEC(DNSSECRData::DS(hashed_ds))],
+        ),
+    ];
+    for (alias, target) in ALIASES {
+        child_sets.push((n(alias), vec![RData::CNAME(CNAME(n(target)))]));
+    }
+    // The NSEC chain: every name in canonical order, the last one pointing to the apex.
+    let mut types: BTreeMap<Name, Vec<RecordType>> = BTreeMap::new();
+    for (name, datas) in &child_sets {
+        types
+            .entry(name.clone())
+            .or_default()
+            .push(datas[0].record_type());
+    }
+    let names: Vec<Name> = types.keys().cloned().collect();
+    for (i, (name, mut listed)) in types.into_iter().enumerate() {
+        listed.extend([RecordType::RRSIG, RecordType::NSEC]);
+        let next = names[(i + 1) % names.len()].clone();
+        child_sets.push((
+            name,
+            vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(next, listed)))],
+        ));
+    }
+    let mut child = signed(child_sets, &child_signer, 3600);
+    // `forged.s.t.`'s signature doesn't verify.
+    for r in child
+        .get_mut(&(n("forged.s.t."), RecordType::CNAME))
+        .unwrap()
+    {
+        if let RData::DNSSEC(DNSSECRData::RRSIG(sig)) = &r.data {
+            let mut bytes = sig.sig().to_vec();
+            bytes[0] ^= 0xff;
+            r.data = RData::DNSSEC(DNSSECRData::RRSIG(RRSIG::from_sig(
+                sig.input().clone(),
+                bytes,
+            )));
+        }
+    }
+    // A second signature of `*.w.s.t.`'s address, by another key of `s.t.` (not in its key set).
+    let (other_signer, _) = zone_signer(&n("s.t."));
+    let second_signature = signed(
+        vec![(n("*.w.s.t."), vec![RData::A(A::new(192, 0, 2, 31))])],
+        &other_signer,
         3600,
-    );
+    )
+    .into_values()
+    .flatten()
+    .find(|r| r.record_type() == RecordType::RRSIG)
+    .unwrap();
     let mut plain = BTreeMap::new();
     for (name, d) in [
         (n("v.t."), RData::SOA(soa_of("v.t."))),
         (n("v.t."), RData::NS(NS(n("ns.v.t.")))),
         (n("x.l.v.t."), RData::A(A::new(192, 0, 2, 40))),
+        (n("back.v.t."), RData::CNAME(CNAME(n("www.s.t.")))),
         (n("www.u.t."), RData::A(A::new(192, 0, 2, 50))),
         (n("mtalk.u.t."), RData::CNAME(CNAME(n("x.l.v.t.")))),
     ] {
@@ -445,6 +651,10 @@ fn tld(proof_ttl: u32) -> Tld {
         no_ds: AtomicBool::new(false),
         replay: AtomicBool::new(false),
         other_soa: AtomicBool::new(false),
+        tamper: AtomicUsize::new(tampering::NONE),
+        second_signature,
+        hashed,
+        hashed_chain,
     }
 }
 
@@ -469,6 +679,18 @@ impl Tld {
     fn soa(&self) -> Vec<Record> {
         self.sets[&(n("t."), RecordType::SOA)].clone()
     }
+
+    /// The NSEC3 of `z3.s.t.` whose span covers `name`'s hash.
+    fn hashed_covering(&self, name: &Name) -> Vec<Record> {
+        let h = h3(name);
+        let (_, owner) = self
+            .hashed_chain
+            .iter()
+            .rev()
+            .find(|(hash, _)| *hash < h)
+            .unwrap_or_else(|| self.hashed_chain.last().unwrap());
+        self.hashed[&(owner.clone(), RecordType::NSEC3)].clone()
+    }
 }
 
 /// Adds `records` to the authority section unless that record set is there already.
@@ -489,7 +711,9 @@ fn tld_answer(z: &Tld, m: &mut Message, qn: &Name, qt: RecordType) {
         let zone = n(zone);
         zone.zone_of(qn) && !(*qn == zone && qt == RecordType::DS)
     };
-    if below("s.t.") {
+    if below("z3.s.t.") {
+        hashed_answer(z, m, qn, qt);
+    } else if below("s.t.") {
         child_answer(z, m, qn, qt);
     } else if below("u.t.") {
         parked_answer(z, m, qn, qt);
@@ -571,21 +795,191 @@ fn child_answer(z: &Tld, m: &mut Message, qn: &Name, qt: RecordType) {
             _ => {}
         }
     }
+    let tamper = z.tamper.load(Ordering::Relaxed);
+    if tamper == tampering::INJECT_CNAME && *qn == n("www.s.t.") && qt == RecordType::AAAA {
+        let cname = RData::CNAME(CNAME(n("own.w.s.t.")));
+        m.add_answers(vec![Record::from_rdata(qn.clone(), 300, cname)]);
+        m.add_authorities(z.child[&(n("s.t."), RecordType::SOA)].clone());
+        m.add_authorities(z.child[&(n("own.w.s.t."), RecordType::NSEC)].clone());
+        return;
+    }
+    if tamper == tampering::CNAME_FOR_NSEC && *qn == n("alias.s.t.") && qt == RecordType::NSEC {
+        m.add_answers(z.child[&(qn.clone(), RecordType::CNAME)].clone());
+        m.add_authorities(z.child[&(n("www.s.t."), RecordType::NSEC)].clone());
+        return;
+    }
+    // As a recursive resolver: CNAMEs are followed, out of the zone too.
+    let mut name = qn.clone();
+    for _ in 0..4 {
+        if !n("s.t.").zone_of(&name) {
+            let Some(rs) = z.plain.get(&(name.clone(), RecordType::CNAME)) else {
+                tld_answer(z, m, &name, qt);
+                return;
+            };
+            m.add_answers(rs.clone());
+            let RData::CNAME(CNAME(target)) = &rs[0].data else {
+                return;
+            };
+            name = target.clone();
+            continue;
+        }
+        let next = child_link(z, m, &name, qt, tamper);
+        match next {
+            Some(_)
+                if tamper == tampering::CHAIN_CUT_SHORT
+                    && *qn == n("a.b.c.s.t.")
+                    && qt == RecordType::A =>
+            {
+                return;
+            }
+            Some(target) => name = target,
+            None => return,
+        }
+    }
+}
+
+/// One name of `s.t.`'s zone: what answers the question, with the proofs; the target when that
+/// is a CNAME to follow.
+fn child_link(z: &Tld, m: &mut Message, qn: &Name, qt: RecordType, tamper: usize) -> Option<Name> {
     let apex = n("s.t.");
-    if let Some(rs) = z.child.get(&(qn.clone(), qt)) {
+    let nsec = |m: &mut Message, owner: &Name| {
+        add_once(m, z.child[&(owner.clone(), RecordType::NSEC)].clone());
+    };
+    // The greatest owner before `name`: its NSEC covers it.
+    let covering = |name: &Name| -> Name {
+        z.child
+            .keys()
+            .filter(|(o, t)| *t == RecordType::NSEC && o < name)
+            .map(|(o, _)| o.clone())
+            .max()
+            .unwrap_or_else(|| apex.clone())
+    };
+    let hidden = tamper == tampering::HIDE_TARGET && *qn == n("www.s.t.") && qt == RecordType::A;
+    let replayed = matches!(
+        tamper,
+        tampering::REPLAY_WILDCARD
+            | tampering::UNSIGNED_ZONE_NSEC3_PROOF
+            | tampering::OTHER_ZONE_NSEC3_PROOF
+    ) && *qn == n("own.w.s.t.")
+        && qt == RecordType::A;
+    let exists = z.child.contains_key(&(qn.clone(), RecordType::NSEC));
+    if exists && !hidden && !replayed {
+        for t in [qt, RecordType::CNAME] {
+            if let Some(rs) = z.child.get(&(qn.clone(), t)) {
+                m.add_answers(rs.clone());
+                return match (&rs[0].data, t == qt) {
+                    (RData::CNAME(CNAME(target)), false) => Some(target.clone()),
+                    _ => None,
+                };
+            }
+        }
+        add_once(m, z.child[&(apex.clone(), RecordType::SOA)].clone());
+        nsec(m, qn);
+        if tamper == tampering::EXTRA_RECORD && *qn == n("www.s.t.") && qt == RecordType::AAAA {
+            m.add_answers(z.child[&(n("own.w.s.t."), RecordType::A)].clone());
+        }
+        return None;
+    }
+    // The wildcard at the closest encloser, the nearest name above that exists (RFC 4592 §3.3.1),
+    // unless the name exists as an empty non-terminal.
+    let mut encloser = qn.base_name();
+    while encloser != apex && !z.child.keys().any(|(o, _)| encloser.zone_of(o)) {
+        encloser = encloser.base_name();
+    }
+    let below_name = matches!(
+        tamper,
+        tampering::REPLAY_WILDCARD_BELOW_NAME | tampering::BESIDE_UNSIGNED_NSEC3
+    ) && *qn == n("a.own.w.s.t.")
+        && qt == RecordType::A;
+    let wildcard = if below_name {
+        n("*.w.s.t.")
+    } else {
+        encloser.prepend_label("*").unwrap()
+    };
+    let at_ent = tamper == tampering::REPLAY_WILDCARD_AT_ENT
+        && *qn == n("ent.w.s.t.")
+        && qt == RecordType::A;
+    let non_terminal = !at_ent && z.child.keys().any(|(o, _)| qn.zone_of(o) && o != qn);
+    if !hidden && !non_terminal {
+        for t in [qt, RecordType::CNAME] {
+            let Some(rs) = z.child.get(&(wildcard.clone(), t)) else {
+                continue;
+            };
+            m.add_answers(rs.iter().cloned().map(|mut r| {
+                r.name = qn.clone();
+                if tamper == tampering::FORGE_WILDCARD
+                    && let RData::A(a) = &mut r.data
+                {
+                    *a = A::new(192, 0, 2, 66);
+                }
+                r
+            }));
+            if tamper == tampering::SECOND_SIGNATURE
+                && wildcard == n("*.w.s.t.")
+                && t == RecordType::A
+            {
+                let mut second = z.second_signature.clone();
+                second.name = qn.clone();
+                m.add_answers(vec![second]);
+            }
+            match tamper {
+                tampering::NO_WILDCARD_PROOF => {}
+                tampering::OTHER_WILDCARD_PROOF => nsec(m, &n("www.s.t.")),
+                tampering::UNSIGNED_ZONE_NSEC3_PROOF => {
+                    m.add_authorities(vec![unsigned_nsec3(qn, "u.")]);
+                }
+                tampering::OTHER_ZONE_NSEC3_PROOF => {
+                    m.add_authorities(z.covering(qn));
+                }
+                _ => nsec(m, &covering(qn)),
+            }
+            if tamper == tampering::BESIDE_UNSIGNED_NSEC3 {
+                m.add_authorities(vec![unsigned_nsec3(qn, "s.t.")]);
+            }
+            return match (&rs[0].data, t == qt) {
+                (RData::CNAME(CNAME(target)), false) => Some(target.clone()),
+                _ => None,
+            };
+        }
+    }
+    add_once(m, z.child[&(apex.clone(), RecordType::SOA)].clone());
+    if hidden {
+        nsec(m, &n("alias.s.t."));
+    } else if non_terminal {
+        nsec(m, &covering(qn));
+    } else if z.child.contains_key(&(wildcard.clone(), RecordType::NSEC)) {
+        // The wildcard exists without the type (RFC 4035 §3.1.3.4): NODATA, with the NSEC that
+        // shows no closer name exists and the wildcard's own.
+        nsec(m, &covering(qn));
+        nsec(m, &wildcard);
+    } else {
+        m.metadata.response_code = ResponseCode::NXDomain;
+        nsec(m, &covering(qn));
+        nsec(m, &covering(&wildcard));
+    }
+    None
+}
+
+/// `z3.s.t.`'s zone, signed with NSEC3: its records; for a name below the apex that has none, the
+/// wildcard's (RFC 4592) with the NSEC3 record covering the next closer name (RFC 5155 §7.2.6);
+/// anything else, the SOA.
+fn hashed_answer(z: &Tld, m: &mut Message, qn: &Name, qt: RecordType) {
+    let apex = n("z3.s.t.");
+    if let Some(rs) = z.hashed.get(&(qn.clone(), qt)) {
         m.add_answers(rs.clone());
         return;
     }
-    m.add_authorities(z.child[&(apex.clone(), RecordType::SOA)].clone());
-    if let Some(rs) = z.child.get(&(qn.clone(), RecordType::NSEC)) {
-        m.add_authorities(rs.clone());
-    } else {
-        // The zone has two names: their two NSEC records cover every other name, and the
-        // wildcard.
-        m.metadata.response_code = ResponseCode::NXDomain;
-        m.add_authorities(z.child[&(apex, RecordType::NSEC)].clone());
-        m.add_authorities(z.child[&(n("www.s.t."), RecordType::NSEC)].clone());
+    let exists = *qn == apex || z.hashed.keys().any(|(o, _)| o == qn);
+    if !exists && let Some(rs) = z.hashed.get(&(n("*.z3.s.t."), qt)) {
+        m.add_answers(rs.iter().cloned().map(|mut r| {
+            r.name = qn.clone();
+            r
+        }));
+        let next_closer = qn.trim_to(usize::from(apex.num_labels()) + 1);
+        m.add_authorities(z.hashed_covering(&next_closer));
+        return;
     }
+    m.add_authorities(z.hashed[&(apex, RecordType::SOA)].clone());
 }
 
 /// `u.t.`'s server, like a parked domain's: every name has an SOA and NS of its own, a DS
@@ -673,7 +1067,7 @@ fn plain_answer(z: &Zone, m: &mut Message, qn: &Name, qt: RecordType) {
 /// The fake root server: answers from the zone (with signatures), NODATA or NXDOMAIN with the
 /// SOA and the NSEC records that prove it. Counts the questions it gets.
 async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
-    let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let s = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let addr = s.local_addr().unwrap();
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
@@ -751,7 +1145,21 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
             edns.set_dnssec_ok(true);
             edns.set_max_payload(4096);
             m.set_edns(edns);
-            if let Ok(out) = m.to_vec() {
+            let Ok(out) = m.to_vec() else {
+                continue;
+            };
+            let late = if qt == RecordType::CNAME {
+                z.link_lag_ms.load(Ordering::Relaxed)
+            } else {
+                0
+            };
+            if late > 0 {
+                let s = Arc::clone(&s);
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(late)).await;
+                    let _ = s.send_to(&out, from).await;
+                });
+            } else {
                 let _ = s.send_to(&out, from).await;
             }
         }
@@ -1189,6 +1597,958 @@ async fn dns_011_offline_signed_delegation_stays_validated() {
         );
         flag.store(false, Ordering::Relaxed);
     }
+}
+
+/// The answer's records, as (owner, type), without signatures and denials.
+fn answered(bytes: &[u8]) -> Vec<(String, RecordType)> {
+    Message::from_vec(bytes)
+        .unwrap()
+        .answers
+        .iter()
+        .filter(|r| r.record_type() != RecordType::RRSIG)
+        .map(|r| (r.name.to_ascii(), r.record_type()))
+        .collect()
+}
+
+/// What is served: the response code, the AD bit and [`answered`].
+type Served = (u16, bool, Vec<(String, RecordType)>);
+
+/// [`Served`]; `None` when there are no bytes.
+fn served(bytes: &[u8]) -> Option<Served> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let ad = telltale_proto::Header::parse(bytes).unwrap().flags.ad();
+    Some((rcode(bytes), ad, answered(bytes)))
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4, §5.4) — a signed answer whose denial is about the target of a
+/// CNAME is validated link by link: a missing type (NSEC, NSEC3, over two links), a missing name,
+/// a wildcard's address behind a CNAME, a wildcard's CNAME; and insecure, not secure, when the
+/// chain leaves for an unsigned zone. A wildcard's answer is validated without a CNAME too. The
+/// same answers without the fix: bogus (all but `out.s.t. A` and the plain `www.s.t.`).
+#[tokio::test]
+async fn dns_011_offline_denials_behind_a_cname_are_validated() {
+    use RecordType::{A, CNAME};
+    let budget = Duration::from_secs(5);
+    let (v, g, _, _, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    for (name, qtype, want, code, owners) in [
+        ("www.s.t", rtype::AAAA, Verdict::Secure, 0, vec![]),
+        (
+            "alias.s.t",
+            rtype::A,
+            Verdict::Secure,
+            0,
+            vec![("alias.s.t.", CNAME), ("www.s.t.", A)],
+        ),
+        (
+            "alias.s.t",
+            rtype::AAAA,
+            Verdict::Secure,
+            0,
+            vec![("alias.s.t.", CNAME)],
+        ),
+        (
+            "twice.s.t",
+            rtype::AAAA,
+            Verdict::Secure,
+            0,
+            vec![("twice.s.t.", CNAME), ("alias.s.t.", CNAME)],
+        ),
+        (
+            "up.s.t",
+            rtype::AAAA,
+            Verdict::Secure,
+            0,
+            vec![("up.s.t.", CNAME)],
+        ),
+        (
+            "gone.s.t",
+            rtype::A,
+            Verdict::Secure,
+            3,
+            vec![("gone.s.t.", CNAME)],
+        ),
+        (
+            "any.w.s.t",
+            rtype::A,
+            Verdict::Secure,
+            0,
+            vec![("any.w.s.t.", A)],
+        ),
+        (
+            "wild.s.t",
+            rtype::A,
+            Verdict::Secure,
+            0,
+            vec![("wild.s.t.", CNAME), ("any.w.s.t.", A)],
+        ),
+        (
+            "any.c.s.t",
+            rtype::A,
+            Verdict::Secure,
+            0,
+            vec![("any.c.s.t.", CNAME), ("www.s.t.", A)],
+        ),
+        (
+            "via.s.t",
+            rtype::AAAA,
+            Verdict::Secure,
+            0,
+            vec![("via.s.t.", CNAME), ("any.c.s.t.", CNAME)],
+        ),
+        // Through a wildcard CNAME, then a signed CNAME into an unsigned zone without the type:
+        // nothing signed says it's missing there.
+        (
+            "any.o.s.t",
+            rtype::AAAA,
+            Verdict::Insecure,
+            0,
+            vec![("any.o.s.t.", CNAME), ("out.s.t.", CNAME)],
+        ),
+        // An unsigned link between signed ones.
+        (
+            "round.s.t",
+            rtype::AAAA,
+            Verdict::Insecure,
+            0,
+            vec![("round.s.t.", CNAME), ("back.v.t.", CNAME)],
+        ),
+        (
+            "out.s.t",
+            rtype::A,
+            Verdict::Insecure,
+            0,
+            vec![("out.s.t.", CNAME), ("x.l.v.t.", A)],
+        ),
+    ] {
+        let r = v
+            .resolve(&g, question(name, qtype), budget, true, false)
+            .await
+            .unwrap();
+        assert_eq!(r.verdict, want, "{name} {qtype}");
+        assert_eq!(rcode(&r.bytes), code, "{name} {qtype}");
+        let got = answered(&r.bytes);
+        let owners: Vec<(String, RecordType)> =
+            owners.into_iter().map(|(o, t)| (o.to_owned(), t)).collect();
+        assert_eq!(got, owners, "{name} {qtype}");
+        let m = Message::from_vec(&r.bytes).unwrap();
+        assert_eq!(
+            m.metadata.authentic_data,
+            want == Verdict::Secure,
+            "AD: {name} {qtype}"
+        );
+        assert_eq!(m.queries[0].name().to_ascii(), format!("{name}."));
+        // The proofs a validating client needs are still there.
+        if got.last().is_some_and(|(_, t)| *t == CNAME) && want == Verdict::Secure {
+            assert!(
+                m.authorities
+                    .iter()
+                    .any(|r| matches!(r.record_type(), RecordType::NSEC | RecordType::NSEC3)),
+                "a denial: {name} {qtype}"
+            );
+        }
+        // Two: the wildcard's (no closer name) and the type's.
+        if name == "via.s.t" {
+            let nsecs = m
+                .authorities
+                .iter()
+                .filter(|r| r.record_type() == RecordType::NSEC)
+                .count();
+            assert_eq!(nsecs, 2, "{name}");
+        }
+    }
+}
+
+/// REQ: DNS-011 — a link that isn't validated, or a wildcard without its proof, stays bogus: a
+/// forged CNAME signature, a CNAME made up for a name that has none, a target hidden with
+/// another name's denial, a loop, a wildcard's address for a name that exists, and a wildcard's
+/// answer without its NSEC or with another name's.
+#[tokio::test]
+async fn dns_011_offline_links_that_do_not_hold_stay_bogus() {
+    let budget = Duration::from_secs(5);
+    let z = Arc::new(zone());
+    for (tamper, name, qtype) in [
+        (tampering::NONE, "forged.s.t", rtype::A),
+        (tampering::NONE, "forged.s.t", rtype::AAAA),
+        (tampering::NONE, "loop1.s.t", rtype::A),
+        (tampering::HIDE_TARGET, "alias.s.t", rtype::A),
+        (tampering::HIDE_TARGET, "twice.s.t", rtype::A),
+        (tampering::INJECT_CNAME, "www.s.t", rtype::AAAA),
+        (tampering::INJECT_CNAME, "alias.s.t", rtype::AAAA),
+        (tampering::REPLAY_WILDCARD, "own.w.s.t", rtype::A),
+        (tampering::NO_WILDCARD_PROOF, "any.w.s.t", rtype::A),
+        (tampering::NO_WILDCARD_PROOF, "wild.s.t", rtype::A),
+        (tampering::NO_WILDCARD_PROOF, "any.c.s.t", rtype::AAAA),
+        (tampering::FORGE_WILDCARD, "any.w.s.t", rtype::A),
+        (tampering::FORGE_WILDCARD, "wild.s.t", rtype::A),
+        (tampering::OTHER_WILDCARD_PROOF, "any.w.s.t", rtype::A),
+        (tampering::OTHER_WILDCARD_PROOF, "via.s.t", rtype::AAAA),
+    ] {
+        let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+        warm_tld(&v, &g).await;
+        let secure = stats.secure.load(Ordering::Relaxed);
+        z.tld.tamper.store(tamper, Ordering::Relaxed);
+        for round in 1..=2 {
+            let r = v
+                .resolve(&g, question(name, qtype), budget, true, false)
+                .await;
+            // Bogus: never secure or insecure, and never "no answer" (an upstream failure).
+            assert_eq!(
+                r.map(|r| r.verdict).ok(),
+                Some(Verdict::Bogus),
+                "{name} {qtype}, tampering {tamper} (question {round})"
+            );
+        }
+        assert_eq!(stats.secure.load(Ordering::Relaxed), secure, "{name}");
+        assert_eq!(stats.insecure.load(Ordering::Relaxed), 0, "{name}");
+        z.tld.tamper.store(tampering::NONE, Ordering::Relaxed);
+    }
+}
+
+/// REQ: DNS-011, NFR-004 (ADR-098, ADR-188) — a link of a link-by-link validation that gets no
+/// answer in time proves nothing, and the answer stays bogus: `Ok` with EDE 6, as for any answer
+/// that doesn't validate. So `validate` answers SERVFAIL with EDE 6 and never a stale answer, and
+/// `permissive` serves the answer, as it does when the validation library refuses an answer itself
+/// (an upstream failure would be stale or SERVFAIL with EDE 22 in both). Only the links' own
+/// questions (CNAME) are slow here: the upstream gives up on them within the group's budget (the
+/// first question's, 1 s), or the validation's deadline (two budgets of the question, 1.9 s) runs
+/// out before the group's only member gives up on its attempt (2 s after it starts), the group's
+/// budget being that of the question that warmed it (5 s). The question's main lookup may take
+/// one and a half budgets (1.4 s). Both after the library refused a denial behind a CNAME, and
+/// after it judged a chain into an unsigned zone bogus.
+#[tokio::test]
+async fn dns_011_offline_link_lookup_timeout_stays_bogus() {
+    // Each case's outcome: the verdict and EDE (`None`: no verdict), then the bogus, insecure and
+    // new secure verdicts counted.
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for (name, qtype, first, budget_ms, what) in [
+        (
+            "gone.s.t",
+            rtype::A,
+            None,
+            1000,
+            "a denial behind a CNAME; the upstream gives up on the link",
+        ),
+        (
+            "alias.s.t",
+            rtype::AAAA,
+            Some("www.s.t"),
+            950,
+            "a denial behind a CNAME; the deadline runs out",
+        ),
+        (
+            "parked.s.t",
+            rtype::A,
+            Some("x.t"),
+            950,
+            "a chain into an unsigned zone; the deadline runs out",
+        ),
+    ] {
+        let z = Arc::new(zone());
+        z.link_lag_ms.store(60_000, Ordering::Relaxed);
+        let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+        if let Some(first) = first {
+            let r = v
+                .resolve(
+                    &g,
+                    question(first, rtype::A),
+                    Duration::from_secs(5),
+                    true,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.verdict, Verdict::Secure, "{first} A, signed");
+        }
+        let secure = stats.secure.load(Ordering::Relaxed);
+        let budget = Duration::from_millis(budget_ms);
+        let r = v
+            .resolve(&g, question(name, qtype), budget, true, false)
+            .await;
+        got.push((
+            what,
+            r.ok().map(|r| (r.verdict, r.ede)),
+            stats.bogus.load(Ordering::Relaxed),
+            stats.insecure.load(Ordering::Relaxed),
+            stats.secure.load(Ordering::Relaxed) - secure,
+        ));
+        want.push((
+            what,
+            Some((Verdict::Bogus, telltale_proto::ede::DNSSEC_BOGUS)),
+            1,
+            0,
+            0,
+        ));
+    }
+    assert_eq!(got, want);
+}
+
+/// REQ: DNS-011, NFR-004 (ADR-188) — link-by-link validation runs on slots of its own, apart from
+/// the unsigned-zone proofs, so the proof one of its links needs still finds one. `parked.s.t. A`
+/// (a signed CNAME to `www.u.t.`, whose address the validation library judges bogus) needs that
+/// proof for its second link:
+/// 1. with every proof slot taken but one, it is insecure;
+/// 2. with every proof slot taken, it stays bogus, and isn't remembered as failed for that: the
+///    next question, with the slots free again, is insecure;
+/// 3. with every slot of link-by-link validation taken, it stays bogus, and the next question,
+///    with them free again, is insecure.
+#[tokio::test]
+async fn dns_011_link_validation_leaves_slots_for_its_proofs() {
+    async fn round(v: &Validator, g: &Arc<Group>) -> Option<Verdict> {
+        v.resolve(
+            g,
+            question("parked.s.t", rtype::A),
+            Duration::from_secs(5),
+            true,
+            false,
+        )
+        .await
+        .ok()
+        .map(|r| r.verdict)
+    }
+    let (v, g, _, _, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    let held = v.hold_proof_slots(1);
+    assert!(!held.is_empty(), "proof slots held");
+    assert_eq!(
+        round(&v, &g).await,
+        Some(Verdict::Insecure),
+        "every proof slot but one taken"
+    );
+    drop(held);
+
+    let (v, g, _, _, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    let held = v.hold_proof_slots(0);
+    assert_eq!(
+        round(&v, &g).await,
+        Some(Verdict::Bogus),
+        "every proof slot taken"
+    );
+    drop(held);
+    assert_eq!(
+        round(&v, &g).await,
+        Some(Verdict::Insecure),
+        "the slots free again: not remembered as failed"
+    );
+
+    let (v, g, _, _, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    let held = v.hold_link_slots(0);
+    assert!(!held.is_empty(), "link-by-link slots held");
+    assert_eq!(
+        round(&v, &g).await,
+        Some(Verdict::Bogus),
+        "every link-by-link slot taken"
+    );
+    drop(held);
+    assert_eq!(
+        round(&v, &g).await,
+        Some(Verdict::Insecure),
+        "the link-by-link slots free again"
+    );
+}
+
+/// REQ: DNS-011 (ADR-188) — an answer validated link by link is made of the chain's records: of
+/// the last answer, only those owned by the name it answers, and their signatures. With
+/// `www.s.t. AAAA` (NODATA) answered with another name's signed address beside its NSEC,
+/// `alias.s.t. AAAA` is still a secure NODATA behind the CNAME, without that address.
+#[tokio::test]
+async fn dns_011_offline_composed_answer_keeps_only_the_chain() {
+    let z = Arc::new(zone());
+    z.tld
+        .tamper
+        .store(tampering::EXTRA_RECORD, Ordering::Relaxed);
+    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let r = v
+        .resolve(
+            &g,
+            question("alias.s.t", rtype::AAAA),
+            Duration::from_secs(5),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Secure, "alias.s.t. AAAA");
+    assert_eq!(rcode(&r.bytes), telltale_proto::rcode::NOERROR);
+    assert_eq!(
+        answered(&r.bytes),
+        vec![("alias.s.t.".to_owned(), RecordType::CNAME)],
+        "the CNAME only"
+    );
+    let msg = Message::from_vec(&r.bytes).unwrap();
+    assert!(
+        msg.answers.iter().all(|r| r.name == n("alias.s.t.")),
+        "no signature of another name"
+    );
+    assert!(
+        msg.authorities
+            .iter()
+            .any(|r| r.name == n("www.s.t.") && r.record_type() == RecordType::NSEC),
+        "the target's denial"
+    );
+}
+
+/// REQ: DNS-011 (RFC 4035 §2.3, §2.5; ADR-188) — a question for NSEC doesn't follow a CNAME: the
+/// CNAME's owner has an NSEC of its own. `alias.s.t. NSEC` is secure, with that NSEC; answered as
+/// if the CNAME were followed (the CNAME, and the target's NSEC beside it), it stays bogus: no
+/// answer is made of the CNAME and another name's NSEC.
+#[tokio::test]
+async fn dns_011_offline_nsec_question_does_not_follow_a_cname() {
+    let budget = Duration::from_secs(5);
+    let z = Arc::new(zone());
+    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    let r = v
+        .resolve(&g, question("alias.s.t", rtype::NSEC), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Secure, "alias.s.t. NSEC");
+    assert_eq!(
+        answered(&r.bytes),
+        vec![("alias.s.t.".to_owned(), RecordType::NSEC)],
+        "its own NSEC"
+    );
+    z.tld
+        .tamper
+        .store(tampering::CNAME_FOR_NSEC, Ordering::Relaxed);
+    let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let secure = stats.secure.load(Ordering::Relaxed);
+    for round in 1..=2 {
+        let r = v
+            .resolve(&g, question("alias.s.t", rtype::NSEC), budget, true, false)
+            .await;
+        assert_eq!(
+            r.map(|r| r.verdict).ok(),
+            Some(Verdict::Bogus),
+            "alias.s.t. NSEC through the CNAME (question {round})"
+        );
+    }
+    assert_eq!(stats.secure.load(Ordering::Relaxed), secure);
+    assert_eq!(stats.insecure.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (ADR-098, ADR-184) — a signed CNAME into a zone that is unsigned but whose answers
+/// the validation library judges bogus (`parked.s.t.` to `www.u.t.`, whose server answers like a
+/// parked domain's) is insecure: served, without AD. The library's verdict on the whole answer is
+/// bogus; link by link, the CNAME validates and the target's zone is proven unsigned.
+#[tokio::test]
+async fn dns_011_offline_signed_cname_into_misjudged_unsigned_zone_is_insecure() {
+    let (v, g, _, stats, _dir) = setup(true).await;
+    let budget = Duration::from_secs(5);
+    warm_tld(&v, &g).await;
+    let secure = stats.secure.load(Ordering::Relaxed);
+    let r = v
+        .resolve(&g, question("parked.s.t", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Insecure, "parked.s.t. A");
+    assert_eq!(rcode(&r.bytes), telltale_proto::rcode::NOERROR);
+    assert_eq!(
+        answered(&r.bytes),
+        vec![
+            ("parked.s.t.".to_owned(), RecordType::CNAME),
+            ("www.u.t.".to_owned(), RecordType::A)
+        ],
+        "the CNAME, then the address"
+    );
+    assert!(!telltale_proto::Header::parse(&r.bytes).unwrap().flags.ad());
+    assert_eq!(stats.bogus.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.secure.load(Ordering::Relaxed), secure);
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4) — a wildcard's address replayed for an empty non-terminal
+/// (`ent.w.s.t.`, which exists because `x.ent.w.s.t.` does) stays bogus, with the NSEC that covers
+/// the name: its next name is below it, so the name exists and no wildcard answers it. Answered as
+/// the zone answers it, the same question is a secure NODATA.
+#[tokio::test]
+async fn dns_011_offline_wildcard_replayed_at_an_empty_non_terminal_stays_bogus() {
+    let budget = Duration::from_secs(5);
+    let z = Arc::new(zone());
+    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    let r = v
+        .resolve(&g, question("ent.w.s.t", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes), answered(&r.bytes).len()),
+        (Verdict::Secure, telltale_proto::rcode::NOERROR, 0),
+        "ent.w.s.t. A, as the zone answers it: NODATA"
+    );
+    z.tld
+        .tamper
+        .store(tampering::REPLAY_WILDCARD_AT_ENT, Ordering::Relaxed);
+    let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let secure = stats.secure.load(Ordering::Relaxed);
+    for round in 1..=2 {
+        let r = v
+            .resolve(&g, question("ent.w.s.t", rtype::A), budget, true, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            (r.verdict, r.ede),
+            (Verdict::Bogus, telltale_proto::ede::DNSSEC_BOGUS),
+            "the wildcard's address at an empty non-terminal (question {round})"
+        );
+    }
+    assert_eq!(stats.secure.load(Ordering::Relaxed), secure);
+    assert_eq!(stats.insecure.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4, RFC 4592; ADR-188) — wildcard answers with the zone's NSEC
+/// showing that the next closer name doesn't exist are secure, with AD: one label below the
+/// wildcard's parent (`any.w.s.t.`), two labels below it where the name between doesn't exist
+/// (`a.b.w.s.t.`), and a wildcard's CNAME two labels below it (`a.b.c.s.t.`, to `www.s.t.`).
+#[tokio::test]
+async fn dns_011_offline_wildcard_answers_with_their_proof_are_secure() {
+    use RecordType::{A, CNAME};
+    let (v, g, _, stats, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    for (name, owners) in [
+        ("any.w.s.t", vec![("any.w.s.t.", A)]),
+        ("a.b.w.s.t", vec![("a.b.w.s.t.", A)]),
+        ("a.b.c.s.t", vec![("a.b.c.s.t.", CNAME), ("www.s.t.", A)]),
+    ] {
+        let r = v
+            .resolve(
+                &g,
+                question(name, rtype::A),
+                Duration::from_secs(5),
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.verdict, Verdict::Secure, "{name} A");
+        assert_eq!(rcode(&r.bytes), telltale_proto::rcode::NOERROR, "{name} A");
+        let owners: Vec<(String, RecordType)> =
+            owners.into_iter().map(|(o, t)| (o.to_owned(), t)).collect();
+        assert_eq!(answered(&r.bytes), owners, "{name} A");
+        assert!(
+            telltale_proto::Header::parse(&r.bytes).unwrap().flags.ad(),
+            "AD: {name} A"
+        );
+    }
+    assert_eq!(stats.bogus.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4; ADR-188) — a wildcard's answer is authenticated only with an NSEC
+/// showing that the next closer name doesn't exist (the name cut to one label below the wildcard's
+/// parent). `a.own.w.s.t. A` answered from `*.w.s.t.` with the NSEC of `own.w.s.t.`, a name that
+/// exists between them, is bogus; answered as the zone answers it, it is a secure NXDOMAIN.
+#[tokio::test]
+async fn dns_011_offline_wildcard_answer_needs_its_next_closer_name_to_be_absent() {
+    let budget = Duration::from_secs(5);
+    let z = Arc::new(zone());
+    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    let r = v
+        .resolve(&g, question("a.own.w.s.t", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes)),
+        (Verdict::Secure, telltale_proto::rcode::NXDOMAIN),
+        "a.own.w.s.t. A, as the zone answers it"
+    );
+    z.tld
+        .tamper
+        .store(tampering::REPLAY_WILDCARD_BELOW_NAME, Ordering::Relaxed);
+    let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let secure = stats.secure.load(Ordering::Relaxed);
+    for round in 1..=2 {
+        let r = v
+            .resolve(&g, question("a.own.w.s.t", rtype::A), budget, true, false)
+            .await;
+        assert_eq!(
+            r.map(|r| (r.verdict, r.ede)).ok(),
+            Some((Verdict::Bogus, telltale_proto::ede::DNSSEC_BOGUS)),
+            "a.own.w.s.t. A from *.w.s.t. (question {round})"
+        );
+    }
+    assert_eq!(stats.secure.load(Ordering::Relaxed), secure);
+    assert_eq!(stats.insecure.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (RFC 4035 §3.1.3.4, §5.4) — a wildcard that exists without the type asked for
+/// gives a signed NODATA (the NSEC that shows no closer name exists, and the wildcard's own,
+/// without the type): secure when asked directly (`any.w.s.t. AAAA`), and behind a CNAME
+/// (`wild.s.t. AAAA`), where the denial is about the CNAME's target.
+#[tokio::test]
+async fn dns_011_offline_wildcard_nodata_is_validated() {
+    let (v, g, _, stats, _dir) = setup(true).await;
+    let budget = Duration::from_secs(5);
+    warm_tld(&v, &g).await;
+    for (name, owners) in [
+        ("any.w.s.t", vec![]),
+        (
+            "wild.s.t",
+            vec![("wild.s.t.".to_owned(), RecordType::CNAME)],
+        ),
+    ] {
+        let r = v
+            .resolve(&g, question(name, rtype::AAAA), budget, true, false)
+            .await
+            .unwrap();
+        assert_eq!(r.verdict, Verdict::Secure, "{name} AAAA");
+        assert_eq!(
+            rcode(&r.bytes),
+            telltale_proto::rcode::NOERROR,
+            "{name} AAAA"
+        );
+        assert_eq!(answered(&r.bytes), owners, "{name} AAAA");
+        let m = Message::from_vec(&r.bytes).unwrap();
+        assert!(m.metadata.authentic_data, "AD: {name} AAAA");
+        assert!(
+            m.authorities
+                .iter()
+                .any(|r| { r.name == n("*.w.s.t.") && r.record_type() == RecordType::NSEC }),
+            "the wildcard's NSEC: {name} AAAA"
+        );
+    }
+    assert_eq!(stats.bogus.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4, RFC 5155 §8.8; ADR-188) — the wildcard rule of zones signed with
+/// NSEC is left to NSEC3 only beside a verified NSEC3 record of the zone that signed the answer: an
+/// NSEC3 record that isn't verified, or that is another zone's, doesn't switch the rule off. Each of
+/// these answers stays bogus (EDE 6) over two questions, and nothing is counted secure or insecure:
+/// - `a.own.w.s.t. A` from `*.w.s.t.` with `own.w.s.t.`'s NSEC, and an unsigned NSEC3 record owned
+///   in `s.t.` beside it;
+/// - `own.w.s.t. A` from `*.w.s.t.` with only an unsigned NSEC3 record of the unsigned zone `u.`;
+/// - the same with only `t.`'s signed NSEC3 record covering the name;
+/// - `a.b.c.s.t. A` from the wildcard CNAME `*.c.s.t.` with only that NSEC3 record of `u.`.
+#[tokio::test]
+async fn dns_011_offline_wildcard_rule_stays_on_beside_an_unverified_or_other_zone_nsec3() {
+    let budget = Duration::from_secs(5);
+    let z = Arc::new(zone());
+    let bogus = Some((Verdict::Bogus, telltale_proto::ede::DNSSEC_BOGUS));
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for (tamper, name, what) in [
+        (
+            tampering::BESIDE_UNSIGNED_NSEC3,
+            "a.own.w.s.t",
+            "an unsigned NSEC3 of s.t. beside the NSEC",
+        ),
+        (
+            tampering::UNSIGNED_ZONE_NSEC3_PROOF,
+            "own.w.s.t",
+            "only an unsigned NSEC3 of u.",
+        ),
+        (
+            tampering::OTHER_ZONE_NSEC3_PROOF,
+            "own.w.s.t",
+            "only a signed NSEC3 of t.",
+        ),
+        (
+            tampering::UNSIGNED_ZONE_NSEC3_PROOF,
+            "a.b.c.s.t",
+            "a wildcard CNAME with only an unsigned NSEC3 of u.",
+        ),
+    ] {
+        z.tld.tamper.store(tamper, Ordering::Relaxed);
+        let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+        warm_tld(&v, &g).await;
+        let secure = stats.secure.load(Ordering::Relaxed);
+        let mut verdicts = Vec::new();
+        for _ in 1..=2 {
+            let r = v
+                .resolve(&g, question(name, rtype::A), budget, true, false)
+                .await;
+            verdicts.push(r.map(|r| (r.verdict, r.ede)).ok());
+        }
+        got.push((
+            what,
+            verdicts,
+            stats.secure.load(Ordering::Relaxed) - secure,
+            stats.insecure.load(Ordering::Relaxed),
+        ));
+        want.push((what, vec![bogus; 2], 0, 0));
+    }
+    z.tld.tamper.store(tampering::NONE, Ordering::Relaxed);
+    assert_eq!(got, want);
+}
+
+/// REQ: DNS-011 (RFC 5155 §7.2.6, §8.8; ADR-188) — wildcard answers in a zone signed with NSEC3
+/// (`z3.s.t.`), with the zone's signed NSEC3 record covering the next closer name, are secure, with
+/// AD: one label below the wildcard's parent (`a.z3.s.t.`) and two (`a.b.z3.s.t.`).
+#[tokio::test]
+async fn dns_011_offline_wildcard_answers_in_an_nsec3_zone_are_secure() {
+    let (v, g, _, stats, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for name in ["a.z3.s.t", "a.b.z3.s.t"] {
+        let r = v
+            .resolve(
+                &g,
+                question(name, rtype::A),
+                Duration::from_secs(5),
+                true,
+                false,
+            )
+            .await;
+        got.push((
+            name,
+            r.ok().map(|r| {
+                let nsec3 = Message::from_vec(&r.bytes).is_ok_and(|msg| {
+                    msg.authorities.iter().any(|rec| {
+                        rec.record_type() == RecordType::NSEC3
+                            && rec.name.base_name() == n("z3.s.t.")
+                    })
+                });
+                (r.verdict, served(&r.bytes), nsec3)
+            }),
+        ));
+        let records = vec![(format!("{name}."), RecordType::A)];
+        want.push((
+            name,
+            Some((
+                Verdict::Secure,
+                Some((telltale_proto::rcode::NOERROR, true, records)),
+                true,
+            )),
+        ));
+    }
+    assert_eq!(got, want);
+    assert_eq!(stats.bogus.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4, RFC 6840 §5.4; ADR-188) — a wildcard's answer whose record set has
+/// a second signature that isn't verified (by another key of the zone, as during a key rollover) is
+/// judged by the signature that is: with its NSEC it is indeterminate (served without AD), as an
+/// answer with such a signature is, and not bogus. One label below the wildcard's parent
+/// (`any.w.s.t.`) and two (`a.b.w.s.t.`).
+#[tokio::test]
+async fn dns_011_offline_wildcard_answer_with_a_second_signature_is_indeterminate() {
+    let z = Arc::new(zone());
+    z.tld
+        .tamper
+        .store(tampering::SECOND_SIGNATURE, Ordering::Relaxed);
+    let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for name in ["any.w.s.t", "a.b.w.s.t"] {
+        let r = v
+            .resolve(
+                &g,
+                question(name, rtype::A),
+                Duration::from_secs(5),
+                true,
+                false,
+            )
+            .await;
+        got.push((name, r.ok().map(|r| (r.verdict, served(&r.bytes)))));
+        let records = vec![(format!("{name}."), RecordType::A)];
+        want.push((
+            name,
+            Some((
+                Verdict::Indeterminate,
+                Some((telltale_proto::rcode::NOERROR, false, records)),
+            )),
+        ));
+    }
+    assert_eq!(got, want);
+    assert_eq!(stats.bogus.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4; ADR-188) — wildcard answers with their proof are secure without
+/// link-by-link validation: with every slot of it taken, `any.w.s.t. A`, `a.b.w.s.t. A` and
+/// `a.b.c.s.t. A` (from the wildcard CNAME `*.c.s.t.`, two labels below its parent, to `www.s.t.`)
+/// are secure, with AD. A wildcard CNAME at the question name that is the answer's only record made
+/// from a wildcard is checked as the CNAME's own record set.
+#[tokio::test]
+async fn dns_011_offline_wildcard_answers_with_their_proof_need_no_link_by_link_validation() {
+    use RecordType::{A, CNAME};
+    let (v, g, _, stats, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    let held = v.hold_link_slots(0);
+    assert!(!held.is_empty(), "link-by-link slots held");
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for (name, owners) in [
+        ("any.w.s.t", vec![("any.w.s.t.", A)]),
+        ("a.b.w.s.t", vec![("a.b.w.s.t.", A)]),
+        ("a.b.c.s.t", vec![("a.b.c.s.t.", CNAME), ("www.s.t.", A)]),
+    ] {
+        let r = v
+            .resolve(
+                &g,
+                question(name, rtype::A),
+                Duration::from_secs(5),
+                true,
+                false,
+            )
+            .await;
+        got.push((name, r.ok().map(|r| (r.verdict, served(&r.bytes)))));
+        let records: Vec<(String, RecordType)> = owners
+            .into_iter()
+            .map(|(owner, kind)| (owner.to_owned(), kind))
+            .collect();
+        want.push((
+            name,
+            Some((
+                Verdict::Secure,
+                Some((telltale_proto::rcode::NOERROR, true, records)),
+            )),
+        ));
+    }
+    drop(held);
+    assert_eq!(got, want);
+    assert_eq!(stats.bogus.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4; ADR-188) — a wildcard CNAME at the question name with its proof
+/// stands for itself only: when another record of the answer is made from a wildcard, each needs
+/// its own proof. `a.b.k.s.t. A` (from the wildcard CNAME `*.k.s.t.`, to `a.own.w.s.t.`) with the
+/// target answered from `*.w.s.t.` and the NSEC of `own.w.s.t.`, a name that exists between them,
+/// stays bogus (EDE 6) over two questions, with nothing counted secure or insecure. Answered as the
+/// zone answers it, it is a secure NXDOMAIN behind the CNAME.
+#[tokio::test]
+async fn dns_011_offline_wildcard_cname_to_another_wildcard_record_needs_each_proof() {
+    let budget = Duration::from_secs(5);
+    let z = Arc::new(zone());
+    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let r = v
+        .resolve(&g, question("a.b.k.s.t", rtype::A), budget, true, false)
+        .await;
+    assert_eq!(
+        r.ok().map(|r| (r.verdict, served(&r.bytes))),
+        Some((
+            Verdict::Secure,
+            Some((
+                telltale_proto::rcode::NXDOMAIN,
+                true,
+                vec![("a.b.k.s.t.".to_owned(), RecordType::CNAME)]
+            ))
+        )),
+        "a.b.k.s.t. A, as the zone answers it"
+    );
+    z.tld
+        .tamper
+        .store(tampering::REPLAY_WILDCARD_BELOW_NAME, Ordering::Relaxed);
+    let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let secure = stats.secure.load(Ordering::Relaxed);
+    let mut verdicts = Vec::new();
+    for _ in 1..=2 {
+        let r = v
+            .resolve(&g, question("a.b.k.s.t", rtype::A), budget, true, false)
+            .await;
+        verdicts.push(r.map(|r| (r.verdict, r.ede)).ok());
+    }
+    z.tld.tamper.store(tampering::NONE, Ordering::Relaxed);
+    let bogus = Some((Verdict::Bogus, telltale_proto::ede::DNSSEC_BOGUS));
+    assert_eq!(
+        (
+            verdicts,
+            stats.secure.load(Ordering::Relaxed) - secure,
+            stats.insecure.load(Ordering::Relaxed)
+        ),
+        (vec![bogus; 2], 0, 0),
+        "a.b.k.s.t. A to a wildcard's address without its proof"
+    );
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4; ADR-188) — a wildcard CNAME at the question name is checked as its
+/// own record set only when the chain in the answer ends in a record of the question's type.
+/// `a.b.c.s.t. A` answered with the wildcard's CNAME to `www.s.t.`, its signature and NSEC, without
+/// `www.s.t.`'s address, is validated link by link: secure, with AD, and the address is in the
+/// answer, from the target's own question. With every slot of link-by-link validation taken, it
+/// stays bogus (EDE 6).
+#[tokio::test]
+async fn dns_011_offline_wildcard_cname_chain_that_stops_short_is_validated_link_by_link() {
+    use RecordType::{A, CNAME};
+    let budget = Duration::from_secs(5);
+    let z = Arc::new(zone());
+    z.tld
+        .tamper
+        .store(tampering::CHAIN_CUT_SHORT, Ordering::Relaxed);
+    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let r = v
+        .resolve(&g, question("a.b.c.s.t", rtype::A), budget, true, false)
+        .await;
+    let walked = r.ok().map(|r| (r.verdict, served(&r.bytes)));
+    let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    warm_tld(&v, &g).await;
+    let secure = stats.secure.load(Ordering::Relaxed);
+    let held = v.hold_link_slots(0);
+    assert!(!held.is_empty(), "link-by-link slots held");
+    let r = v
+        .resolve(&g, question("a.b.c.s.t", rtype::A), budget, true, false)
+        .await;
+    drop(held);
+    let without_a_walk = (
+        r.map(|r| (r.verdict, r.ede)).ok(),
+        stats.secure.load(Ordering::Relaxed) - secure,
+    );
+    z.tld.tamper.store(tampering::NONE, Ordering::Relaxed);
+    let records = vec![("a.b.c.s.t.".to_owned(), CNAME), ("www.s.t.".to_owned(), A)];
+    assert_eq!(
+        (walked, without_a_walk),
+        (
+            Some((
+                Verdict::Secure,
+                Some((telltale_proto::rcode::NOERROR, true, records))
+            )),
+            (Some((Verdict::Bogus, telltale_proto::ede::DNSSEC_BOGUS)), 0),
+        ),
+        "a.b.c.s.t. A, the chain stopping after the CNAME"
+    );
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4, §5.4; ADR-188) — a NODATA behind a wildcard CNAME at the question
+/// name, two labels below the wildcard's parent, is validated link by link: `a.b.c.s.t. AAAA` (from
+/// `*.c.s.t.`, to `www.s.t.`, which has no AAAA) is a secure NODATA with AD, the CNAME in the answer
+/// and `www.s.t.`'s NSEC in the authority section. With every slot of link-by-link validation taken,
+/// it stays bogus (EDE 6).
+#[tokio::test]
+async fn dns_011_offline_nodata_behind_a_wildcard_cname_is_checked_through_the_walk() {
+    let budget = Duration::from_secs(5);
+    let (v, g, _, _, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    let r = v
+        .resolve(&g, question("a.b.c.s.t", rtype::AAAA), budget, true, false)
+        .await;
+    let walked = r.ok().map(|r| {
+        let denial = Message::from_vec(&r.bytes).is_ok_and(|msg| {
+            msg.authorities
+                .iter()
+                .any(|rec| rec.name == n("www.s.t.") && rec.record_type() == RecordType::NSEC)
+        });
+        (r.verdict, served(&r.bytes), denial)
+    });
+    let (v, g, _, stats, _dir) = setup(true).await;
+    warm_tld(&v, &g).await;
+    let secure = stats.secure.load(Ordering::Relaxed);
+    let held = v.hold_link_slots(0);
+    assert!(!held.is_empty(), "link-by-link slots held");
+    let r = v
+        .resolve(&g, question("a.b.c.s.t", rtype::AAAA), budget, true, false)
+        .await;
+    drop(held);
+    let without_a_walk = (
+        r.map(|r| (r.verdict, r.ede)).ok(),
+        stats.secure.load(Ordering::Relaxed) - secure,
+    );
+    let records = vec![("a.b.c.s.t.".to_owned(), RecordType::CNAME)];
+    assert_eq!(
+        (walked, without_a_walk),
+        (
+            Some((
+                Verdict::Secure,
+                Some((telltale_proto::rcode::NOERROR, true, records)),
+                true
+            )),
+            (Some((Verdict::Bogus, telltale_proto::ede::DNSSEC_BOGUS)), 0),
+        ),
+        "a.b.c.s.t. AAAA, a NODATA behind the wildcard CNAME"
+    );
 }
 
 /// REQ: DNS-011 (ADR-184) — a zone proven unsigned is remembered per upstream group, and no

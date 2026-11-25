@@ -491,26 +491,32 @@ telltale cluster join tt_join_…</pre>
                       {#if n.thisNode}—{:else}{n.link}{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
                     </div>
                   </td>
-                  <td>
-                    version {num(n.configSeq)}
-                    {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
-                    {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
-                    <div class="small {n.configLag ? 'warn-text' : 'muted'}">
-                      {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
-                    </div>
-                  </td>
-                  <td>
-                    <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
-                    <div class="muted small">
-                      {rate(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
-                    </div>
-                    {#if n.cacheEntries != null}
-                      <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
-                    {/if}
-                  </td>
+                  <!-- REQ: CLU-008 (ADR-056) — a witness only votes: no configuration, no DNS. -->
+                  {#if n.witness}
+                    <td class="muted">–</td>
+                    <td class="muted">votes only</td>
+                  {:else}
+                    <td>
+                      version {num(n.configSeq)}
+                      {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
+                      {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
+                      <div class="small {n.configLag ? 'warn-text' : 'muted'}">
+                        {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
+                      </div>
+                    </td>
+                    <td>
+                      <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
+                      <div class="muted small">
+                        {rate(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
+                      </div>
+                      {#if n.cacheEntries != null}
+                        <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
+                      {/if}
+                    </td>
+                  {/if}
                   <td class="small">{n.version}</td>
                   <td class="small">
-                    {duration(n.uptimeSeconds)}
+                    {#if n.witness}<span class="muted">–</span>{:else}{duration(n.uptimeSeconds)}{/if}
                     {#if n.restarts}<div class="warn-text">{n.restarts} restart{n.restarts === 1 ? '' : 's'}</div>{/if}
                     {#if n.certExpiresAt}<div class="muted">cert until {logDate(n.certExpiresAt)}</div>{/if}
                   </td>

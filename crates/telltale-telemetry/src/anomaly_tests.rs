@@ -679,6 +679,493 @@ fn obs_038_replay_is_deterministic_and_history_is_kept() {
     assert!(c.findings().iter().any(|f| f.muted_by.is_some()));
 }
 
+/// REQ: OBS-009 (ADR-186) — a sweep like the one in GitHub issue #90: `client` looks up the
+/// reverse names of 10.0.20.1 to 10.0.20.254 in the minute that starts at `t`; 247 of them are
+/// answered NXDOMAIN, the last 7 NOERROR.
+fn private_sweep(e: &mut Engine, client: [u8; 16], t: u64) {
+    for i in 1..=254u64 {
+        let rc = if i <= 247 { 3 } else { 0 };
+        e.observe_answer(
+            t + i % 60,
+            client,
+            &wire(&format!("{i}.20.0.10.in-addr.arpa")),
+            Some(rc),
+        );
+    }
+}
+
+/// 40 NXDOMAIN of 50 queries for ordinary names (`q{i}.bad.example`) from `client` in the minute
+/// that starts at `t`.
+fn bad_names(e: &mut Engine, client: [u8; 16], t: u64) {
+    for i in 0..50u64 {
+        let rc = if i < 40 { 3 } else { 0 };
+        e.observe_answer(
+            t + i % 60,
+            client,
+            &wire(&format!("q{i}.bad.example")),
+            Some(rc),
+        );
+    }
+}
+
+/// Closes the hour `t` is in (a query from another device an hour later).
+fn close(e: &mut Engine, t: u64) {
+    e.observe_answer(t + 3600, ip(250), &wire("x.example"), Some(0));
+}
+
+/// The findings' kinds, oldest first.
+fn kinds(e: &Engine) -> Vec<&'static str> {
+    e.findings().iter().map(|f| f.kind.label()).collect()
+}
+
+/// The first finding of the kind labelled `label`.
+fn first<'a>(e: &'a Engine, label: &str) -> &'a Finding {
+    e.findings()
+        .iter()
+        .find(|f| f.kind.label() == label)
+        .unwrap_or_else(|| panic!("no {label} finding: {:#?}", e.findings()))
+}
+
+/// REQ: OBS-009 (ADR-186; GitHub issue #90) — the reporter's minute: 254 reverse lookups of
+/// private addresses (247 NXDOMAIN) and 7 ordinary queries are one `reverse_sweep`, with its
+/// evidence, and no NXDOMAIN storm.
+#[test]
+fn obs_009_a_sweep_of_254_private_reverse_names_is_a_reverse_sweep_not_a_storm() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    private_sweep(&mut e, ip(TV), t);
+    for i in 0..7u64 {
+        e.observe_answer(
+            t + 50 + i,
+            ip(TV),
+            &wire(&format!("app{i}.vendor.example")),
+            Some(0),
+        );
+    }
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["reverse_sweep"], "{:#?}", e.findings());
+    let f = &e.findings()[0];
+    assert_eq!(
+        (
+            f.client,
+            f.observed,
+            f.baseline,
+            f.spread,
+            f.threshold,
+            f.window_start_s,
+            f.window_s,
+            f.domain.as_deref()
+        ),
+        (ip(TV), 247.0, 254.0, 0.0, 30.0, t, 60, None)
+    );
+    assert!(
+        f.detail.contains("97% of 254")
+            && f.detail.contains("different names")
+            && f.detail.contains("1.20.0.10.in-addr.arpa"),
+        "{}",
+        f.detail
+    );
+}
+
+/// REQ: OBS-009 (ADR-186) — a storm of other names is judged as before.
+#[test]
+fn obs_009_a_storm_of_other_names_is_still_a_storm() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    bad_names(&mut e, ip(1), t);
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["nxdomain_storm"], "{:#?}", e.findings());
+    let f = &e.findings()[0];
+    assert_eq!((f.observed, f.baseline), (40.0, 50.0));
+    assert!(
+        f.detail.contains("80% of 50") && f.detail.contains("q0.bad.example"),
+        "{}",
+        f.detail
+    );
+    assert!(
+        f.detail.contains("(80% of 50 queries), e.g."),
+        "no sweep, nothing left out: {}",
+        f.detail
+    );
+}
+
+/// REQ: OBS-009 (ADR-186) — a storm can't hide in a sweep: in a sweep minute the sweep's lookups
+/// leave both of the storm's numbers, so the storm is judged on its own (40 of 50, "besides a
+/// sweep's" in its detail) and the sweep is reported beside it.
+#[test]
+fn obs_009_a_storm_padded_with_a_private_reverse_sweep_is_still_a_storm() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    bad_names(&mut e, ip(1), t);
+    private_sweep(&mut e, ip(1), t);
+    close(&mut e, t);
+    assert_eq!(
+        kinds(&e),
+        ["nxdomain_storm", "reverse_sweep"],
+        "{:#?}",
+        e.findings()
+    );
+    let storm = first(&e, "nxdomain_storm");
+    assert_eq!((storm.observed, storm.baseline), (40.0, 50.0));
+    assert!(
+        storm.detail.contains("q0.bad.example") && !storm.detail.contains("in-addr.arpa"),
+        "the storm's samples are its own names: {}",
+        storm.detail
+    );
+    assert!(
+        storm
+            .detail
+            .contains("(80% of 50 queries besides a sweep's)"),
+        "the storm's total says it leaves the sweep out: {}",
+        storm.detail
+    );
+    let sweep = first(&e, "reverse_sweep");
+    assert_eq!((sweep.observed, sweep.baseline), (247.0, 254.0));
+}
+
+/// REQ: OBS-009 (ADR-186) — an app retrying one private reverse name is not a sweep (one name,
+/// not many): it stays a storm, with the name as its sample.
+#[test]
+fn obs_009_a_loop_on_one_private_reverse_name_stays_a_storm() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    for i in 0..60u64 {
+        e.observe_answer(t + i, ip(1), &wire("5.0.0.10.in-addr.arpa"), Some(3));
+    }
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["nxdomain_storm"], "{:#?}", e.findings());
+    let f = &e.findings()[0];
+    assert_eq!((f.observed, f.baseline), (60.0, 60.0));
+    assert!(f.detail.contains("5.0.0.10.in-addr.arpa"), "{}", f.detail);
+}
+
+/// REQ: OBS-009 (ADR-186) — the sweep's name map counts the names answered NXDOMAIN: an app
+/// retrying one private reverse name in the same minute as 20 lookups of neighbours that resolve
+/// (a NAS naming its neighbours by their PTR records) is a loop on one name, so it stays a storm.
+#[test]
+fn obs_009_a_loop_on_one_private_name_beside_resolved_neighbours_stays_a_storm() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    for i in 0..30u64 {
+        e.observe_answer(t + i, ip(1), &wire("5.0.0.10.in-addr.arpa"), Some(3));
+    }
+    for i in 1..=20u64 {
+        e.observe_answer(
+            t + 30 + i,
+            ip(1),
+            &wire(&format!("{i}.1.168.192.in-addr.arpa")),
+            Some(0),
+        );
+    }
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["nxdomain_storm"], "{:#?}", e.findings());
+    let f = &e.findings()[0];
+    assert_eq!((f.observed, f.baseline), (30.0, 50.0));
+    assert!(f.detail.contains("5.0.0.10.in-addr.arpa"), "{}", f.detail);
+}
+
+/// REQ: OBS-009 (ADR-186) — reverse names of a public range are not private: a sweep of them
+/// stays a storm.
+#[test]
+fn obs_009_a_sweep_of_a_public_range_stays_a_storm() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    for i in 1..=254u64 {
+        e.observe_answer(
+            t + i % 60,
+            ip(1),
+            &wire(&format!("{i}.113.0.203.in-addr.arpa")),
+            Some(3),
+        );
+    }
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["nxdomain_storm"], "{:#?}", e.findings());
+    assert_eq!(e.findings()[0].observed, 254.0);
+}
+
+/// REQ: OBS-009 (ADR-186) — a sweep is judged by the storm's bar on its own lookups: 35 NXDOMAIN
+/// of 40 names is one; 25 (under 30 a minute) is nothing, as it was before.
+#[test]
+fn obs_009_a_partial_sweep_is_a_sweep_only_over_the_bar() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    for i in 1..=40u64 {
+        let rc = if i <= 35 { 3 } else { 0 };
+        e.observe_answer(
+            t + i,
+            ip(1),
+            &wire(&format!("{i}.20.0.10.in-addr.arpa")),
+            Some(rc),
+        );
+    }
+    for i in 1..=25u64 {
+        e.observe_answer(
+            t + i,
+            ip(2),
+            &wire(&format!("{i}.30.0.10.in-addr.arpa")),
+            Some(3),
+        );
+    }
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["reverse_sweep"], "{:#?}", e.findings());
+    let f = &e.findings()[0];
+    assert_eq!((f.client, f.observed, f.baseline), (ip(1), 35.0, 40.0));
+}
+
+/// REQ: OBS-009 (ADR-186) — reverse names of unique local IPv6 addresses (`fd00::/8`) make a
+/// sweep too.
+#[test]
+fn obs_009_private_ipv6_reverse_names_make_a_sweep() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    for i in 0..40u64 {
+        // 32 nibbles, least significant first: two that differ, 28 zeros, then `d.f`.
+        let name = format!("{:x}.{:x}.{}d.f.ip6.arpa", i & 0xf, i >> 4, "0.".repeat(28));
+        e.observe_answer(t + i, ip(1), &wire(&name), Some(3));
+    }
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["reverse_sweep"], "{:#?}", e.findings());
+    assert_eq!(
+        (e.findings()[0].observed, e.findings()[0].baseline),
+        (40.0, 40.0)
+    );
+}
+
+/// REQ: OBS-009 (ADR-186) — once an hour: a second sweep in the hour isn't reported, and it
+/// doesn't turn into a storm either (the carve-out depends only on the minute being a sweep).
+#[test]
+fn obs_009_a_second_sweep_in_the_hour_is_neither_reported_nor_a_storm() {
+    let mut e = Engine::new(Settings::default());
+    let h = DAY0 + 3600;
+    private_sweep(&mut e, ip(TV), h + 14 * 60);
+    private_sweep(&mut e, ip(TV), h + 44 * 60);
+    close(&mut e, h);
+    assert_eq!(kinds(&e), ["reverse_sweep"], "{:#?}", e.findings());
+    assert_eq!(e.findings()[0].window_start_s, h + 14 * 60);
+}
+
+/// REQ: OBS-009 (ADR-186) — the two kinds are reported on their own clocks: a sweep at :14 and a
+/// storm of other names at :30 in the same hour are each reported.
+#[test]
+fn obs_009_a_sweep_and_a_storm_in_one_hour_are_each_reported() {
+    let mut e = Engine::new(Settings::default());
+    let h = DAY0 + 3600;
+    private_sweep(&mut e, ip(TV), h + 14 * 60);
+    bad_names(&mut e, ip(TV), h + 30 * 60);
+    close(&mut e, h);
+    assert_eq!(
+        kinds(&e),
+        ["reverse_sweep", "nxdomain_storm"],
+        "{:#?}",
+        e.findings()
+    );
+    assert_eq!(first(&e, "nxdomain_storm").observed, 40.0);
+}
+
+/// REQ: OBS-009, OBS-013 (ADR-186) — the same queries give the same engine and byte-identical
+/// findings, sweeps included.
+#[test]
+fn obs_009_sweep_replay_is_deterministic() {
+    let build = || {
+        let mut e = Engine::new(Settings::default());
+        let h = DAY0 + 3600;
+        private_sweep(&mut e, ip(TV), h + 14 * 60);
+        bad_names(&mut e, ip(TV), h + 30 * 60);
+        private_sweep(&mut e, ip(NAS), h + 30 * 60);
+        bad_names(&mut e, ip(NAS), h + 30 * 60);
+        for i in 0..60u64 {
+            e.observe_answer(
+                h + 3600 + 120 + i,
+                ip(PLUG),
+                &wire("5.0.0.10.in-addr.arpa"),
+                Some(3),
+            );
+        }
+        close(&mut e, h + 3600);
+        e
+    };
+    let (a, b) = (build(), build());
+    assert!(a.findings().len() >= 3, "{:#?}", a.findings());
+    assert_eq!(a, b);
+    assert_eq!(
+        serde_json::to_string(a.findings()).unwrap(),
+        serde_json::to_string(b.findings()).unwrap()
+    );
+}
+
+/// REQ: OBS-013, OBS-014 (ADR-186) — state saved by a version without the sweep counters loads:
+/// the old fields come back as they were, and the engine keeps running.
+#[test]
+fn obs_013_state_saved_before_the_split_still_loads() {
+    let fresh = run(true);
+    let mut v = serde_json::to_value(&fresh).unwrap();
+    for pair in v["clients"].as_array_mut().unwrap() {
+        let c = pair[1].as_object_mut().unwrap();
+        for k in [
+            "rev_total",
+            "rev_nx",
+            "rev_names",
+            "rev_samples",
+            "sweep_hour",
+        ] {
+            c.remove(k);
+        }
+    }
+    let mut e: Engine = serde_json::from_value(v).unwrap();
+    e.repair();
+    assert_eq!(e, fresh, "the old fields load as they were");
+    let n = e.clients();
+    let t = DAY0 + 15 * 86_400 + 600;
+    private_sweep(&mut e, ip(TV), t);
+    bad_names(&mut e, ip(TV), t + 60);
+    close(&mut e, t);
+    assert!(e.clients() >= n);
+    assert!(e.findings().len() > fresh.findings().len());
+}
+
+/// REQ: OBS-013 (ADR-186) — a sweep of a whole /16 (65,536 names, 256 a minute) touches the same
+/// 256 bits: the device's state stays within its budget, with at most 5 sample names.
+#[test]
+fn obs_013_a_sweep_of_a_whole_16_keeps_the_state_bounded() {
+    let mut e = Engine::new(Settings::default());
+    let start = DAY0 + 600;
+    for b in 0..256u64 {
+        let t = start + b * 60;
+        for a in 0..256u64 {
+            e.observe_answer(
+                t + a % 60,
+                ip(NAS),
+                &wire(&format!("{a}.{b}.168.192.in-addr.arpa")),
+                Some(3),
+            );
+        }
+    }
+    close(&mut e, start + 255 * 60);
+    let bytes = e.client_bytes(ip(NAS)).unwrap();
+    assert!(bytes <= 4096 + RHYTHM_BYTES, "{bytes} bytes");
+    let v = serde_json::to_value(&e).unwrap();
+    let key = serde_json::to_value(ip(NAS)).unwrap();
+    let c = &v["clients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p[0] == key)
+        .unwrap()[1];
+    let n = |k: &str| c[k].as_array().map_or(0, Vec::len);
+    assert!(n("rev_samples") <= 5 && n("nx_samples") <= 5, "{c}");
+}
+
+/// Mutes by kind label (so they build on any version): `(name, device, labels)`.
+fn mutes_by_label(rules: &[(&str, [u8; 16], &[&str])]) -> MuteTable {
+    let mut m = MuteTable::default();
+    for (name, dev, labels) in rules {
+        let kinds: Vec<Kind> = Kind::ALL
+            .iter()
+            .copied()
+            .filter(|k| labels.contains(&k.label()))
+            .collect();
+        m.add(name, [(*dev, 128)], &kinds, None);
+    }
+    m
+}
+
+/// REQ: OBS-038 (ADR-186) — a mute of `reverse_sweep` mutes the device's sweeps and nothing else:
+/// a storm of other names from it still counts.
+#[test]
+fn obs_038_muting_reverse_sweep_keeps_nxdomain_storm_live() {
+    let mut e = Engine::new(Settings::default());
+    e.set_mutes(mutes_by_label(&[(
+        "lg-tv-reverse-sweep",
+        v4(192, 168, 1, 1),
+        &["reverse_sweep"],
+    )]));
+    let h = DAY0 + 600;
+    private_sweep(&mut e, ip(1), h);
+    storm(&mut e, 1, h + 3600);
+    close(&mut e, h + 3600);
+    let sweep = first(&e, "reverse_sweep");
+    assert_eq!(sweep.muted_by.as_deref(), Some("lg-tv-reverse-sweep"));
+    let storm = first(&e, "nxdomain_storm");
+    assert_eq!(storm.muted_by, None, "{storm:?}");
+    assert_eq!(
+        serde_json::to_value(&e.total).unwrap(),
+        serde_json::json!({"nxdomain_storm": 1}),
+        "the storm counts; the sweep doesn't"
+    );
+    assert_eq!(
+        serde_json::to_value(&e.total_muted).unwrap(),
+        serde_json::json!({"reverse_sweep": 1})
+    );
+}
+
+/// REQ: OBS-038 (ADR-186) — a mute that lists `nxdomain_storm` keeps meaning exactly that: it
+/// mutes the device's storms, not its sweeps. A sweep it would have covered counts, and names the
+/// mute (`storm_mute`) so the page can point it out; a sweep no such mute covers, or one a mute
+/// of its own kind matched, names nothing.
+#[test]
+fn obs_038_an_nxdomain_storm_mute_leaves_a_sweep_counted_and_names_itself_on_it() {
+    let mut e = Engine::new(Settings::default());
+    e.set_mutes(mutes_by_label(&[
+        ("lg-tv-ptr-sweep", v4(192, 168, 1, 1), &["nxdomain_storm"]),
+        (
+            "nas-both",
+            v4(192, 168, 1, 3),
+            &["nxdomain_storm", "reverse_sweep"],
+        ),
+    ]));
+    let h = DAY0 + 600;
+    private_sweep(&mut e, ip(1), h);
+    private_sweep(&mut e, ip(2), h);
+    private_sweep(&mut e, ip(3), h);
+    storm(&mut e, 1, h + 3600);
+    close(&mut e, h + 3600);
+    let of = |dev: u8, label: &str| {
+        e.findings()
+            .iter()
+            .find(|f| f.client == ip(dev) && f.kind.label() == label)
+            .unwrap_or_else(|| panic!("no {label} from {dev}: {:#?}", e.findings()))
+    };
+    let json = |f: &Finding| serde_json::to_value(f).unwrap();
+    let sweep = of(1, "reverse_sweep");
+    assert_eq!(sweep.muted_by, None, "a storm mute doesn't mute a sweep");
+    assert_eq!(json(sweep)["storm_mute"], "lg-tv-ptr-sweep");
+    let storm = of(1, "nxdomain_storm");
+    assert_eq!(storm.muted_by.as_deref(), Some("lg-tv-ptr-sweep"));
+    assert_eq!(json(storm).get("storm_mute"), None, "only a sweep names it");
+    assert_eq!(json(of(2, "reverse_sweep")).get("storm_mute"), None);
+    let both = of(3, "reverse_sweep");
+    assert_eq!(both.muted_by.as_deref(), Some("nas-both"));
+    assert_eq!(json(both).get("storm_mute"), None);
+    assert_eq!(
+        serde_json::to_value(&e.total).unwrap(),
+        serde_json::json!({"reverse_sweep": 2})
+    );
+    assert_eq!(
+        serde_json::to_value(&e.total_muted).unwrap(),
+        serde_json::json!({"nxdomain_storm": 1, "reverse_sweep": 1})
+    );
+}
+
+/// REQ: OBS-038 (ADR-186) — every kind has a bit of its own in the mute table: a mute of one kind
+/// matches that kind and no other.
+#[test]
+fn obs_038_every_kind_is_muted_by_itself_alone() {
+    let dev = v4(192, 168, 1, 1);
+    for k in Kind::ALL {
+        let mut m = MuteTable::default();
+        m.add("only", [(dev, 128)], &[k], None);
+        for other in Kind::ALL {
+            assert_eq!(
+                m.matching(dev, other, 0).is_some(),
+                other == k,
+                "a mute of {} for {}",
+                k.label(),
+                other.label()
+            );
+        }
+    }
+}
+
 /// A wire name from raw labels (each at most 63 bytes).
 fn wire_of(labels: &[Vec<u8>]) -> Vec<u8> {
     let mut w = Vec::new();
@@ -848,7 +1335,8 @@ fn odd_label(rng: &mut Rng, len: usize) -> Vec<u8> {
 }
 
 /// A wire name for the property test: labels of 0 to 63 bytes (0 ends the name), at most 255
-/// bytes in all; sometimes bytes after the root, or bytes that aren't a name at all.
+/// bytes in all; sometimes under a private reverse zone, bytes after the root, or bytes that
+/// aren't a name at all.
 fn odd_wire(rng: &mut Rng) -> Vec<u8> {
     if rng.below(16) == 0 {
         let n = usize::try_from(rng.below(300)).unwrap();
@@ -865,6 +1353,16 @@ fn odd_wire(rng: &mut Rng) -> Vec<u8> {
         w.push(u8::try_from(len).unwrap());
         w.extend(odd_label(rng, len));
     }
+    // REQ: OBS-009 (ADR-186) — under `168.192.in-addr.arpa` or `d.f.ip6.arpa` now and then, so
+    // the sweep's samples see such names too.
+    let zone: &[u8] = match rng.below(8) {
+        0 => b"\x03168\x03192\x07in-addr\x04arpa",
+        1 => b"\x01d\x01f\x03ip6\x04arpa",
+        _ => b"",
+    };
+    if w.len() + zone.len() < 255 {
+        w.extend_from_slice(zone);
+    }
     w.push(0);
     if rng.below(16) == 0 {
         w.extend(odd_label(rng, 8));
@@ -873,9 +1371,10 @@ fn odd_wire(rng: &mut Rng) -> Vec<u8> {
 }
 
 /// REQ: OBS-009 — the engine takes names with any bytes: 20 000 generated queries (names of
-/// mostly non-ASCII and non-UTF-8 bytes, raw bytes, known and new devices, every answer kind,
-/// times across minutes, an hour and a day, late events and a long gap) leave every NXDOMAIN
-/// sample within [`MAX_DOMAIN`] bytes and every domain text within [`MAX_DOMAIN`] characters.
+/// mostly non-ASCII and non-UTF-8 bytes, some under private reverse zones, raw bytes, known and
+/// new devices, every answer kind, times across minutes, an hour and a day, late events and a
+/// long gap) leave every NXDOMAIN sample, the storm's and the sweep's, within [`MAX_DOMAIN`]
+/// bytes and every domain text within [`MAX_DOMAIN`] characters.
 #[test]
 fn obs_009_observe_query_takes_any_wire_bytes() {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
@@ -891,6 +1390,7 @@ fn obs_009_observe_query_takes_any_wire_bytes() {
         engine.observe(start_s - 86_400 - 60, ip(dev), &wire("seed.example"));
     }
     let mut at_us = start_s * 1_000_000;
+    let mut sweep_samples_seen = false;
     for i in 0..20_000u32 {
         at_us += rng.below(60_000);
         if i == 15_000 {
@@ -918,12 +1418,14 @@ fn obs_009_observe_query_takes_any_wire_bytes() {
         let name = odd_wire(&mut rng);
         engine.observe_query(when, client, &name, rcode);
         if let Some(state) = engine.clients.get(&client) {
-            assert!(state.nx_samples.len() <= SAMPLES);
-            for sample in &state.nx_samples {
+            assert!(state.nx_samples.len() <= SAMPLES && state.rev_samples.len() <= SAMPLES);
+            for sample in state.nx_samples.iter().chain(&state.rev_samples) {
                 assert!(sample.len() <= MAX_DOMAIN, "{sample:?} from {name:?}");
             }
+            sweep_samples_seen |= !state.rev_samples.is_empty();
         }
     }
+    assert!(sweep_samples_seen, "the run keeps sweep samples");
     engine.observe_answer(at_us / 1_000_000 + 7200, ip(9), &wire("x.example"), Some(0));
     let storms = engine
         .findings()
@@ -939,4 +1441,142 @@ fn obs_009_observe_query_takes_any_wire_bytes() {
         assert!(state.dga_samples.iter().all(|(text, _)| within(text)));
         assert!(state.new_samples.iter().all(|text| within(text)));
     }
+}
+
+/// REQ: OBS-009 (ADR-186) — the sample names a fresh engine keeps for a sweep whose first
+/// NXDOMAIN answer is for `name` (40 reverse names of 10.0.20.0/24 follow in the same minute),
+/// checked against the sweep finding they end up in.
+fn sweep_samples(name: &[u8]) -> Vec<String> {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    e.observe_answer(t, ip(1), name, Some(3));
+    for i in 1..=40u64 {
+        e.observe_answer(
+            t + i,
+            ip(1),
+            &wire(&format!("{i}.20.0.10.in-addr.arpa")),
+            Some(3),
+        );
+    }
+    let state = &e.clients[&ip(1)];
+    assert!(state.nx_samples.is_empty(), "{:?}", state.nx_samples);
+    let kept = state.rev_samples.clone();
+    close(&mut e, t);
+    assert_eq!(kinds(&e), ["reverse_sweep"], "{:#?}", e.findings());
+    let detail = &e.findings()[0].detail;
+    assert!(
+        detail.ends_with(&format!("e.g. {}", kept.join(", "))),
+        "{detail}"
+    );
+    kept
+}
+
+/// REQ: OBS-009 (ADR-186) — a sweep's sample names are cut at a character boundary, valid for
+/// any name, like the other NXDOMAIN samples: with a character of each width (a byte that shows
+/// as U+FFFD, and valid 2-, 3- and 4-byte ones) at every offset around the cut, a reverse name
+/// of a private address (under `168.192.in-addr.arpa` or `d.f.ip6.arpa`) is kept in the sweep's
+/// samples, and the same name under `example` in the storm's, as the longest prefix of its
+/// dotted text that is at most [`MAX_DOMAIN`] bytes and ends on a character.
+#[test]
+fn obs_009_sweep_sample_names_cut_at_char_boundary() {
+    let shapes: [(&[u8], &str); 4] = [
+        (b"\x80", "\u{fffd}"),
+        ("\u{e9}".as_bytes(), "\u{e9}"),
+        ("\u{20ac}".as_bytes(), "\u{20ac}"),
+        ("\u{1f600}".as_bytes(), "\u{1f600}"),
+    ];
+    let suffixes = [
+        ("1.168.192.in-addr.arpa", true),
+        ("d.f.ip6.arpa", true),
+        ("example", false),
+    ];
+    for (bytes, shown) in shapes {
+        let per_label = 63 / bytes.len();
+        // Where the cut fell inside a character (bytes after its start).
+        let mut inside = std::collections::BTreeSet::new();
+        for filler in 0..=70usize {
+            let letters: Vec<u8> = (0..filler)
+                .map(|i| b'a' + u8::try_from(i % 26).unwrap())
+                .collect();
+            for (suffix, private) in suffixes {
+                let mut labels: Vec<Vec<u8>> = letters.chunks(63).map(<[u8]>::to_vec).collect();
+                labels.extend([bytes.repeat(per_label), bytes.repeat(per_label)]);
+                labels.extend(suffix.split('.').map(|l| l.as_bytes().to_vec()));
+                let w = wire_of(&labels);
+                let mut parts: Vec<String> = letters
+                    .chunks(63)
+                    .map(|c| std::str::from_utf8(c).unwrap().to_owned())
+                    .collect();
+                parts.extend([
+                    shown.repeat(per_label),
+                    shown.repeat(per_label),
+                    suffix.to_owned(),
+                ]);
+                let full = parts.join(".");
+                assert_eq!(crate::event::dotted(&w), full, "the test's own name");
+                assert!(full.len() > MAX_DOMAIN);
+                assert_eq!(crate::internal::is_private_reverse(&w), private, "{full}");
+                let longest = (0..=MAX_DOMAIN)
+                    .rev()
+                    .find(|&b| full.is_char_boundary(b))
+                    .unwrap();
+                if longest < MAX_DOMAIN {
+                    inside.insert(MAX_DOMAIN - longest);
+                }
+                let samples = if private {
+                    sweep_samples(&w)
+                } else {
+                    storm_samples(&[w.as_slice()])
+                };
+                assert_eq!(
+                    samples.first().map(String::as_str),
+                    Some(&full[..longest]),
+                    "{shown:?} after {filler} letters, under {suffix}: {samples:?}"
+                );
+            }
+        }
+        assert_eq!(
+            inside,
+            (1..shown.len()).collect::<std::collections::BTreeSet<_>>(),
+            "every offset inside {shown:?}"
+        );
+    }
+}
+
+/// REQ: OBS-009 — a sample already kept is recognised without allocating, for names with any
+/// bytes: `is_sample_of` answers as comparing with [`sample_text`]'s text would, for the name's
+/// own sample, one a character shorter or longer, and the samples of other names (some of which
+/// are the same after the cut).
+#[test]
+fn obs_009_a_kept_sample_is_recognised_for_any_name() {
+    let mut rng = Rng(0x00b5_0009_5a3e_1e5d);
+    let mut names: Vec<Vec<u8>> = (0..3_000).map(|_| odd_wire(&mut rng)).collect();
+    let label = vec![b'a'; 63];
+    names.extend([
+        wire_of(&[label.clone(), b"b".to_vec()]),
+        wire_of(&[label.clone(), b"c".to_vec()]),
+        wire_of(&[label, "\u{e9}".as_bytes().to_vec()]),
+        wire("q.example"),
+        vec![0],
+        Vec::new(),
+    ]);
+    let mut same = 0;
+    for (i, w) in names.iter().enumerate() {
+        let own = sample_text(w);
+        assert!(is_sample_of(&own, w), "{w:?}: {own:?}");
+        let mut shorter = own.clone();
+        shorter.pop();
+        assert_eq!(
+            is_sample_of(&shorter, w),
+            shorter == own,
+            "{w:?}: {shorter:?}"
+        );
+        assert!(!is_sample_of(&format!("{own}a"), w), "{w:?}");
+        for step in [1, 7, 3_001] {
+            let other = sample_text(&names[(i + step) % names.len()]);
+            same += usize::from(other == own);
+            assert_eq!(is_sample_of(&other, w), other == own, "{w:?}: {other:?}");
+        }
+    }
+    assert!(same > 0, "some pairs have the same sample");
 }

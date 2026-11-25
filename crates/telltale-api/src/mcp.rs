@@ -412,7 +412,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "find_anomalies",
-            description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. Alert-only; nothing is blocked automatically.",
+            description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, sweeps of private reverse names (reverse_sweep: a device looking up the names of many addresses on the local network), and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. A counted reverse_sweep may have stormMute: a mute of nxdomain_storm for that device, probably made for the sweep before it was its own kind, which doesn't cover it. Alert-only; nothing is blocked automatically.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "since": {"type": "string", "description": "Findings since (relative like -7d, or RFC 3339). Default -7d."},
@@ -1218,13 +1218,13 @@ pub fn write_tools() -> Vec<WriteTool> {
         // REQ: OBS-038, AGT-007 (ADR-161) — anomaly mutes, as plans.
         WriteTool {
             name: "plan_set_anomaly_mute",
-            description: "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or telltale_anomalies_total (telltale_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
+            description: "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or telltale_anomalies_total (telltale_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep: reverse_sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "The mute's name (1 to 64 characters)."},
                 "devices": {"type": "array", "items": {"type": "string"}, "description": "Device names (from list_devices), IPs or CIDRs."},
                 "groups": {"type": "array", "items": {"type": "string"}, "description": "Groups: their networks and the devices that name them."},
-                "kinds": {"type": "array", "items": {"type": "string", "enum": ["rate_spike", "domain_volume", "drift", "beacon", "nxdomain_storm", "dga", "chatty_loop"]}, "description": "The kinds of finding to mute (at least one)."},
+                "kinds": {"type": "array", "items": {"type": "string", "enum": ["rate_spike", "domain_volume", "drift", "beacon", "nxdomain_storm", "dga", "chatty_loop", "reverse_sweep"]}, "description": "The kinds of finding to mute (at least one). nxdomain_storm doesn't cover reverse_sweep."},
                 "expires": {"type": "string", "description": "When it stops applying (RFC 3339, e.g. 2026-12-31T00:00:00Z). Default: never."},
                 "note": {"type": "string", "description": "Why (up to 200 characters), shown with each muted finding."},
                 "reason": reason_schema()
@@ -3034,6 +3034,23 @@ mod tests {
             committed == now,
             "docs/api/mcp-tools.json is out of date: run UPDATE_MCP=1 cargo test -p telltale-api agt_006_committed"
         );
+    }
+
+    // REQ: AGT-005, OBS-038 (ADR-186) — plan_set_anomaly_mute offers every kind of finding the
+    // engine reports, in its order, so a new kind can't be left out of the tool.
+    #[test]
+    fn agt_005_the_mute_tool_offers_every_finding_kind() {
+        let tools = write_tools();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "plan_set_anomaly_mute")
+            .unwrap();
+        let offered = (tool.input_schema)()["properties"]["kinds"]["items"]["enum"].clone();
+        let kinds: Vec<&str> = telltale_telemetry::anomaly::Kind::ALL
+            .iter()
+            .map(|k| k.label())
+            .collect();
+        assert_eq!(offered, json!(kinds));
     }
 
     // AGT-009 — every tool states its side effects (description and annotations agree);

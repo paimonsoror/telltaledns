@@ -25,6 +25,7 @@
     drift: 'Many new domains',
     beacon: 'Regular phone-home',
     nxdomain_storm: 'Burst of failed lookups',
+    reverse_sweep: 'Sweep of local addresses',
     dga: 'Machine-generated-looking domains',
     chatty_loop: 'Chatty loop',
   };

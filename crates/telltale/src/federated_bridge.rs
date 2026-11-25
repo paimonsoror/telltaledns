@@ -741,6 +741,45 @@ impl Pending {
     }
 }
 
+/// REQ: CLU-004, CLU-014 (ADR-174) — one of a backend's own async reads, waited for from
+/// synchronous code (the drill-report alert's, `alerts::drill_reports`, on a blocking-pool
+/// thread) by the rules above: `read` runs as a task on `rt`, sent as a federated read's one call
+/// is ([`start`], under the process's cap, [`WAITS`]), and this thread waits for it on a `std`
+/// channel for `timeout` and the [`GRACE`] at most, whatever the runtime is doing. Never
+/// `Handle::block_on`. The value comes back as JSON, as a peer's answer does, so it is weighed as
+/// one is ([`READ_BYTES`]). `None` when it wasn't asked, didn't answer in time, failed, or didn't
+/// read back, and the debug log says which read and why (a read that wasn't asked also counts as
+/// a refusal, `Ledger::refused`). Like every bridge read it is for a thread that isn't a runtime
+/// worker (on a worker it costs its deadline: "What this does not do" above), and the guard's
+/// scan doesn't see it (it is called by path): its one caller runs inside `alerts::run`'s
+/// `spawn_blocking`.
+pub(crate) fn read_within<T>(
+    rt: &tokio::runtime::Handle,
+    what: &str,
+    read: telltale_api::BoxFuture<Result<T, telltale_api::problem::Problem>>,
+    timeout: Duration,
+) -> Option<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+{
+    let call = async move {
+        let value = read.await.map_err(|p| p.detail)?;
+        serde_json::to_vec(&value).map_err(|e| e.to_string())
+    };
+    let (_, answer) = start(&WAITS, rt, vec![(what.to_owned(), call)], timeout)
+        .wait()
+        .pop()?;
+    // REQ: CLU-004, CLU-014 (ADR-174) — a read with no value costs its caller this round (the
+    // drill-report alert sends each report once, so the next round sends it): said in the debug
+    // log, so a skipped round can be seen.
+    answer
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|e| format!("unreadable answer: {e}"))
+        })
+        .inspect_err(|why| tracing::debug!(read = what, "skipped this round: {why}"))
+        .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::pin::Pin;
@@ -2296,5 +2335,110 @@ mod tests {
             2,
             "under three quarters of the Pi's unit, over half"
         );
+    }
+
+    /// What a test subscriber saw on this thread: each event's level and its text (message, then
+    /// fields).
+    #[derive(Clone, Default)]
+    struct Seen(Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Seen {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            use std::fmt::Write as _;
+            #[derive(Default)]
+            struct Text {
+                message: String,
+                fields: String,
+            }
+            impl tracing::field::Visit for Text {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.message = format!("{value:?}");
+                    } else {
+                        let _ = write!(self.fields, " {}={value:?}", field.name());
+                    }
+                }
+            }
+            let mut t = Text::default();
+            event.record(&mut t);
+            if let Ok(mut v) = self.0.lock() {
+                v.push((
+                    *event.metadata().level(),
+                    format!("{}{}", t.message, t.fields),
+                ));
+            }
+        }
+    }
+
+    /// Runs `body` with a subscriber on this thread that records what is logged.
+    fn logged<T>(body: impl FnOnce() -> T) -> (T, Vec<(tracing::Level, String)>) {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let seen = Seen::default();
+        let sub = tracing_subscriber::registry().with(seen.clone());
+        let out = tracing::subscriber::with_default(sub, body);
+        let lines = seen.0.lock().map(|v| v.clone()).unwrap_or_default();
+        (out, lines)
+    }
+
+    // REQ: CLU-004, CLU-014 (ADR-174) — a read waited for from synchronous code (the
+    // drill-report alert's) that comes back without a value is skipped for this round, and the
+    // debug log names the read and the reason: the read's own error, or no answer in time with
+    // the runtime's only worker parked. A read that answers logs nothing.
+    #[test]
+    fn clu_004_a_read_within_its_deadline_that_has_no_value_says_why_in_the_debug_log() {
+        use telltale_api::problem::Problem;
+        let rt = runtime(1);
+        let said = |lines: &[(tracing::Level, String)], why: &str| {
+            lines.iter().any(|(level, text)| {
+                *level == tracing::Level::DEBUG
+                    && text.contains("the test's read")
+                    && text.contains(why)
+            })
+        };
+        let (got, lines) = logged(|| {
+            read_within::<u32>(
+                rt.handle(),
+                "the test's read",
+                Box::pin(async { Ok(7) }),
+                Duration::from_secs(5),
+            )
+        });
+        assert_eq!(got, Some(7));
+        assert!(
+            !lines
+                .iter()
+                .any(|(_, text)| text.contains("the test's read")),
+            "{lines:?}"
+        );
+        let (got, lines) = logged(|| {
+            read_within::<u32>(
+                rt.handle(),
+                "the test's read",
+                Box::pin(async { Err(Problem::internal("the store is closed")) }),
+                Duration::from_secs(5),
+            )
+        });
+        assert_eq!(got, None);
+        assert!(said(&lines, "the store is closed"), "{lines:?}");
+        let gate = wedge(&rt);
+        let (got, lines) = logged(|| {
+            read_within::<u32>(
+                rt.handle(),
+                "the test's read",
+                Box::pin(async { Ok(7) }),
+                Duration::from_millis(100),
+            )
+        });
+        let _ = gate.send(());
+        assert_eq!(got, None);
+        assert!(said(&lines, "didn't answer in time"), "{lines:?}");
     }
 }

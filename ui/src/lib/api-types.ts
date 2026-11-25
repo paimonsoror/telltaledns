@@ -365,9 +365,10 @@ export interface paths {
          * Mute kinds of device anomaly for some devices or groups (OBS-038).
          * @description The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):
          *     `devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,
-         *     `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`), and optionally
+         *     `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`, `reverse_sweep`;
+         *     a mute of `nxdomain_storm` doesn't cover `reverse_sweep`), and optionally
          *     `expires` (RFC 3339) and `note`, e.g. `{"devices": ["lg-tv-living"], "kinds":
-         *     ["nxdomain_storm"], "expires": "2026-12-31T00:00:00Z", "note": "hourly PTR sweep"}`. A finding
+         *     ["reverse_sweep"], "expires": "2026-12-31T00:00:00Z", "note": "hourly PTR sweep"}`. A finding
          *     a mute matches when it is created is still recorded and listed (`GET
          *     /analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in
          *     `telltale_anomalies_total`, the badge, the `anomaly` alert rule, or the health level
@@ -3312,7 +3313,9 @@ export interface components {
              */
             informational?: boolean;
             /**
-             * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
+             * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`,
+             *     or `reverse_sweep` (a sweep of private reverse names: a device looking up the names of
+             *     many addresses on the local network).
              * @example domain_volume
              */
             kind: string;
@@ -3342,6 +3345,14 @@ export interface components {
             rhythm?: number[] | null;
             /** Format: double */
             spread: number;
+            /**
+             * @description REQ: OBS-038 (ADR-186) — on a `reverse_sweep` finding no mute matched: a mute that covers
+             *     this device for `nxdomain_storm` but not `reverse_sweep`. Before 0.9 a sweep counted as an
+             *     `nxdomain_storm`, so the mute was probably made for it; add `reverse_sweep` to it, or
+             *     change its kind, to mute the sweep.
+             * @example lg-tv-ptr-sweep
+             */
+            stormMute?: string | null;
             /** Format: double */
             threshold: number;
             /** Format: int32 */
@@ -5426,7 +5437,9 @@ export interface components {
                  */
                 informational?: boolean;
                 /**
-                 * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
+                 * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`,
+                 *     or `reverse_sweep` (a sweep of private reverse names: a device looking up the names of
+                 *     many addresses on the local network).
                  * @example domain_volume
                  */
                 kind: string;
@@ -5456,6 +5469,14 @@ export interface components {
                 rhythm?: number[] | null;
                 /** Format: double */
                 spread: number;
+                /**
+                 * @description REQ: OBS-038 (ADR-186) — on a `reverse_sweep` finding no mute matched: a mute that covers
+                 *     this device for `nxdomain_storm` but not `reverse_sweep`. Before 0.9 a sweep counted as an
+                 *     `nxdomain_storm`, so the mute was probably made for it; add `reverse_sweep` to it, or
+                 *     change its kind, to mute the sweep.
+                 * @example lg-tv-ptr-sweep
+                 */
+                stormMute?: string | null;
                 /** Format: double */
                 threshold: number;
                 /** Format: int32 */

@@ -1652,9 +1652,14 @@ Handled before anything else (each can be turned off under `[special]`):
 | `*.invalid` | NXDOMAIN | RFC 6761 |
 | `use-application-dns.net` | NXDOMAIN | stops Firefox from silently switching to its own DoH (`block_firefox_canary`) |
 | CHAOS class (`version.bind`, …) | REFUSED | no fingerprinting (`refuse_chaos`) |
-| reverse lookups for private IPs | NXDOMAIN | never leaks your LAN layout to public resolvers, unless a local record or a `[[route]]` covers it (`private_ptr_nxdomain`) |
+| reverse lookups for private IPs | NXDOMAIN | your LAN layout stays off public resolvers unless a local record, a `[[route]]` or the device's group's own `upstreams` covers it (`private_ptr_nxdomain`) |
+| `resolver.arpa`, `_dns.resolver.arpa`, … | NOERROR, no records | encrypted-DNS discovery (RFC 9462): answered here, never forwarded, unless a local record or a `[[route]]` for `resolver.arpa` or a name below it covers it (`resolver_arpa`) |
 
 `.local` names are passed through unchanged (many Active Directory domains use them; route them with `[[route]]`).
+
+`_dns.resolver.arpa` is the name a device asks to find an encrypted resolver (DDR). RFC 9462 says a resolver answers it itself, so TelltaleDNS doesn't pass it to your upstreams: their own answer, about their own encrypted endpoints, can't be validated (`[dnssec] mode = "validate"` would answer SERVFAIL). The answer says there's no encrypted endpoint to discover, and the device keeps asking TelltaleDNS as before. TelltaleDNS doesn't advertise encrypted endpoints of its own there yet.
+- **To forward it anyway** (to your own DDR responder, say), add a `[[route]]` whose `match_suffix` is `resolver.arpa` (or `_dns.resolver.arpa`). Add `match_group` to forward it only for that group's devices. No other route forwards it: a route for `arpa` (every reverse lookup to your router, say) or for `.`, a group's own `upstreams`, and a `match_group` or `match_qtype` route without a suffix send their devices' other names to their upstream group, and `_dns.resolver.arpa` is still answered here, so your router's or its provider's discovery record doesn't reach your devices.
+- **`[special] resolver_arpa`** (default `true`) turns this off: the name is forwarded again. It's shared by the cluster and applies without a restart. Don't write the key into a node's own file, `true` or `false`, until every node is upgraded: an older build refuses any `[special]` key it doesn't know, so it won't start with `resolver_arpa` in its file, and an older replica refuses a shared configuration that has it (`shared configuration: unknown field …`; it keeps serving the last one it had). What the primary shares has the key only when it's `false`, so at the default older nodes aren't affected.
 
 ## Routing (conditional forwarding)
 ```toml
@@ -1841,6 +1846,28 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   at most 8 proofs run at once, and a name that couldn't be proven isn't tried again for a
   minute: when it can't be proven, the answer stays bogus (or, with no answer at all, stale
   or SERVFAIL as for any upstream failure).
+- **Denials behind a CNAME:** the validation library checks a "no such record" or "no such
+  name" proof against the name that was asked, but after a CNAME the proof is about the chain's
+  last name (`www.paypal.com AAAA`). Before refusing such an answer, TelltaleDNS validates it
+  one link at a time, each as a question of its own (the CNAME at each name, then the question
+  at its target), and serves only what those answers validate, with the weakest link's verdict:
+  secure (with AD), or insecure when a link is in a zone proven unsigned as above
+  (`c.pki.goog`). This only looks at answers the library refused or found bogus (also those
+  the wildcard check below marks bogus), on cache misses, in both modes: at most 8 links, 4 such
+  validations at once, within the same deadline. A link that doesn't validate, or gets no
+  answer in time, leaves the answer bogus, and that question isn't validated this way again
+  for a minute (ADR-188).
+- **Wildcard answers:** every wildcard answer in a zone signed with NSEC is checked against
+  RFC 4035 §5.3.4 before it is served: the zone's signed NSEC must show that no closer name
+  exists, otherwise the answer is bogus and handled as any bogus answer (the unsigned-zone
+  proof, then link by link when it starts with a CNAME). So an answer from a wildcard right
+  above the name validates (`nasa-gov.go-vip.net A`, and `www.nasa.gov A` through its CNAME),
+  and so does a wildcard CNAME further down whose chain ends in an answer, in one lookup (a
+  NODATA behind one is validated link by link). An answer with a second signature
+  that isn't verified (during a key or algorithm rollover) is served without AD, as elsewhere.
+  The check reads only the answer itself, on cache misses, in both modes. Zones signed with
+  NSEC3 are left to the validation library: the check is skipped only beside a verified NSEC3
+  record of the zone that signed the answer (ADR-188).
 - **Before switching to `validate`:** run `permissive` for a while and read the log; only
   names that are really broken (like `dnssec-failed.org`) should show up.
 - **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `telltale_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
@@ -2176,7 +2203,9 @@ telltale cluster set-failover auto
 - **A witness only votes.** What covers the whole cluster (the dashboard and the other views,
   pausing blocking, the cache's table and flushes, drills, simulations, a cluster support
   package) leaves it out, and never lists it as a node that didn't answer, up or down. The
-  Cluster page and the node-down alert still show it.
+  Cluster page and the node-down alert still show it. The Cluster page shows it as *votes
+  only*, never counted as behind or not serving DNS, and the `sync_lag` alert leaves it out; a
+  witness that's down still fails the `peers_up` check and raises the node-down alert.
 - **Manual promotion is refused while automatic failover runs**; `telltale cluster
   set-failover manual` on the primary switches back. With fewer than three voters, `auto` acts
   as `manual`, and the Cluster page says so.
@@ -3222,7 +3251,8 @@ TelltaleDNS learns how each device usually behaves and points out when that chan
 - **Unusual traffic to one domain** (`domain_volume`): queries to one registrable domain in an hour against that device's usual volume for it. A spike one domain explains is reported once, as this.
 - **Many new domains** (`drift`): registrable domains the device has never contacted, per day, against its usual number of new ones.
 - **Regular phone-home** (`beacon`): a domain queried at a regular interval (low jitter) for at least 4 hours, when it wasn't periodic while the device was being learned.
-- **Burst of failed lookups** (`nxdomain_storm`): in one minute, at least 30 NXDOMAIN answers to a device that are at least half its queries (malware probing generated names, or a broken app). This one needs no learning period; it's reported at most once an hour per device.
+- **Burst of failed lookups** (`nxdomain_storm`): in one minute, at least 30 NXDOMAIN answers to a device that are at least half its queries (malware probing generated names, or a broken app). In a minute whose reverse lookups of private addresses are a sweep (next), it's judged on the device's other lookups. This one needs no learning period; it's reported at most once an hour per device.
+- **Sweep of local addresses** (`reverse_sweep`): in one minute, a device's reverse lookups of private addresses (the names under `in-addr.arpa` of `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`, `127/8` and `0/8`, and under `ip6.arpa` of `fc00::/7`, `fe80::/10` and `::1`) clear the same bar on their own: at least 30 NXDOMAIN answers, at least half of those lookups, and at least 16 different names answered NXDOMAIN. This device looked up the names of many addresses on your network: network scanners do this, and so do some TVs and NAS boxes, on their own, often once an hour. Those lookups then leave the burst check, which is judged on the device's other names, so you can [mute](#muting-a-kind-of-finding-for-a-device) the sweep for a device and still hear about a real burst of failed lookups from it. It counts and alerts like a burst, at most once an hour per device. Not a sweep: one name asked over and over (that stays a burst), a sweep of public addresses (a burst, as before), or one slower than 30 failed lookups a minute or spread over the minute's boundary (not seen, as before).
 - **Chatty loop** (`chatty_loop`, for your information): a device asks one domain at a steady rhythm faster than every 30 seconds for an hour, such as a time-sync client every 2.5 s (at least 120 queries in the hour, 80 % of the gaps in one [rhythm](#a-devices-rhythm) column from 1 to 25 seconds). Reported once until the loop stops and starts again, with its rhythm strip. It's not counted as an anomaly: the sidebar badge and the `anomaly` alert leave it out, and an alert rule with `when = "chatty_loop"` asks for it.
 - **Machine-generated-looking domains** (`dga`): new domains whose names look generated (`xjwqkzpvb.com`, `a8f3k2j9x1.org`), at least 2 in an hour. The score (0 to 1) uses how English-like the letter pairs are, letter/digit mixing, consonant runs, and character variety; 0.6 and up counts (0.75 at `low` sensitivity, 0.5 at `high`). Names made of real words score low even when generated.
 
@@ -3237,6 +3267,7 @@ sensitivity = "normal"         # low | normal | high
 ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity checks)
 nxdomain_per_minute = 30       # NXDOMAIN storm: answers per minute...
 nxdomain_percent = 50          # ...that are at least this share of the device's queries
+                               # (a sweep of local addresses: the same two, over its own lookups)
 ```
 The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level` is 1 or above (names and devices are hidden). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
@@ -3263,20 +3294,23 @@ Once you've looked at a finding, acknowledge it: **Acknowledge** on its card (or
 - Acknowledgements are kept for 60 days from the finding's window.
 
 ### Muting a kind of finding for a device
-Acknowledging clears one finding; a device that does something harmless every hour makes a new one every hour (two TVs that look up the reverse name of every address on the network answer a few hundred NXDOMAINs a minute, which is a real storm to the detector and nothing to worry about). A **mute** says: this kind of finding, for this device, stops counting. On the Anomalies page choose **Mute for this device…** on a finding: the device and the kind are filled in, you pick how long (a day, a week, or until you remove it) and write why, and the preview says what it will do before you save. The list of mutes below the findings has **Remove**.
+Acknowledging clears one finding; a device that does something harmless every hour makes a new one every hour (two TVs that look up the reverse name of every address on the network get a few hundred NXDOMAINs a minute, which is a sweep of local addresses to the detector and nothing to worry about). A **mute** says: this kind of finding, for this device, stops counting. On the Anomalies page choose **Mute for this device…** on a finding: the device and the kind are filled in, you pick how long (a day, a week, or until you remove it) and write why, and the preview says what it will do before you save. The list of mutes below the findings has **Remove**.
 ```toml
 [[anomaly_mute]]
-name    = "lg-tv-ptr-sweep"
+name    = "lg-tv-reverse-sweep"
 devices = ["lg-tv-living", "lg-tv-bedroom"]   # device names ([[client]]), IPs or CIDRs
 # groups  = ["iot"]                           # or groups: their networks and the devices that name them
-kinds   = ["nxdomain_storm"]                  # rate_spike, domain_volume, drift, beacon, nxdomain_storm, dga, chatty_loop
+kinds   = ["reverse_sweep"]                   # rate_spike, domain_volume, drift, beacon, nxdomain_storm, reverse_sweep, dga, chatty_loop
 expires = "2026-12-31T00:00:00Z"              # optional: it stops applying (a finding created later counts again)
 note    = "hourly reverse-DNS sweep"
 ```
 - **Recorded, not counted.** The finding is made as before and listed (turn on **Show muted** on the page, or `GET /api/v1/analytics/anomalies?muted=true`), marked with the mute that matched (`mutedBy`). It isn't counted in the sidebar badge, the `anomaly` alert rule, the health level, or `telltale_anomalies_total`; `telltale_anomalies_muted_total{kind}` counts it, so a mute never hides that something happened. The same kind of finding for any other device counts as usual.
 - **Decided when the finding is created.** Removing a mute or letting it expire doesn't change findings already recorded; ones made afterwards count. Muting is not blocking: nothing about the device's queries changes.
+- **Kinds are explicit.** A mute covers the kinds it lists and no other: one of `nxdomain_storm` doesn't cover `reverse_sweep`, and one of `reverse_sweep` leaves a real burst of failed lookups from the device counted.
+- **Mutes made before 0.9.** Until 0.9 a sweep of local addresses counted as a burst of failed lookups, so a mute made to quiet one lists `nxdomain_storm`. After the upgrade that mute keeps meaning exactly that: it now mutes only the device's real bursts, and its sweeps count again. Change its kinds to `reverse_sweep` (or add it). On such a sweep the Anomalies page names the mute (`stormMute` on the finding) and says why, with **Mute for this device…** (the sweep ticked) and **Remove** for the old mute. If you raised `nxdomain_per_minute` to quiet a sweep, set it back and mute the sweep instead. An Alertmanager silence on `kind="nxdomain_storm"` doesn't cover `kind="reverse_sweep"` either.
 - **Narrow on purpose.** A mute names at least one device or group and at least one kind: there is no mute for everyone or for every kind (to switch the detector off, `[telemetry.anomaly] enabled = false`). A MAC address isn't accepted: a device's address changes with its lease, and findings are made from addresses. Name the device (a `[[client]]` with an IP or network in its `match`) or give its IP: a device named only by its MAC address can't be muted by name, because it has no address to match findings against (keep an address among its keys if you need a mute). A group means its networks and the devices that name it.
-- **In a cluster** a mute is shared like groups and schedules: set on the primary, it reaches every node, including ones that were down. In a cluster whose configuration comes from Git the page and the API refuse the change (409 `gitops_managed`): add the `[[anomaly_mute]]` block to the repository (or the Helm values' `config:`) instead. On a single node that loads its configuration from Git, a mute made here is saved and the response includes the TOML to keep.
+- **In a cluster** a mute is shared like groups and schedules: set on the primary, it reaches every node, including ones that were down. In a cluster whose configuration comes from Git the page and the API refuse the change (409 `gitops_managed`): add the `[[anomaly_mute]]` block to the repository (or the Helm values' `config:`) instead. On a single node that loads its configuration from Git, a mute made here is saved and the response includes the TOML to keep. Name `reverse_sweep` in a mute only once every node runs 0.9: a node on an older version refuses a shared configuration that names it, and an older build won't start with it in its own file. Such a node keeps serving the last version it took (DNS isn't affected), and it takes no later shared change either. Until it's upgraded, it logs `cluster configuration not applied (will retry)` with `unknown variant reverse_sweep` every few seconds. Its `sync_errors` cluster check ("Last sync failed: …") and `telltale_cluster_sync_error` show the same. Until every node is upgraded, one sweep can show twice: as a burst of failed lookups from an older node and as a sweep from a newer one.
+- **Going back to an older version** after naming `reverse_sweep`: take it out of the mutes in your files first (one made on the page or through the API is skipped, with a warning, by the older version). Anomaly baselines saved after a sweep was found can't be read by an older version, so its devices learn again for 7 days; DNS isn't affected.
 - **Through the API:** `PUT /api/v1/anomaly-mutes/<name>` with the same fields (add `?dryRun=true` to preview), `DELETE` to remove, `GET /api/v1/config/entries?kind=anomaly_mute` to list. The operator role; agents need `config:write:anomalies` (a mute can hide a compromised device, so it isn't part of any other scope, though `config:write:*` includes it) and use `plan_set_anomaly_mute` / `plan_remove_anomaly_mute`. Every change is audited as `config.anomaly_mute`.
 
 ## Alerts
@@ -3314,7 +3348,7 @@ Rules watch:
 | `servfail_rate` | SERVFAIL above `threshold` % (default 5) over 5 minutes, at least 50 queries | node |
 | `anomaly` | a [device anomaly](#device-anomalies) is found, unless it is acknowledged or [muted](#muting-a-kind-of-finding-for-a-device) | finding |
 | `update_available` | a newer TelltaleDNS build is out | version |
-| `sync_lag` | a replica is behind the primary's configuration (set `for_secs`, say 300, so a normal sync stays quiet) | node |
+| `sync_lag` | a replica (never a witness) is behind the primary's configuration (set `for_secs`, say 300, so a normal sync stays quiet) | node |
 | `new_device` | a device TelltaleDNS has never seen starts asking, on any node (quiet for the first day after a fresh start, while every device is new) | device |
 | `disk_full` | a node's data disk is more than `threshold` % full (default 90) | node |
 | `plan_pending` | an AI agent's change waits for approval (`[agents] require_approval`) | plan |

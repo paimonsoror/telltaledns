@@ -12,8 +12,9 @@
   export type Health = 'ok' | 'warn' | 'bad';
 
   // REQ: OPS-010 — a node in maintenance is down or not ready on purpose: drawn hatched, not red.
+  // REQ: CLU-008 (ADR-056) — a witness only votes: it serves no DNS and applies no configuration.
   export const health = (n: Node): Health =>
-    n.maintenance ? 'ok' : !n.up ? 'bad' : !n.ready || n.configLag > 0 ? 'warn' : 'ok';
+    n.maintenance ? 'ok' : !n.up ? 'bad' : !n.witness && (!n.ready || n.configLag > 0) ? 'warn' : 'ok';
   const worst = (hs: Health[]): Health => (hs.includes('bad') ? 'bad' : hs.includes('warn') ? 'warn' : 'ok');
   export const worstOf = (ns: Node[]): Health => worst(ns.map(health));
 
@@ -178,11 +179,12 @@
   };
   // The second line: load; whole items are left out (round trip first, then share) when they
   // don't fit, rather than cutting words. The role is the badge.
+  // REQ: CLU-008 (ADR-056) — a witness answers no queries: "votes only" for its rate and share.
   const sub = (n: Node, px: number) => {
     const parts = [
       n.thisNode ? 'you' : '',
-      `${rate(n.qps)} q/s`,
-      n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
+      n.witness ? 'votes only' : `${rate(n.qps)} q/s`,
+      !n.witness && n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
       n.rttMs != null && !n.thisNode ? `${Math.round(n.rttMs)} ms` : '',
     ].filter(Boolean);
     while (parts.length > 1 && parts.join(' · ').length * 5.6 > px) parts.pop();
@@ -204,8 +206,8 @@
       `${n.pod ?? n.nodeId} (${n.site}, ${role(n)})`,
       n.kubeNode ? `on Kubernetes node ${n.kubeNode}` : '',
       n.maintenance ? `in maintenance (${n.maintenance.reason})` : '',
-      n.up ? (n.ready ? 'up, serving' : 'up, not ready') : 'down',
-      n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
+      n.up ? (n.witness ? 'up, votes only' : n.ready ? 'up, serving' : 'up, not ready') : 'down',
+      n.witness ? '' : n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
       `${rate(n.qps)} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
       n.cacheHitPercent != null ? `cache ${n.cacheHitPercent}% hits` : '',
       n.restarts ? `${n.restarts} restart${n.restarts === 1 ? '' : 's'}` : '',
@@ -296,9 +298,10 @@
       </g>
     {/each}
   </svg>
+  <!-- REQ: CLU-008 (ADR-056) — with a witness, green is also a witness that's up. -->
   <p class="legend muted small">
     <span class="legend-badge">PRIMARY</span> publishes the configuration; replicas follow it ·
-    <span class="key ok"></span> serving, in sync <span class="key warn"></span> not ready or behind <span class="key bad"></span> down
+    <span class="key ok"></span> serving, in sync{#if nodes.some((n) => n.witness)}, or a witness that's up (it only votes){/if} <span class="key warn"></span> not ready or behind <span class="key bad"></span> down
     {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> in maintenance{/if} ·
     {#if canaries.length}<span class="key canary"></span> runs the version baking ·{/if}
     line thickness = share of queries{#if L.links.some((l) => l.label)}{' · times are round trips from this node'}{/if}

@@ -2276,6 +2276,8 @@ impl Backend for ApiBackend {
                     rhythm: rhythm.map(|b| b.iter().map(|&n| u32::from(n)).collect()),
                     informational: f.kind.informational(),
                     muted_by: f.muted_by,
+                    // REQ: OBS-038 (ADR-186) — a storm-only mute a counted sweep names.
+                    storm_mute: f.storm_mute,
                 }
             })
             .collect();

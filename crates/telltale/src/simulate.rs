@@ -940,6 +940,14 @@ impl Decider {
         if special == Some(Special::PrivatePtr) && !selection.as_ref().is_some_and(|s| s.routed) {
             return Verdict::Answered(Arc::from("private reverse lookup: NXDOMAIN"));
         }
+        // REQ: DNS-019, UPS-007 (ADR-187) — forwarded only by a route for it or a name below it.
+        if special == Some(Special::LocallyServed)
+            && crate::pipeline::resolver_arpa_answered_here(
+                selection.as_ref().map(|s| s.suffix_labels),
+            )
+        {
+            return Verdict::Answered(Arc::from("resolver.arpa: NOERROR, no records"));
+        }
         Verdict::Resolved {
             allowed_by,
             route: selection.map(|s| Arc::from(s.group.name.as_str())),

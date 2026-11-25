@@ -362,6 +362,7 @@ impl Backend for Fake {
             acknowledged: None,
             informational: false,
             muted_by: None,
+            storm_mute: None,
             rhythm: None,
         }];
         // REQ: OBS-038 — one a mute matched: listed only with `muted=true`.
@@ -382,6 +383,7 @@ impl Backend for Fake {
             acknowledged: None,
             informational: false,
             muted_by: Some("tv-sweep".into()),
+            storm_mute: None,
             rhythm: None,
         });
         self.annotate_acks(&mut v);

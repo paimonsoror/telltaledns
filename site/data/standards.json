@@ -233,7 +233,7 @@
       "reqs": [
         "DNS-002"
       ],
-      "summary": "Let clients discover our encrypted endpoints automatically.",
+      "summary": "Let clients discover our encrypted endpoints automatically. Until then, _dns.resolver.arpa is answered here with no records and not forwarded unless a route for resolver.arpa, or a name below it, covers it (RFC 9462 §6.4).",
       "diagram": "planned"
     },
     {
@@ -243,7 +243,7 @@
       "reqs": [
         "DNS-019"
       ],
-      "summary": "localhost answers with loopback, .invalid and the Firefox canary get NXDOMAIN, CHAOS queries are refused, and reverse lookups for private addresses (RFC 6303) stay local unless a route covers them.",
+      "summary": "localhost answers with loopback, .invalid and the Firefox canary get NXDOMAIN, CHAOS queries are refused, reverse lookups for private addresses (RFC 6303) stay local unless a route covers them, and resolver.arpa (RFC 9462) unless a route for resolver.arpa, or a name below it, covers it.",
       "diagram": "rfc6761"
     },
     {

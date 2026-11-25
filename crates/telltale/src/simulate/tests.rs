@@ -349,6 +349,113 @@ fn obs_024_route_changes_and_no_op_changes() {
     assert_eq!(mode(&lab.current, &alerts), Mode::NotApplicable);
 }
 
+// REQ: DNS-019, OBS-024 (ADR-187) — the simulation decides `resolver.arpa` as the pipeline does:
+// with `[special] resolver_arpa` turned off, the logged `_dns.resolver.arpa` queries are forwarded
+// instead of answered here (a changed answer); the other names are unchanged.
+#[test]
+fn dns_019_turning_resolver_arpa_off_is_a_changed_answer() {
+    let _s = serial();
+    let lab = Lab::new("");
+    lab.log("_dns.resolver.arpa", 7, 6, t0_s(), false);
+    lab.log("www.example", 7, 4, t0_s() - 50, false);
+    let s = lab
+        .simulate(lab.candidate("[special]\nresolver_arpa = false\n"))
+        .finish(None);
+    assert_eq!(s.rows, 10);
+    assert_eq!(s.changed_answer.queries, 6);
+    assert_eq!(s.unchanged, 4);
+    assert_eq!(
+        s.newly_blocked.queries + s.newly_allowed.queries + s.changed_route.queries,
+        0
+    );
+}
+
+// REQ: DNS-019, UPS-007, OBS-024 (ADR-187) — the simulation forwards `resolver.arpa` as the
+// pipeline does: only for a route for `resolver.arpa` (in any case) or a name below it, and for
+// the route's group only when it names one (a changed answer). Any other route (a group's own
+// upstreams, `match_group`, `match_qtype`, `.`, `arpa`) moves the device's other names to its
+// upstream group (a changed route) and leaves `_dns.resolver.arpa` answered here (unchanged).
+#[test]
+fn dns_019_simulation_forwards_resolver_arpa_only_by_a_route_for_it_or_below() {
+    let _s = serial();
+    let lab = Lab::new("");
+    // The tablet (10.0.0.5, in kids) and an unknown device (10.0.0.7).
+    lab.log("_dns.resolver.arpa", 5, 6, t0_s(), false);
+    lab.log("_dns.resolver.arpa", 7, 3, t0_s() - 20, false);
+    lab.log("www.example", 5, 4, t0_s() - 40, false);
+    lab.log("www.example", 7, 2, t0_s() - 60, false);
+    lab.log("8.8.8.8.in-addr.arpa", 7, 1, t0_s() - 80, false);
+    // (routes, changed answers, changed routes): of 6 + 3 `_dns.resolver.arpa`, 4 + 2
+    // `www.example`, and the device's one public reverse lookup.
+    let cases = [
+        (
+            "the group's own upstreams",
+            "[[group]]\nname = \"tv\"\nupstreams = \"lan\"\n\
+             [[client]]\nname = \"tv\"\nmatch = [\"10.0.0.7\"]\ngroups = [\"tv\"]\n",
+            0,
+            3,
+        ),
+        (
+            "a match_group route",
+            "[[route]]\nmatch_group = [\"kids\"]\nupstream_group = \"lan\"\n",
+            0,
+            4,
+        ),
+        (
+            "a match_qtype route",
+            "[[route]]\nmatch_qtype = [\"A\"]\nupstream_group = \"lan\"\n",
+            0,
+            7,
+        ),
+        (
+            "a route for `.`",
+            "[[route]]\nmatch_suffix = [\".\"]\nupstream_group = \"lan\"\n",
+            0,
+            7,
+        ),
+        (
+            "a route for resolver.arpa",
+            "[[route]]\nmatch_suffix = [\"Resolver.ARPA.\"]\nupstream_group = \"lan\"\n",
+            9,
+            0,
+        ),
+        (
+            "a route for _dns.resolver.arpa",
+            "[[route]]\nmatch_suffix = [\"_dns.resolver.arpa\"]\nupstream_group = \"lan\"\n",
+            9,
+            0,
+        ),
+        (
+            "a route for arpa",
+            "[[route]]\nmatch_suffix = [\"arpa\"]\nupstream_group = \"lan\"\n",
+            0,
+            1,
+        ),
+        (
+            "a route for resolver.arpa and the group kids",
+            "[[route]]\nmatch_suffix = [\"resolver.arpa\"]\nmatch_group = [\"kids\"]\nupstream_group = \"lan\"\n",
+            6,
+            0,
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (routes, extra, answers, moved) in cases {
+        let s = lab.simulate(lab.candidate(extra)).finish(None);
+        let got = (
+            s.rows,
+            s.changed_answer.queries,
+            s.changed_route.queries,
+            s.newly_blocked.queries + s.newly_allowed.queries,
+        );
+        if got != (16, answers, moved, 0) {
+            wrong.push(format!(
+                "{routes}: (rows, changed answers, changed routes, blocks) {got:?}, expected (16, {answers}, {moved}, 0)"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 // REQ: OBS-024 — AC (2): only lists the change adds or edits are compiled, into the side
 // snapshot; the serving snapshot is untouched, and its old version of an edited (or
 // removed) list no longer takes part.

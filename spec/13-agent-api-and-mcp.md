@@ -39,7 +39,7 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `latency_breakdown` | Percentiles by stage / upstream / client / qtype |
 | `upstream_health` | Per-upstream health, breaker history, latency percentiles |
 | `list_effectiveness` | Hits, unique contribution, overlap, dead lists |
-| `find_anomalies` | New domains, NXDOMAIN storms, DGA-suspicious names, rate anomalies, per-domain volume anomalies, behavior drift, beaconing (OBS-013), with evidence, over a window; every node's, each with its ID and acknowledgement (OBS-014), optionally only unacknowledged |
+| `find_anomalies` | New domains, NXDOMAIN storms, sweeps of private reverse names (`reverse_sweep`, with `stormMute` when a mute of storms covers the device; ADR-186), DGA-suspicious names, rate anomalies, per-domain volume anomalies, behavior drift, beaconing (OBS-013), with evidence, over a window; every node's, each with its ID and acknowledgement (OBS-014), optionally only unacknowledged |
 | `health` | One level for the deployment (healthy, degraded, severe) and every reason with its node and where to look (OBS-015) |
 | `shadow_lists` | Per list in shadow mode: what it would have blocked (queries, devices, top names), to judge it before enforcing (OBS-018) |
 | `overblocking_suspects` | Blocked names someone seems to want (answered soon after a block, retry bursts), with the deciding lists (OBS-018) |

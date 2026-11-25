@@ -708,11 +708,14 @@ fn health_checks(
         .map(|n| n.node_id.as_str())
         .collect();
     let primary_up = nodes.iter().any(|n| n.role == "primary" && n.up);
-    let lagging: Vec<&str> = counted()
+    // REQ: CLU-008 (ADR-056) — a witness only votes: it applies no configuration and serves no
+    // DNS, so it is never behind or not serving. It counts for `peers_up` like any node.
+    let serving = || counted().filter(|n| !n.witness);
+    let lagging: Vec<&str> = serving()
         .filter(|n| n.up && n.behind_seconds.is_some_and(|s| s > LAG_WARN_SECS))
         .map(|n| n.node_id.as_str())
         .collect();
-    let not_serving: Vec<&str> = counted()
+    let not_serving: Vec<&str> = serving()
         .filter(|n| n.up && !n.ready)
         .map(|n| n.node_id.as_str())
         .collect();
@@ -743,7 +746,7 @@ fn health_checks(
             "in_sync",
             lagging.is_empty(),
             if lagging.is_empty() {
-                format!("Every reachable node runs configuration version {newest}")
+                format!("Every reachable node that serves DNS runs configuration version {newest}")
             } else {
                 format!("Behind for over {LAG_WARN_SECS} s: {}", lagging.join(", "))
             },
@@ -762,7 +765,7 @@ fn health_checks(
             "serving",
             not_serving.is_empty(),
             if not_serving.is_empty() {
-                "Every reachable node is serving DNS".into()
+                "Every reachable node that serves DNS is ready".into()
             } else {
                 format!("Not serving DNS: {}", not_serving.join(", "))
             },
@@ -1610,6 +1613,69 @@ mod tests {
         away.maintenance = Some(window);
         let nodes = [primary, away];
         assert_eq!(failing(&nodes), Vec::<String>::new());
+    }
+
+    /// REQ: CLU-008 (ADR-056) — a witness applies no configuration and serves no DNS: it is not
+    /// behind or not serving, but it counts as down when it isn't heard from.
+    #[test]
+    fn clu_008_cluster_checks_expect_no_dns_or_configuration_of_a_witness() {
+        let failing = |nodes: &[telltale_api::model::ClusterNode]| -> Vec<String> {
+            health_checks(nodes, false, 12, None, 300)
+                .into_iter()
+                .filter(|c| !c.ok)
+                .map(|c| c.id)
+                .collect()
+        };
+        let mut primary = pod("home", "pi", 50);
+        primary.role = "primary".into();
+        // What a healthy witness reports: up, version 0, never ready.
+        let mut witness = pod("attic", "witness", 0);
+        witness.witness = true;
+        witness.ready = false;
+        witness.config_lag = 12;
+        witness.behind_seconds = Some(86_400);
+        assert_eq!(
+            failing(&[primary.clone(), witness.clone()]),
+            Vec::<String>::new()
+        );
+        // A replica in the same state is behind and not serving.
+        let mut replica = witness.clone();
+        replica.witness = false;
+        assert_eq!(failing(&[primary.clone(), replica]), ["in_sync", "serving"]);
+        // A witness that's down is still reported.
+        witness.up = false;
+        assert_eq!(failing(&[primary, witness]), ["peers_up"]);
+    }
+
+    /// REQ: CLU-008 (ADR-056) — with a witness in the cluster, the passing `in_sync` and
+    /// `serving` checks say what they cover: the nodes that serve DNS.
+    #[test]
+    fn clu_008_check_summaries_cover_the_nodes_that_serve_dns() {
+        let mut primary = pod("home", "pi", 50);
+        primary.role = "primary".into();
+        let mut witness = pod("attic", "witness", 0);
+        witness.witness = true;
+        witness.ready = false;
+        witness.config_lag = 12;
+        witness.behind_seconds = Some(86_400);
+        let checks = health_checks(&[primary, witness], false, 12, None, 300);
+        let summary = |id: &str| {
+            checks
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| (c.ok, c.summary.as_str()))
+        };
+        assert_eq!(
+            summary("in_sync"),
+            Some((
+                true,
+                "Every reachable node that serves DNS runs configuration version 12"
+            ))
+        );
+        assert_eq!(
+            summary("serving"),
+            Some((true, "Every reachable node that serves DNS is ready"))
+        );
     }
 
     /// REQ: CLU-008 (T6.14) — shares add up over the nodes that are up; a site's pods are

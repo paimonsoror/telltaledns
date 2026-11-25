@@ -31,6 +31,8 @@ const KIND: &str = "api.read";
 const DEADLINE: Duration = Duration::from_secs(2);
 #[path = "federated_bridge.rs"]
 mod bridge;
+// REQ: CLU-004 (ADR-174) — the bridge for a backend's own async read (the drill-report alert).
+pub(crate) use bridge::read_within;
 #[path = "federated_support.rs"]
 mod support_cluster;
 // REQ: CLU-004 (ADR-174) — the scan that keeps every federating backend call behind `blocking`.
@@ -517,6 +519,8 @@ fn merge_findings(parts: Vec<(String, Vec<AnomalyFinding>)>) -> Vec<AnomalyFindi
                 // REQ: OBS-038 — muted if any node's mute matched (the mutes are shared, so
                 // nodes agree unless one hasn't applied a change yet).
                 let muted_by = seen.muted_by.clone().or_else(|| f.muted_by.clone());
+                // REQ: OBS-038 (ADR-186) — likewise the storm-only mute a sweep names.
+                let storm_mute = seen.storm_mute.clone().or_else(|| f.storm_mute.clone());
                 // The node that saw the most of it tells the story.
                 if f.observed > seen.observed {
                     let nodes = std::mem::take(&mut seen.nodes);
@@ -524,6 +528,7 @@ fn merge_findings(parts: Vec<(String, Vec<AnomalyFinding>)>) -> Vec<AnomalyFindi
                     seen.nodes = nodes;
                 }
                 seen.muted_by = muted_by;
+                seen.storm_mute = storm_mute;
             } else {
                 f.nodes = vec![label.clone()];
                 by_id.insert(f.id.clone(), f);
@@ -2143,13 +2148,12 @@ impl Backend for Federated {
         limit: usize,
         offset: usize,
     ) -> BoxFuture<Result<telltale_api::model::DrillPage, Problem>> {
-        let (local, cluster) = (Arc::clone(&self.local), Arc::clone(&self.cluster));
+        // REQ: CLU-004 (ADR-174) — this node's own list is read here, on the caller's thread (the
+        // drill-report alert's is a blocking-pool thread, `alerts::drill_reports`), not on the
+        // runtime with the peers' calls: it reads the stored reports from disk.
+        let (mine, cluster) = (self.local.drills(50, 0), Arc::clone(&self.cluster));
         Box::pin(async move {
-            let mut items = local
-                .drills(50, 0)
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
+            let mut items = mine.await.map(|p| p.items).unwrap_or_default();
             let (answers, missing) = crate::drill::ask_all(&cluster, &crate::drill::Op::List).await;
             for (_, body) in answers {
                 if let Ok(v) =
@@ -3499,6 +3503,7 @@ mod anomaly_tests {
             acknowledged: None,
             informational: false,
             muted_by: None,
+            storm_mute: None,
             rhythm: None,
         }
     }
@@ -3520,6 +3525,40 @@ mod anomaly_tests {
         assert!((five.observed - 420.0).abs() < f64::EPSILON);
         let six = merged.iter().find(|f| f.client == "10.0.0.6").unwrap();
         assert_eq!(six.nodes, ["pod-a"]);
+    }
+
+    // REQ: OBS-014, OBS-038 (ADR-186) — the same sweep from two nodes, one of which names the
+    // storm-only mute that covers the device: the merged entry keeps the name, whichever node's
+    // copy tells the story.
+    #[test]
+    fn obs_014_merged_findings_keep_the_storm_mute() {
+        let sweep = |observed: f64, storm_mute: Option<&str>| -> AnomalyFinding {
+            let mut v = serde_json::to_value(finding("192.168.1.30", observed)).unwrap();
+            v["kind"] = serde_json::json!("reverse_sweep");
+            v["id"] = serde_json::json!(telltale_api::model::anomaly_id(
+                "reverse_sweep",
+                "192.168.1.30",
+                None,
+                1_790_000_000,
+                60
+            ));
+            if let Some(m) = storm_mute {
+                v["stormMute"] = serde_json::json!(m);
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        for (a, b) in [
+            (sweep(247.0, Some("lg-tv-ptr-sweep")), sweep(200.0, None)),
+            (sweep(247.0, Some("lg-tv-ptr-sweep")), sweep(300.0, None)),
+            (sweep(247.0, None), sweep(200.0, Some("lg-tv-ptr-sweep"))),
+            (sweep(247.0, None), sweep(300.0, Some("lg-tv-ptr-sweep"))),
+        ] {
+            let merged = merge_findings(vec![("pod-a".into(), vec![a]), ("pod-b".into(), vec![b])]);
+            assert_eq!(merged.len(), 1);
+            let json = serde_json::to_value(&merged[0]).unwrap();
+            assert_eq!(json["stormMute"], "lg-tv-ptr-sweep", "{json}");
+            assert_eq!(merged[0].nodes, ["pod-a", "pod-b"]);
+        }
     }
 
     // REQ: OBS-014 — a peer that doesn't know the anomaly read is skipped, not fatal: the
@@ -4113,6 +4152,57 @@ mod bridge_tests {
             rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "the runtime is stuck"
         );
+    }
+
+    // REQ: CLU-004, CLU-014 (ADR-174's known leftover; GitHub issue #7) — the drill-report alert
+    // reads every node's drill reports through the bridge. With a runtime that works it brings
+    // the primary's report; with the runtime's only worker parked it gives up at its deadline
+    // (no reports this round; a report is sent once, so the next round sends it) and its thread
+    // goes back. Before: `Handle::block_on` with no deadline of the operating system's, so the
+    // alert's thread waited for as long as the runtime couldn't run.
+    #[test]
+    fn clu_004_the_drill_report_alert_gives_up_on_a_wedged_runtime() {
+        let now = crate::pipeline::unix_now();
+        let report = telltale_api::model::DrillSummary {
+            id: "d1".into(),
+            node: "pi".into(),
+            targets: "everyone".into(),
+            by: "schedule".into(),
+            status: "complete".into(),
+            ended: Some(telltale_api::time::format_us((now - 60) * 1_000_000)),
+            ..telltale_api::model::DrillSummary::default()
+        };
+        let list = serde_json::to_vec(&vec![report]).unwrap();
+        let handler: RpcHandler = Arc::new(move |_peer, kind, body| {
+            let list = list.clone();
+            Box::pin(async move {
+                match serde_json::from_slice::<crate::drill::Op>(&body) {
+                    Ok(crate::drill::Op::List) if kind == crate::drill::KIND => Ok(list),
+                    _ => Err("a read this test doesn't ask".to_owned()),
+                }
+            })
+        });
+        let n = two_nodes_answering(handler);
+        // A runtime that works: the primary's report, as the alert words it.
+        let (idle, _unused) = mpsc::channel::<()>();
+        let (seen, _, n) = on_a_thread(n, &idle, move |fed| crate::alerts::drill_reports(fed, now));
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].0, "d1");
+        assert!(
+            seen[0].1.starts_with("scheduled failover drill on pi"),
+            "{}",
+            seen[0].1
+        );
+        // The only worker parked: the read ends at its deadline, empty.
+        let gate = wedge(&n.rt);
+        let (seen, took, n) =
+            on_a_thread(n, &gate, move |fed| crate::alerts::drill_reports(fed, now));
+        let _ = gate.send(());
+        assert!(seen.is_empty(), "{seen:?}");
+        // Bounds only, far from the wait (the 3 s deadline and the bridge's 250 ms grace): no race.
+        assert!(took >= Duration::from_secs(2), "{took:?}: it gave up early");
+        assert!(took < Duration::from_secs(8), "{took:?}");
+        drop(n);
     }
 
     // REQ: CLU-002 (ADR-174) — with a runtime that works, the answers are the peer's, whether

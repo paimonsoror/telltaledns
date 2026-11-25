@@ -373,6 +373,96 @@ upstreams = "vpn"
     );
 }
 
+/// REQ: DNS-019, UPS-007 (ADR-187) — a selection says how many labels the suffix that chose it
+/// has: a suffix route's, whatever its case or final dot, and over a group's own upstreams; 0 for
+/// a route without a suffix (a group's own upstreams, `match_group`, `match_qtype`, `.`) and for
+/// the default group.
+#[test]
+fn dns_019_selection_counts_the_labels_of_the_matched_suffix() {
+    let r = router(
+        r#"[[upstream]]
+name = "a"
+url = "udp://127.0.0.1:9"
+[[upstream_group]]
+name = "default"
+members = ["a"]
+[[upstream_group]]
+name = "family"
+members = ["a"]
+[[upstream_group]]
+name = "lan"
+members = ["a"]
+[[route]]
+match_suffix = ["Resolver.ARPA."]
+upstream_group = "lan"
+[[route]]
+match_suffix = ["home.arpa", "arpa"]
+upstream_group = "lan"
+[[route]]
+match_group = ["guest"]
+upstream_group = "lan"
+[[route]]
+match_qtype = ["TXT"]
+upstream_group = "lan"
+[[route]]
+match_suffix = ["."]
+match_group = ["iot"]
+upstream_group = "lan"
+[[group]]
+name = "kids"
+upstreams = "family"
+[[group]]
+name = "guest"
+[[group]]
+name = "iot"
+"#,
+    )
+    .unwrap();
+    let pick = |name: &str, qtype: u16, groups: &[&str]| {
+        let s = r.select(&q(name, qtype), groups).unwrap();
+        (s.group.name.clone(), s.routed, s.suffix_labels)
+    };
+    assert_eq!(
+        pick("_dns.resolver.arpa", rtype::SVCB, &[]),
+        ("lan".into(), true, 2)
+    );
+    assert_eq!(
+        pick("_dns.resolver.arpa", rtype::SVCB, &["kids"]),
+        ("lan".into(), true, 2),
+        "a suffix route wins over the group's own upstreams"
+    );
+    assert_eq!(
+        pick("nas.home.arpa", rtype::A, &[]),
+        ("lan".into(), true, 2),
+        "the longest of a route's suffixes"
+    );
+    assert_eq!(
+        pick("1.in-addr.arpa", rtype::PTR, &[]),
+        ("lan".into(), true, 1)
+    );
+    assert_eq!(
+        pick("example.org", rtype::A, &["kids"]),
+        ("family".into(), true, 0)
+    );
+    assert_eq!(
+        pick("example.org", rtype::A, &["guest"]),
+        ("lan".into(), true, 0)
+    );
+    assert_eq!(
+        pick("example.org", rtype::TXT, &[]),
+        ("lan".into(), true, 0)
+    );
+    assert_eq!(
+        pick("example.org", rtype::A, &["iot"]),
+        ("lan".into(), true, 0),
+        "`.` has no labels"
+    );
+    assert_eq!(
+        pick("example.org", rtype::A, &[]),
+        ("default".into(), false, 0)
+    );
+}
+
 /// REQ: DNS-022 — a stub upstream's health check asks its zone's SOA (its servers are
 /// authoritative only); other upstreams keep asking the root's NS.
 #[test]

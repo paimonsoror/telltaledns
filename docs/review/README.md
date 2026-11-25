@@ -90,8 +90,7 @@ New evidence, a better fix, or a cause nobody found is welcome; say so explicitl
   (T10.7), the comparative report (T10.8).
 - **DNSSEC** (ADR-098): `validate` mode isn't recommended yet because at a cold start the
   upstream can close fresh DoT connections and fail the first validations; the first
-  validation of a deep chain can exceed the client's wait (SERVFAIL, then cached);
-  `_dns.resolver.arpa` is forwarded instead of answered locally.
+  validation of a deep chain can exceed the client's wait (SERVFAIL, then cached).
 - **Deliberately out of scope** (see the ADRs): DHCP (ADR-091), RFC 5011 trust-anchor
   tracking (ADR-086), zone transfers (ADR-094), WASM plugins (ADR-084), io_uring (ADR-083).
 - **Accepted decisions** (every ADR through ADR-096 is Accepted). You may challenge one, but

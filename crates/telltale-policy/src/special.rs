@@ -16,6 +16,9 @@ pub enum Special {
     Localhost,
     /// Reverse lookup for a private address: NXDOMAIN unless local data or a route covers it.
     PrivatePtr,
+    /// A locally served zone with no data of its own (`resolver.arpa`, RFC 9462 §6.4): NOERROR
+    /// with no records unless local data or a route covers it.
+    LocallyServed,
 }
 
 struct Names {
@@ -24,6 +27,7 @@ struct Names {
     localhost: NameBuf,
     in_addr: NameBuf,
     ip6: NameBuf,
+    resolver_arpa: NameBuf,
 }
 
 fn names() -> &'static Names {
@@ -36,6 +40,7 @@ fn names() -> &'static Names {
             localhost: n("localhost"),
             in_addr: n("in-addr.arpa"),
             ip6: n("ip6.arpa"),
+            resolver_arpa: n("resolver.arpa"),
         }
     })
 }
@@ -57,6 +62,11 @@ pub fn classify(q: &Query<'_>, cfg: &SpecialConfig) -> Option<Special> {
     }
     if cfg.private_ptr_nxdomain && is_private_reverse(&q.qname, n) {
         return Some(Special::PrivatePtr);
+    }
+    // REQ: DNS-019 (ADR-187) — RFC 9462 §6.4: `resolver.arpa` and every name below it
+    // (`_dns.resolver.arpa`) are a locally served zone (RFC 6303). One more suffix comparison.
+    if cfg.resolver_arpa && q.qname.is_subdomain_of(&n.resolver_arpa) {
+        return Some(Special::LocallyServed);
     }
     None
 }
@@ -164,5 +174,44 @@ mod tests {
         ] {
             assert_eq!(classify_name(public, 1), None, "{public}");
         }
+    }
+
+    // REQ: DNS-019 (ADR-187, GitHub issue #77) — RFC 9462 §6.4: `resolver.arpa` is a locally
+    // served zone: the name itself and every name below it, whatever the case on the wire. Names
+    // that only look like it aren't, and `[special] resolver_arpa = false` turns it off.
+    #[test]
+    fn dns_019_resolver_arpa_is_locally_served() {
+        for name in ["resolver.arpa", "_dns.resolver.arpa", "a.b.resolver.arpa"] {
+            assert_eq!(
+                classify_name(name, 1),
+                Some(Special::LocallyServed),
+                "{name}"
+            );
+        }
+        for name in [
+            "arpa",
+            "xresolver.arpa",
+            "resolver.arpa.example.com",
+            "resolverarpa",
+        ] {
+            assert_eq!(classify_name(name, 1), None, "{name}");
+        }
+        // `_DNS.RESOLVER.ARPA` as a client sends it: the question's letters in upper case.
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation("_dns.resolver.arpa").unwrap();
+        let len = build_query(&mut buf, 1, &n, rtype::SVCB, 1, true, None).unwrap();
+        // The header is 12 bytes; the question's type and class are its last 4.
+        buf[12..len - 4].make_ascii_uppercase();
+        assert!(buf[..len].windows(8).any(|w| w == b"RESOLVER"));
+        let q = parse_query(&buf[..len]).unwrap();
+        assert_eq!(
+            classify(&q, &SpecialConfig::default()),
+            Some(Special::LocallyServed)
+        );
+        let off = SpecialConfig {
+            resolver_arpa: false,
+            ..SpecialConfig::default()
+        };
+        assert_eq!(classify(&q, &off), None, "turned off");
     }
 }

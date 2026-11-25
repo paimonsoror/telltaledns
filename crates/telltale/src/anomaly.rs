@@ -56,6 +56,7 @@ const fn kind(k: AnomalyKind) -> Kind {
         AnomalyKind::NxdomainStorm => Kind::NxdomainStorm,
         AnomalyKind::Dga => Kind::Dga,
         AnomalyKind::ChattyLoop => Kind::ChattyLoop,
+        AnomalyKind::ReverseSweep => Kind::ReverseSweep,
     }
 }
 
@@ -257,6 +258,93 @@ mod tests {
         for level in [1, 2, 3] {
             cfg.telemetry.qlog.privacy_level = level;
             assert!(Anomalies::start(&cfg).is_none(), "level {level}");
+        }
+    }
+
+    // REQ: OBS-038 (ADR-186) — every kind the engine reports can be named in a mute, and the
+    // mute means that kind (the configuration and the engine each have their own enum).
+    #[test]
+    fn obs_038_config_and_engine_kinds_agree() {
+        for k in Kind::ALL {
+            let a: AnomalyKind = serde_json::from_value(serde_json::json!(k.label()))
+                .unwrap_or_else(|e| panic!("{}: {e}", k.label()));
+            assert_eq!(kind(a), k, "{}", k.label());
+            assert_eq!(a.label(), k.label());
+        }
+    }
+
+    // REQ: OBS-009, OBS-037 (ADR-186, ADR-152) — the anomaly engine and the resolver each have a
+    // check for reverse names of private addresses (the telemetry crate doesn't depend on the
+    // resolver's): they answer alike at every edge of every range.
+    #[test]
+    fn obs_009_the_sweep_and_the_resolver_agree_on_private_reverse_names() {
+        use telltale_policy::{Special, classify};
+        use telltale_proto::{NameBuf, build_query, parse_query, rtype};
+        use telltale_telemetry::internal::InternalNames;
+        let v4 = |a: &str| format!("{a}.in-addr.arpa");
+        // 32 nibbles, least significant first: zeros, then the most significant ones given.
+        let v6 = |top: &str| {
+            let n = top.split('.').count();
+            format!("{}{top}.ip6.arpa", "0.".repeat(32 - n))
+        };
+        let mut corpus: Vec<(String, bool)> = [
+            ("1.0.15.172", false),
+            ("1.0.16.172", true),
+            ("1.0.31.172", true),
+            ("1.0.32.172", false),
+            ("1.0.63.100", false),
+            ("1.0.64.100", true),
+            ("1.0.127.100", true),
+            ("1.0.128.100", false),
+            ("1.0.0.10", true),
+            ("1.0.0.11", false),
+            ("1.1.168.192", true),
+            ("1.1.169.192", false),
+            ("1.1.254.169", true),
+            ("1.1.0.127", true),
+            ("1.1.1.0", true),
+            ("8.8.8.8", false),
+            ("1.1.1.1", false),
+            ("4.3.2.1", false),
+            ("1.113.0.203", false),
+            ("10", true),
+            ("168.192", true),
+            ("b._dns-sd._udp.0.1.168.192", true),
+        ]
+        .iter()
+        .map(|(a, want)| (v4(a), *want))
+        .collect();
+        corpus.push(("in-addr.arpa".into(), false));
+        // Upper case (both read lowercased names), and labels that only end in the zone's bytes
+        // (a length byte inside them): not under `in-addr.arpa` or `ip6.arpa`.
+        corpus.push(("1.0.0.10.IN-ADDR.ARPA".into(), true));
+        corpus.push(("1.0.0.10.x\\007in-addr.arpa".into(), false));
+        corpus.push(("1.d.f.x\\003ip6.arpa".into(), false));
+        for (top, want) in [
+            ("b.f", false),
+            ("c.f", true),
+            ("d.f", true),
+            ("0.e.f", false),
+            ("7.e.f", false),
+            ("8.e.f", true),
+            ("b.e.f", true),
+            ("c.e.f", false),
+        ] {
+            corpus.push((v6(top), want));
+        }
+        corpus.push((format!("1.{}ip6.arpa", "0.".repeat(31)), true)); // ::1
+        corpus.push((format!("2.{}ip6.arpa", "0.".repeat(31)), false)); // ::2
+        let engine = InternalNames::default();
+        for (name, want) in &corpus {
+            let mut buf = [0u8; 512];
+            let n = NameBuf::from_presentation(name).unwrap();
+            let len = build_query(&mut buf, 1, &n, rtype::A, 1, true, None).unwrap();
+            let q = parse_query(&buf[..len]).unwrap();
+            let resolver = classify(&q, &telltale_config::SpecialConfig::default())
+                == Some(Special::PrivatePtr);
+            let sweep = engine.is_internal(q.qname.as_wire());
+            assert_eq!(resolver, sweep, "the two checks disagree on {name}");
+            assert_eq!(resolver, *want, "{name}");
         }
     }
 }

@@ -440,7 +440,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. Alert-only; nothing is blocked automatically.",
+    "description": "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, sweeps of private reverse names (reverse_sweep: a device looking up the names of many addresses on the local network), and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. A counted reverse_sweep may have stormMute: a mute of nxdomain_storm for that device, probably made for the sweep before it was its own kind, which doesn't cover it. Alert-only; nothing is blocked automatically.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1519,7 +1519,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or telltale_anomalies_total (telltale_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
+    "description": "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or telltale_anomalies_total (telltale_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep: reverse_sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1542,7 +1542,7 @@
           "type": "array"
         },
         "kinds": {
-          "description": "The kinds of finding to mute (at least one).",
+          "description": "The kinds of finding to mute (at least one). nxdomain_storm doesn't cover reverse_sweep.",
           "items": {
             "enum": [
               "rate_spike",
@@ -1551,7 +1551,8 @@
               "beacon",
               "nxdomain_storm",
               "dga",
-              "chatty_loop"
+              "chatty_loop",
+              "reverse_sweep"
             ],
             "type": "string"
           },

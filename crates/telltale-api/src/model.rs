@@ -2055,7 +2055,9 @@ pub struct AnomalyFinding {
     /// has the same ID on every node and after restarts. Acknowledge findings by it.
     #[schema(example = "6ab0f180a1b2c3d4")]
     pub id: String,
-    /// `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
+    /// `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`,
+    /// or `reverse_sweep` (a sweep of private reverse names: a device looking up the names of
+    /// many addresses on the local network).
     #[schema(example = "domain_volume")]
     pub kind: String,
     /// The device's address, and its name when known.
@@ -2100,6 +2102,13 @@ pub struct AnomalyFinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "lg-tv-ptr-sweep")]
     pub muted_by: Option<String>,
+    /// REQ: OBS-038 (ADR-186) — on a `reverse_sweep` finding no mute matched: a mute that covers
+    /// this device for `nxdomain_storm` but not `reverse_sweep`. Before 0.9 a sweep counted as an
+    /// `nxdomain_storm`, so the mute was probably made for it; add `reverse_sweep` to it, or
+    /// change its kind, to mute the sweep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "lg-tv-ptr-sweep")]
+    pub storm_mute: Option<String>,
 }
 
 /// REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold.

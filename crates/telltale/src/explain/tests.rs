@@ -149,9 +149,49 @@ fn contains(msg: &[u8], needle: &[u8]) -> bool {
     msg.windows(needle.len()).any(|w| w == needle)
 }
 
+/// REQ: DNS-019, UPS-007 (ADR-187) — routes of every kind, added to `CONFIG`: none; a group's own
+/// upstreams (for the device at 10.0.0.7); routes without a suffix (`match_group`, `match_qtype`,
+/// `.`), which match every name; routes for `resolver.arpa` and a name below it; and a route for
+/// `arpa`, which covers `resolver.arpa` from above.
+const ROUTES: [(&str, &str); 9] = [
+    ("no route", ""),
+    (
+        "the group's own upstreams",
+        "[[group]]\nname = \"tv\"\nupstreams = \"lan\"\n\
+         [[client]]\nname = \"tv\"\nmatch = [\"10.0.0.7\"]\ngroups = [\"tv\"]\n",
+    ),
+    (
+        "a match_group route",
+        "[[route]]\nmatch_group = [\"kids\"]\nupstream_group = \"lan\"\n",
+    ),
+    (
+        "a match_qtype route",
+        "[[route]]\nmatch_qtype = [\"A\"]\nupstream_group = \"lan\"\n",
+    ),
+    (
+        "a route for `.`",
+        "[[route]]\nmatch_suffix = [\".\"]\nupstream_group = \"lan\"\n",
+    ),
+    (
+        "a route for resolver.arpa",
+        "[[route]]\nmatch_suffix = [\"Resolver.ARPA.\"]\nupstream_group = \"lan\"\n",
+    ),
+    (
+        "a route for _dns.resolver.arpa",
+        "[[route]]\nmatch_suffix = [\"_dns.resolver.arpa\"]\nupstream_group = \"lan\"\n",
+    ),
+    (
+        "a route for arpa",
+        "[[route]]\nmatch_suffix = [\"arpa\"]\nupstream_group = \"lan\"\n",
+    ),
+    (
+        "a route for resolver.arpa and the group kids",
+        "[[route]]\nmatch_suffix = [\"resolver.arpa\"]\nmatch_group = [\"kids\"]\nupstream_group = \"lan\"\n",
+    ),
+];
+
 #[test]
 fn flt_013_explain_agrees_with_the_pipeline() {
-    let (p, sources) = setup();
     let names = [
         "ads.example.com",
         "x.tracker.example.net",
@@ -161,33 +201,114 @@ fn flt_013_explain_agrees_with_the_pipeline() {
         "nas.home.arpa",
         "host.corp.example",
         "localhost",
+        // REQ: DNS-019 (ADR-187) — answered here, not forwarded, unless a route for it or a name
+        // below it covers it.
+        "_dns.resolver.arpa",
+        "resolver.arpa",
+        "8.8.8.8.in-addr.arpa",
     ];
-    for client in ["10.0.0.5", "10.0.0.9", "192.0.2.1"] {
-        for name in names {
-            let e = ask(&p, &sources, name, client);
-            let answer = served(&p, name, client);
-            let label = format!("{name} from {client}: {:?} ({})", e.outcome, e.summary);
-            match e.outcome {
-                Outcome::Resolved | Outcome::Allowed => {
-                    assert!(
-                        answer.is_none(),
-                        "{label}: pipeline answered without forwarding"
-                    );
-                }
-                Outcome::Blocked => {
-                    let a = answer.unwrap_or_else(|| panic!("{label}: pipeline forwarded"));
-                    let list = &e.block.as_ref().unwrap().list;
-                    assert!(
-                        contains(&a, format!("blocked by list {list}").as_bytes()),
-                        "{label}"
-                    );
-                }
-                Outcome::Local | Outcome::Special | Outcome::Refused => {
-                    assert!(answer.is_some(), "{label}: pipeline forwarded");
+    // REQ: DNS-019, UPS-007 (ADR-187) — with routes of every kind.
+    for (routes, extra) in ROUTES {
+        let (p, sources) = setup_with(extra);
+        for client in ["10.0.0.5", "10.0.0.7", "10.0.0.9", "192.0.2.1"] {
+            for name in names {
+                let e = ask(&p, &sources, name, client);
+                let answer = served(&p, name, client);
+                let label = format!(
+                    "{routes}: {name} from {client}: {:?} ({})",
+                    e.outcome, e.summary
+                );
+                match e.outcome {
+                    Outcome::Resolved | Outcome::Allowed => {
+                        assert!(
+                            answer.is_none(),
+                            "{label}: pipeline answered without forwarding"
+                        );
+                    }
+                    Outcome::Blocked => {
+                        let a = answer.unwrap_or_else(|| panic!("{label}: pipeline forwarded"));
+                        let list = &e.block.as_ref().unwrap().list;
+                        assert!(
+                            contains(&a, format!("blocked by list {list}").as_bytes()),
+                            "{label}"
+                        );
+                    }
+                    Outcome::Local | Outcome::Special | Outcome::Refused => {
+                        assert!(answer.is_some(), "{label}: pipeline forwarded");
+                    }
                 }
             }
         }
     }
+}
+
+// REQ: DNS-019, UPS-007, FLT-013 (ADR-187) — explain says what the pipeline does with
+// `_dns.resolver.arpa` for routes of every kind: forwarded only by a route for `resolver.arpa`
+// (in any case) or a name below it; any other route (a group's own upstreams, `match_group`,
+// `match_qtype`, `.`, `arpa`) sends the device's other names to its upstream group and leaves
+// this one answered here.
+#[test]
+fn dns_019_explain_forwards_resolver_arpa_only_by_a_route_for_it_or_below() {
+    const HERE: Option<&str> = None;
+    const LAN: Option<&str> = Some("lan");
+    const CLIENTS: [&str; 3] = ["10.0.0.5", "10.0.0.7", "10.0.0.9"];
+    // By `ROUTES`: the upstream group `_dns.resolver.arpa` goes to from each of `CLIENTS` (`HERE`:
+    // answered here), and a (client, name) the routes do send to `lan`.
+    let want = [
+        ([HERE; 3], None),
+        ([HERE; 3], Some(("10.0.0.7", "www.example.org"))),
+        ([HERE; 3], Some(("10.0.0.5", "www.example.org"))),
+        ([HERE; 3], Some(("10.0.0.9", "www.example.org"))),
+        ([HERE; 3], Some(("10.0.0.9", "www.example.org"))),
+        ([LAN; 3], None),
+        ([LAN; 3], None),
+        ([HERE; 3], Some(("10.0.0.9", "8.8.8.8.in-addr.arpa"))),
+        ([LAN, HERE, HERE], None),
+    ];
+    let mut wrong = Vec::new();
+    for ((routes, extra), (ddr, routed)) in ROUTES.into_iter().zip(want) {
+        let (p, sources) = setup_with(extra);
+        for (client, want) in CLIENTS.into_iter().zip(ddr) {
+            let e = ask(&p, &sources, "_dns.resolver.arpa", client);
+            let got = match e.outcome {
+                Outcome::Special if e.route.is_none() && e.summary.contains("RFC 9462") => HERE,
+                Outcome::Resolved => e.route.as_ref().map(|r| r.group.as_str()),
+                _ => Some("another outcome"),
+            };
+            if got != want {
+                wrong.push(format!(
+                    "{routes}: _dns.resolver.arpa from {client}: {:?} ({}), expected {want:?}",
+                    e.outcome, e.summary
+                ));
+            }
+        }
+        if let Some((client, name)) = routed {
+            let e = ask(&p, &sources, name, client);
+            let group = e.route.as_ref().map(|r| r.group.as_str());
+            if group != LAN {
+                wrong.push(format!(
+                    "{routes}: {name} from {client}: {group:?}, expected the route's lan"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+// REQ: DNS-019, FLT-013 (ADR-187) — explain says what the pipeline does with `resolver.arpa`:
+// answered here with no records, and forwarded when a route covers it.
+#[test]
+fn dns_019_explain_says_resolver_arpa_is_answered_here() {
+    let (p, sources) = setup();
+    let e = ask(&p, &sources, "_dns.resolver.arpa", "10.0.0.9");
+    assert_eq!(e.outcome, Outcome::Special, "{}", e.summary);
+    assert!(e.summary.contains("RFC 9462"), "{}", e.summary);
+    assert!(e.route.is_none(), "not forwarded");
+    let (p, sources) =
+        setup_with("[[route]]\nmatch_suffix = [\"resolver.arpa\"]\nupstream_group = \"lan\"\n");
+    let e = ask(&p, &sources, "_dns.resolver.arpa", "10.0.0.9");
+    assert_eq!(e.outcome, Outcome::Resolved, "{}", e.summary);
+    assert_eq!(e.route.as_ref().unwrap().group, "lan");
 }
 
 #[test]

@@ -1006,7 +1006,7 @@
           "config"
         ],
         "summary": "Mute kinds of device anomaly for some devices or groups (OBS-038).",
-        "description": "The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):\n`devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,\n`domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`), and optionally\n`expires` (RFC 3339) and `note`, e.g. `{\"devices\": [\"lg-tv-living\"], \"kinds\":\n[\"nxdomain_storm\"], \"expires\": \"2026-12-31T00:00:00Z\", \"note\": \"hourly PTR sweep\"}`. A finding\na mute matches when it is created is still recorded and listed (`GET\n/analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in\n`telltale_anomalies_total`, the badge, the `anomaly` alert rule, or the health level\n(`telltale_anomalies_muted_total` counts it). The same kind still counts for every other\ndevice. The mute is shared: it applies on every node. There is no mute for everyone: name at\nleast one device or group.",
+        "description": "The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):\n`devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,\n`domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`, `reverse_sweep`;\na mute of `nxdomain_storm` doesn't cover `reverse_sweep`), and optionally\n`expires` (RFC 3339) and `note`, e.g. `{\"devices\": [\"lg-tv-living\"], \"kinds\":\n[\"reverse_sweep\"], \"expires\": \"2026-12-31T00:00:00Z\", \"note\": \"hourly PTR sweep\"}`. A finding\na mute matches when it is created is still recorded and listed (`GET\n/analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in\n`telltale_anomalies_total`, the badge, the `anomaly` alert rule, or the health level\n(`telltale_anomalies_muted_total` counts it). The same kind still counts for every other\ndevice. The mute is shared: it applies on every node. There is no mute for everyone: name at\nleast one device or group.",
         "operationId": "put_anomaly_mute",
         "parameters": [
           {
@@ -9863,7 +9863,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
+            "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`,\nor `reverse_sweep` (a sweep of private reverse names: a device looking up the names of\nmany addresses on the local network).",
             "example": "domain_volume"
           },
           "mutedBy": {
@@ -9901,6 +9901,14 @@
           "spread": {
             "type": "number",
             "format": "double"
+          },
+          "stormMute": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: OBS-038 (ADR-186) — on a `reverse_sweep` finding no mute matched: a mute that covers\nthis device for `nxdomain_storm` but not `reverse_sweep`. Before 0.9 a sweep counted as an\n`nxdomain_storm`, so the mute was probably made for it; add `reverse_sweep` to it, or\nchange its kind, to mute the sweep.",
+            "example": "lg-tv-ptr-sweep"
           },
           "threshold": {
             "type": "number",
@@ -14881,7 +14889,7 @@
                 },
                 "kind": {
                   "type": "string",
-                  "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
+                  "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`,\nor `reverse_sweep` (a sweep of private reverse names: a device looking up the names of\nmany addresses on the local network).",
                   "example": "domain_volume"
                 },
                 "mutedBy": {
@@ -14919,6 +14927,14 @@
                 "spread": {
                   "type": "number",
                   "format": "double"
+                },
+                "stormMute": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: OBS-038 (ADR-186) — on a `reverse_sweep` finding no mute matched: a mute that covers\nthis device for `nxdomain_storm` but not `reverse_sweep`. Before 0.9 a sweep counted as an\n`nxdomain_storm`, so the mute was probably made for it; add `reverse_sweep` to it, or\nchange its kind, to mute the sweep.",
+                  "example": "lg-tv-ptr-sweep"
                 },
                 "threshold": {
                   "type": "number",

@@ -33,6 +33,11 @@ pub struct Selection<'a> {
     pub view: u16,
     /// True if an explicit `[[route]]` matched (not just the default group).
     pub routed: bool,
+    /// REQ: DNS-019, UPS-007 (ADR-187) — the label count of the suffix that chose the route
+    /// (`resolver.arpa`: 2). 0 for the default group and for a route without a suffix (a
+    /// `[[group]] upstreams`, `match_group` or `match_qtype` route, or one for `.`), which matches
+    /// every name.
+    pub suffix_labels: usize,
 }
 
 /// Routing table built from config.
@@ -537,6 +542,7 @@ impl Router {
             group: &self.groups[idx],
             view: u16::try_from(idx).unwrap_or(u16::MAX),
             routed: best.is_some(),
+            suffix_labels: best.map_or(0, |(d, _)| d),
         })
     }
 

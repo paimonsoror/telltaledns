@@ -5,6 +5,8 @@
   // the badge and hide here unless "Show acknowledged" is on.
   // REQ: OBS-038 — muting: a kind of finding for a device stops counting (it is still recorded);
   // muted findings hide here unless "Show muted" is on, and the mutes are listed below.
+  // REQ: OBS-038 (ADR-186) — a sweep of local addresses is its own kind: a mute made for one when
+  // it still counted as a burst of failed lookups is pointed out on the sweep.
   import { api, type S } from '../lib/api';
   import { href } from '../lib/router.svelte';
   import { can } from '../lib/session.svelte';
@@ -59,10 +61,20 @@
     beacon: 'Regular phone-home',
     chatty_loop: 'Chatty loop',
     nxdomain_storm: 'Burst of failed lookups',
+    reverse_sweep: 'Sweep of local addresses',
     dga: 'Machine-generated-looking domains',
   };
   // Findings measured against an absolute bar, not the device's usual value.
-  const absolute = new Set(['nxdomain_storm', 'dga']);
+  const absolute = new Set(['nxdomain_storm', 'reverse_sweep', 'dga']);
+  // The mute of bursts that a counted sweep names (`stormMute`), while it still lists
+  // nxdomain_storm and not reverse_sweep: before 0.9 a sweep counted as a burst, so the mute was
+  // probably made for it, and it no longer covers the sweep.
+  const stormMuteOf = (f: S['AnomalyFinding']) => {
+    if (f.kind !== 'reverse_sweep' || f.mutedBy || !f.stormMute) return undefined;
+    const e = mutes.find((m) => m.name === f.stormMute);
+    const kinds = e ? (muteDef(e).kinds ?? []) : [];
+    return e && kinds.includes('nxdomain_storm') && !kinds.includes('reverse_sweep') ? e : undefined;
+  };
   const windowText = (s: number) => (s >= 86400 ? `${s / 86400} day` : s >= 3600 ? `${s / 3600} h` : `${s / 60} min`);
 
   async function removeMute(name: string) {
@@ -169,7 +181,25 @@
         <span class="spacer"></span>
         <span class="muted small">{dateTime(Date.parse(f.windowStart) / 1000)}</span>
       </div>
+      {#if f.kind === 'reverse_sweep'}
+        <p class="muted small" data-testid="sweep-explained">
+          This device looked up the names of many addresses on your network. Network scanners do this, and so do some TVs and NAS boxes, on their own, often once an hour.
+        </p>
+      {/if}
       <p>{f.detail}</p>
+      {#if writable}
+        {@const old = stormMuteOf(f)}
+        {#if old}
+          <p class="notice small" data-testid="storm-mute-hint">
+            <b>{old.name}</b> mutes <i>Burst of failed lookups</i> for this device. Before 0.9 a sweep counted as one, so that mute was probably made for it: it now hides only this device's real bursts. Mute the sweep, then remove <b>{old.name}</b> if the sweep was its only reason.
+            {#if old.source === 'file'}
+              <span class="muted">It's in the config file: change its kinds there.</span>
+            {:else}
+              <button class="link small" disabled={busy} onclick={() => removeMute(old.name)} data-testid="remove-storm-mute">Remove {old.name}</button>
+            {/if}
+          </p>
+        {/if}
+      {/if}
       {#if (f.kind === 'beacon' || f.kind === 'chatty_loop') && f.rhythm && f.domain}
         <!-- REQ: OBS-031 — the beacon's rhythm when it was reported. -->
         <RhythmStrip rows={[{ domain: f.domain, recent: f.rhythm }]} client={f.client} toggle={false} />
@@ -190,6 +220,8 @@
         <dt>Observed</dt><dd>{num(Math.round(f.observed * 10) / 10)}</dd>
         {#if f.kind === 'nxdomain_storm'}
           <dt>Queries</dt><dd>{num(f.baseline)}</dd>
+        {:else if f.kind === 'reverse_sweep'}
+          <dt>Reverse lookups</dt><dd>{num(f.baseline)}</dd>
         {:else if !absolute.has(f.kind)}
           <dt>Usual</dt><dd>{num(Math.round(f.baseline * 10) / 10)} ± {num(Math.round(f.spread * 10) / 10)}</dd>
         {/if}

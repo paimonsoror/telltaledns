@@ -668,7 +668,7 @@ pub(crate) fn render(src: &Sources) -> String {
         w.family(
             "telltale_anomalies_total",
             "counter",
-            "Device anomaly findings by kind (rate_spike, domain_volume, drift, beacon).",
+            "Device anomaly findings by kind (rate_spike, domain_volume, drift, beacon, nxdomain_storm, reverse_sweep, dga, chatty_loop).",
         );
         for (k, n) in totals {
             w.sample("telltale_anomalies_total", &[("kind", k.label())], n);
