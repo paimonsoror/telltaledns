@@ -1610,3 +1610,19 @@ fn dns_019_resolver_arpa_default_on_and_not_written() {
     assert_eq!(errs.len(), 1, "{errs:?}");
     assert!(load_str("[special]\nresolver_arpa = \"no\"\n").is_err());
 }
+
+#[test]
+fn t8_2_fritzbox_requires_distinct_ipv4_client_networks() {
+    let source = |name: &str, subnets: &str| {
+        format!(
+            "[[router]]\nname = \"{name}\"\ntype = \"fritzbox\"\nurl = \"http://{name}:49000\"\nclient_subnets = {subnets}\n"
+        )
+    };
+    let first = source("site-a", r#"["192.168.40.0/24"]"#);
+    let valid = first.clone() + &source("site-b", r#"["192.168.50.0/24"]"#);
+    assert_eq!(load_str(&valid).unwrap().config.router.len(), 2);
+    for subnets in ["[]", r#"["192.168.40.128/25"]"#, r#"["fd00::/64"]"#] {
+        let config = first.clone() + &source("site-b", subnets);
+        assert!(paths(&load_str(&config).unwrap_err()).contains(&"router[1].client_subnets"));
+    }
+}

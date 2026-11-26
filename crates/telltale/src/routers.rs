@@ -12,6 +12,9 @@
 //! the naming falls back to (after configured device names and TelltaleDNS's own DHCP).
 //! Never on the DNS path; a router that's down keeps its last answer and is logged.
 
+#[path = "routers/fritzbox.rs"]
+mod fritzbox;
+
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
@@ -771,6 +774,7 @@ pub(crate) async fn run(
             let result = match r.kind {
                 RouterKind::Unifi => poll_unifi(&client, r).await,
                 RouterKind::Opnsense => poll_opnsense(&client, r).await,
+                RouterKind::Fritzbox => fritzbox::poll(&client, r).await,
             };
             let was_failing = failing.get(r.name.as_str()).copied().unwrap_or(false);
             match result {
