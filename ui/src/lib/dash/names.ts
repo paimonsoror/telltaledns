@@ -8,6 +8,9 @@
 //
 // The Kubernetes rules are heuristics on the name alone: the server doesn't know the cluster's
 // search list, so a namespace that is also a top-level domain (`io`, `dev`) reads as part of the name.
+import { tr } from '../i18n';
+
+const { t } = tr('names');
 
 export interface Parsed {
   /** What to show first. */
@@ -52,16 +55,15 @@ function ip6(nibbles: string[]): string {
 export function parseName(raw: string): Parsed {
   const n = raw.replace(/\.$/, '').toLowerCase();
   const plain = (s: string): Parsed => ({ main: s.split('.').map(elide).join('.'), tag: '', note: '', kind: 'plain' });
+  // REQ: API-012 — the tag and the note are display text; `kind` says what the name is.
+  const reverse = (a: string): Parsed => ({ main: a, tag: t('reverse'), note: t('Reverse lookup of {address}', { address: a }), kind: 'reverse' });
 
   // Reverse lookups: the address, not the nibbles.
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.in-addr\.arpa$/.exec(n);
-  if (v4) return { main: `${v4[4]}.${v4[3]}.${v4[2]}.${v4[1]}`, tag: 'reverse', note: `Reverse lookup of ${v4[4]}.${v4[3]}.${v4[2]}.${v4[1]}`, kind: 'reverse' };
+  if (v4) return reverse(`${v4[4]}.${v4[3]}.${v4[2]}.${v4[1]}`);
   if (n.endsWith('.ip6.arpa')) {
     const nib = n.slice(0, -'.ip6.arpa'.length).split('.');
-    if (nib.length === 32 && nib.every((x) => /^[0-9a-f]$/.test(x))) {
-      const a = ip6(nib);
-      return { main: a, tag: 'reverse', note: `Reverse lookup of ${a}`, kind: 'reverse' };
-    }
+    if (nib.length === 32 && nib.every((x) => /^[0-9a-f]$/.test(x))) return reverse(ip6(nib));
   }
 
   if (n.endsWith('.cluster.local')) {
@@ -69,7 +71,7 @@ export function parseName(raw: string): Parsed {
     // service.namespace.svc: a Kubernetes service, by its own name.
     const svc = /^([a-z0-9-]+)\.([a-z0-9-]+)\.svc$/.exec(rest);
     if (svc) {
-      return { main: svc[1], tag: svc[2], note: `Kubernetes service ${svc[1]} in the ${svc[2]} namespace`, kind: 'service' };
+      return { main: svc[1], tag: svc[2], note: t('Kubernetes service {service} in the {namespace} namespace', { service: svc[1], namespace: svc[2] }), kind: 'service' };
     }
     // Anything else was a real name that a pod's DNS search list extended. Strip the suffix it tried
     // (.<namespace>.svc, .svc, or none) to find what was asked for.
@@ -81,12 +83,17 @@ export function parseName(raw: string): Parsed {
       const added = n.slice(real.length);
       const inner = /^([a-z0-9-]+)\.([a-z0-9-]+)\.svc$/.exec(real);
       if (inner) {
-        return { main: inner[1], tag: inner[2], note: `Kubernetes service ${inner[1]} in ${inner[2]}, with the search suffix ${added} added by a pod's DNS settings`, kind: 'expansion' };
+        return {
+          main: inner[1],
+          tag: inner[2],
+          note: t("Kubernetes service {service} in {namespace}, with the search suffix {suffix} added by a pod's DNS settings", { service: inner[1], namespace: inner[2], suffix: added }),
+          kind: 'expansion',
+        };
       }
       return {
         main: real.split('.').map(elide).join('.'),
-        tag: 'search suffix',
-        note: `${real}, with the search suffix ${added} added by a pod's DNS settings (the real name is usually asked next)`,
+        tag: t('search suffix'),
+        note: t("{name}, with the search suffix {suffix} added by a pod's DNS settings (the real name is usually asked next)", { name: real, suffix: added }),
         kind: 'expansion',
       };
     }

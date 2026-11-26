@@ -11,6 +11,9 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ChangePreview from '../lib/components/ChangePreview.svelte';
   import Drawer from '../lib/components/Drawer.svelte';
+  import { own, tr } from '../lib/i18n';
+  import T from '../lib/i18n/T.svelte';
+  const { t } = tr('localDns');
 
   let names = $state<S['LocalName'][]>([]);
   let forwards = $state<S['ForwardInfo'][]>([]);
@@ -20,6 +23,26 @@
   const canEdit = $derived(session.user?.role === 'admin' || session.user?.role === 'operator');
   const advanced = $derived(currentMode() === 'advanced');
   const types = $derived(advanced ? ['A', 'AAAA', 'CNAME', 'PTR', 'TXT', 'MX', 'SRV'] : ['A', 'AAAA', 'CNAME']);
+  // The words of the rows and the forms are read once, here: language is fixed for the life of the page.
+  // A record type comes from the form's own list: read with `Object.hasOwn`, and one without a note shows as it is.
+  const typeText: Record<string, string> = { A: t('A (IPv4 address)'), AAAA: t('AAAA (IPv6 address)'), CNAME: t('CNAME (alias of another name)') };
+  const words = {
+    byUi: t('the UI / API'),
+    byFile: t('config file'),
+    everyone: t('everyone'),
+    ttl: t('default'),
+    save: t('Save'),
+    saving: t('Saving…'),
+    testIt: t('Test it'),
+    address: t('Address'),
+    value: t('Value'),
+    example: t('nas.home.arpa'),
+    testName: t('Test'),
+    testZone: t('Test'),
+    edit: t('Edit'),
+    removeName: t('Remove'),
+    removeForward: t('Remove'),
+  };
 
   function load() {
     Promise.all([api.localNames(), api.forwards()])
@@ -48,23 +71,23 @@
   });
 
   // ---- one form for "add a name", "edit", and the home-domain wizard
-  type Editor = { title: string; name: string; rtype: string; value: string; existing: S['RecordInput'][]; wizard: boolean; step: number; domain: string; label: string };
+  type Editor = { title: string; edit: boolean; name: string; rtype: string; value: string; existing: S['RecordInput'][]; wizard: boolean; step: number; domain: string; label: string };
   let ed = $state<Editor | null>(null);
   let busy = $state(false);
   let formError = $state('');
   let done = $state('');
 
   function openAdd() {
-    ed = { title: 'Add a name', name: '', rtype: 'A', value: '', existing: [], wizard: false, step: 1, domain: '', label: '' };
+    ed = { title: t('Add a name'), edit: false, name: '', rtype: 'A', value: '', existing: [], wizard: false, step: 1, domain: '', label: '' };
     formError = done = '';
   }
   function openEdit(n: S['LocalName']) {
     const r = n.records[0];
-    ed = { title: `Edit ${n.name}`, name: n.name, rtype: r?.type ?? 'A', value: r?.value ?? '', existing: n.records.slice(1), wizard: false, step: 1, domain: '', label: '' };
+    ed = { title: t('Edit {name}', { name: n.name }), edit: true, name: n.name, rtype: r?.type ?? 'A', value: r?.value ?? '', existing: n.records.slice(1), wizard: false, step: 1, domain: '', label: '' };
     formError = done = '';
   }
   function openWizard() {
-    ed = { title: 'Set up my home domain', name: '', rtype: 'A', value: '', existing: [], wizard: true, step: 1, domain: 'home.arpa', label: '' };
+    ed = { title: t('Set up my home domain'), edit: false, name: '', rtype: 'A', value: '', existing: [], wizard: true, step: 1, domain: 'home.arpa', label: '' };
     formError = done = '';
   }
 
@@ -72,23 +95,27 @@
   const sentence = $derived.by(() => {
     if (!ed) return '';
     const v = ed.value.trim() || '…';
-    const what: Record<string, string> = {
-      A: `the address ${v}`,
-      AAAA: `the IPv6 address ${v}`,
-      CNAME: `the same answer as ${v}`,
-      PTR: `the name ${v} (a reverse lookup)`,
-      TXT: `the text “${v}”`,
-      MX: `mail server ${v}`,
-      SRV: `service ${v}`,
+    // What the answer is, by the record's type (a type is read with `Object.hasOwn`; one without a phrase shows the value).
+    const what: Record<string, () => string> = {
+      A: () => t('the address {value}', { value: v }),
+      AAAA: () => t('the IPv6 address {value}', { value: v }),
+      CNAME: () => t('the same answer as {value}', { value: v }),
+      PTR: () => t('the name {value} (a reverse lookup)', { value: v }),
+      TXT: () => t('the text “{value}”', { value: v }),
+      MX: () => t('mail server {value}', { value: v }),
+      SRV: () => t('service {value}', { value: v }),
     };
-    return `Every device that asks for ${fullName || '…'} gets ${what[ed.rtype] ?? v}, answered by TelltaleDNS itself${ed.rtype === 'A' || ed.rtype === 'AAAA' ? ', and a reverse lookup of the address finds the name' : ''}.`;
+    const params = { name: fullName || '…', what: own(what, ed.rtype)?.() ?? v };
+    return ed.rtype === 'A' || ed.rtype === 'AAAA'
+      ? t('Every device that asks for {name} gets {what}, answered by TelltaleDNS itself, and a reverse lookup of the address finds the name.', params)
+      : t('Every device that asks for {name} gets {what}, answered by TelltaleDNS itself.', params);
   });
 
   async function saveName(ev: SubmitEvent) {
     ev.preventDefault();
     if (!ed) return;
     if (!fullName || fullName.startsWith('.') || fullName.endsWith('.')) {
-      formError = 'Give the name, like nas.home.arpa.';
+      formError = t('Give the name, like nas.home.arpa.');
       return;
     }
     busy = true;
@@ -96,7 +123,7 @@
     try {
       const records = [{ type: ed.rtype, value: ed.value.trim() }, ...ed.existing];
       await api.putRecords(fullName, { records });
-      done = `Saved. ${fullName} now answers on every device.`;
+      done = t('Saved. {name} now answers on every device.', { name: fullName });
       load();
     } catch (e) {
       formError = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
@@ -121,8 +148,8 @@
   const fwSentence = $derived(
     fw
       ? fw.stub
-        ? `Every name under ${fw.domain.trim() || '…'} is looked up starting at ${fw.servers.trim() || '…'}, following any sub-domains they hand to other servers, instead of the public DNS servers; your local names still answer first.`
-        : `Every name under ${fw.domain.trim() || '…'} is asked of ${fw.servers.trim() || '…'} instead of the public DNS servers; your local names still answer first.`
+        ? t('Every name under {domain} is looked up starting at {servers}, following any sub-domains they hand to other servers, instead of the public DNS servers; your local names still answer first.', { domain: fw.domain.trim() || '…', servers: fw.servers.trim() || '…' })
+        : t('Every name under {domain} is asked of {servers} instead of the public DNS servers; your local names still answer first.', { domain: fw.domain.trim() || '…', servers: fw.servers.trim() || '…' })
       : '',
   );
   async function saveForward(ev: SubmitEvent) {
@@ -133,7 +160,7 @@
     try {
       const servers = fw.servers.split(/[\s,]+/).filter(Boolean);
       await api.putForward(fw.domain.trim().toLowerCase(), { servers, stub: fw.stub });
-      done = `Saved. Names under ${fw.domain.trim()} now go to ${servers.join(', ')}.`;
+      done = t('Saved. Names under {domain} now go to {servers}.', { domain: fw.domain.trim(), servers: servers.join(', ') });
       load();
     } catch (e) {
       formError = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
@@ -151,51 +178,57 @@
   }
 </script>
 
+{#snippet code(x: string)}<code translate="no">{x}</code>{/snippet}
+{#snippet em(x: string)}<em>{x}</em>{/snippet}
+{#snippet nasexample()}<code translate="no">nas.home.arpa</code>{/snippet}
+{#snippet zoneentry()}<code translate="no">[[zone]]</code>{/snippet}
+{#snippet homearpa()}<b translate="no">home.arpa</b>{/snippet}
+{#snippet tlsexample()}<code translate="no">tls://10.0.0.53</code>{/snippet}
+
 <div class="page">
   <div class="page-head">
-    <h1>Names on my network<HelpButton id="local-dns" /></h1>
-    <span class="muted small">Local DNS</span>
+    <h1>{t('Names on my network')}<HelpButton id="local-dns" /></h1>
+    <span class="muted small">{t('Local DNS')}</span>
   </div>
   <ErrorNote {error} />
 
   {#if canEdit}
     <div class="row actions">
-      <button class="primary" onclick={openWizard}>Set up my home domain</button>
-      <button onclick={openAdd}>Add a name</button>
-      <button onclick={() => ((fw = { domain: '', servers: '', stub: false }), (formError = done = ''))}>Send a domain to another server</button>
+      <button class="primary" onclick={openWizard}>{t('Set up my home domain')}</button>
+      <button onclick={openAdd}>{t('Add a name')}</button>
+      <button onclick={() => ((fw = { domain: '', servers: '', stub: false }), (formError = done = ''))}>{t('Send a domain to another server')}</button>
     </div>
   {/if}
 
   {#if groups.length === 0}
     <section class="card">
       <p class="empty">
-        No local names yet. “Set up my home domain” gives your NAS, printer, or server a name like
-        <code>nas.home.arpa</code> that every device can use.
+        <T ctx="localDns" msg={'No local names yet. “Set up my home domain” gives your NAS, printer, or server a name like <nasexample/> that every device can use.'} {nasexample} />
       </p>
     </section>
   {/if}
   {#each groups as [domain, list] (domain)}
     <section class="card">
-      <h2>{domain}</h2>
+      <h2 translate="no">{domain}</h2>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Name</th><th>Answers with</th>{#if advanced}<th>TTL</th>{/if}<th>Defined in</th><th></th></tr></thead>
+          <thead><tr><th>{t('Name')}</th><th>{t('Answers with')}</th>{#if advanced}<th>{t('TTL')}</th>{/if}<th>{t('Defined in')}</th><th></th></tr></thead>
           <tbody>
             {#each list as n (n.name)}
               <tr>
-                <td class="mono">{n.name}</td>
+                <td class="mono" translate="no">{n.name}</td>
                 <td>
                   {#each n.records as r, i (i)}
-                    <div><span class="badge">{r.type}</span> <span class="mono">{r.value}</span></div>
+                    <div><span class="badge" translate="no">{r.type}</span> <span class="mono" translate="no">{r.value}</span></div>
                   {/each}
                 </td>
-                {#if advanced}<td class="small">{n.records.map((r) => r.ttl ?? 'default').join(', ')}</td>{/if}
-                <td class="small">{n.source === 'api' ? 'the UI / API' : 'config file'}</td>
+                {#if advanced}<td class="small">{n.records.map((r) => r.ttl ?? words.ttl).join(', ')}</td>{/if}
+                <td class="small">{n.source === 'api' ? words.byUi : words.byFile}</td>
                 <td class="num nowrap">
-                  <a class="small" href={href('/explain', { name: n.name, client: '127.0.0.1' })}>Test</a>
+                  <a class="small" href={href('/explain', { name: n.name, client: '127.0.0.1' })}>{words.testName}</a>
                   {#if n.source === 'api' && canEdit}
-                    <button class="link small" onclick={() => openEdit(n)}>Edit</button>
-                    <button class="link small" onclick={() => removeName(n.name)} aria-label={`Remove ${n.name}`}>Remove</button>
+                    <button class="link small" onclick={() => openEdit(n)}>{words.edit}</button>
+                    <button class="link small" onclick={() => removeName(n.name)} aria-label={t('Remove {name}', { name: n.name })}>{words.removeName}</button>
                   {/if}
                 </td>
               </tr>
@@ -208,22 +241,21 @@
 
   {#if zones.length}
     <section class="card" data-testid="zones">
-      <h2>Zones</h2>
+      <h2>{t('Zones')}</h2>
       <p class="muted small">
-        TelltaleDNS answers everything under these domains itself, from the configuration files (<code>[[zone]]</code>):
-        names it doesn't have get “no such name”. A zone limited to groups is seen only by their devices.
+        <T ctx="localDns" msg={"TelltaleDNS answers everything under these domains itself, from the configuration files (<zoneentry/>): names it doesn't have get “no such name”. A zone limited to groups is seen only by their devices."} {zoneentry} />
       </p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Zone</th><th class="num">Records</th><th>Seen by</th><th>From</th><th></th></tr></thead>
+          <thead><tr><th>{t('Zone')}</th><th class="num">{t('Records')}</th><th>{t('Seen by')}</th><th>{t('From')}</th><th></th></tr></thead>
           <tbody>
             {#each zones as z (z.name)}
               <tr>
-                <td class="mono">{z.name}</td>
+                <td class="mono" translate="no">{z.name}</td>
                 <td class="num">{z.records}</td>
-                <td class="small">{z.groups.length ? z.groups.join(', ') : 'everyone'}</td>
-                <td class="small mono">{z.file ?? 'config file'}</td>
-                <td class="num"><a class="small" href={href('/explain', { name: z.name, client: '127.0.0.1' })}>Test</a></td>
+                <td class="small">{z.groups.length ? z.groups.join(', ') : words.everyone}</td>
+                <td class="small mono">{z.file ?? words.byFile}</td>
+                <td class="num"><a class="small" href={href('/explain', { name: z.name, client: '127.0.0.1' })}>{words.testZone}</a></td>
               </tr>
             {/each}
           </tbody>
@@ -233,22 +265,22 @@
   {/if}
 
   <section class="card">
-    <h2>Domains sent to other servers<HelpButton id="routes" /></h2>
+    <h2>{t('Domains sent to other servers')}<HelpButton id="routes" /></h2>
     {#if forwards.length === 0}
-      <p class="empty">None: every name not on this page is asked of the public DNS servers.</p>
+      <p class="empty">{t('None: every name not on this page is asked of the public DNS servers.')}</p>
     {:else}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Domain</th><th>Servers</th><th>Defined in</th><th></th></tr></thead>
+          <thead><tr><th>{t('Domain')}</th><th>{t('Servers')}</th><th>{t('Defined in')}</th><th></th></tr></thead>
           <tbody>
             {#each forwards as f (f.domain)}
               <tr>
-                <td class="mono">{f.domain}</td>
-                <td class="mono small">{f.servers.join(', ')}{#if f.stub}<span class="muted"> (stub zone)</span>{/if}</td>
-                <td class="small">{f.source === 'api' ? 'the UI / API' : 'config file'}</td>
+                <td class="mono" translate="no">{f.domain}</td>
+                <td class="mono small"><span translate="no">{f.servers.join(', ')}</span>{#if f.stub}<span class="muted">{t('(stub zone)')}</span>{/if}</td>
+                <td class="small">{f.source === 'api' ? words.byUi : words.byFile}</td>
                 <td class="num">
                   {#if f.source === 'api' && canEdit}
-                    <button class="link small" onclick={() => removeForward(f.domain)} aria-label={`Stop sending ${f.domain}`}>Remove</button>
+                    <button class="link small" onclick={() => removeForward(f.domain)} aria-label={t('Stop sending {domain}', { domain: f.domain })}>{words.removeForward}</button>
                   {/if}
                 </td>
               </tr>
@@ -265,40 +297,39 @@
     <form class="stack" onsubmit={saveName}>
       {#if ed.wizard && ed.step === 1}
         <p>
-          Pick the domain your devices' names end with. <b>home.arpa</b> is reserved for exactly this
-          (RFC 8375), so it never clashes with the internet; use a domain you own if you have one.
+          <T ctx="localDns" msg={"Pick the domain your devices' names end with. <homearpa/> is reserved for exactly this (RFC 8375), so it never clashes with the internet; use a domain you own if you have one."} {homearpa} />
         </p>
-        <label>Home domain <input name="home-domain" bind:value={ed.domain} required /></label>
+        <label>{t('Home domain')} <input name="home-domain" bind:value={ed.domain} required /></label>
         <div class="row">
-          <button type="button" class="primary" onclick={() => ed && (ed.step = 2)} disabled={!ed.domain.trim()}>Next</button>
+          <button type="button" class="primary" onclick={() => ed && (ed.step = 2)} disabled={!ed.domain.trim()}>{t('Next')}</button>
         </div>
       {:else}
         {#if ed.wizard}
-          <p>Now your first device. You can add more with “Add a name”.</p>
-          <label>Device name <input name="label" bind:value={ed.label} placeholder="nas" required /></label>
-          <p class="muted small">Its full name will be <code>{fullName}</code>.</p>
+          <p>{t('Now your first device. You can add more with “Add a name”.')}</p>
+          <label>{t('Device name')} <input name="label" bind:value={ed.label} placeholder={t('nas')} required /></label>
+          <p class="muted small"><T ctx="localDns" msg={'Its full name will be <code>{name}</code>.'} params={{ name: fullName }} {code} /></p>
         {:else}
-          <label>Name <input name="name" bind:value={ed.name} placeholder="nas.home.arpa" required readonly={ed.title.startsWith('Edit')} /></label>
+          <label>{t('Name')} <input name="name" bind:value={ed.name} placeholder={words.example} required readonly={ed.edit} /></label>
         {/if}
         <label>
-          Type
+          {t('Type')}
           <select name="type" bind:value={ed.rtype}>
-            {#each types as t (t)}<option value={t}>{t === 'A' ? 'A (IPv4 address)' : t === 'AAAA' ? 'AAAA (IPv6 address)' : t === 'CNAME' ? 'CNAME (alias of another name)' : t}</option>{/each}
+            {#each types as rt (rt)}<option value={rt} translate={own(typeText, rt) ? undefined : 'no'}>{own(typeText, rt) ?? rt}</option>{/each}
           </select>
         </label>
         <label>
-          {ed.rtype === 'A' || ed.rtype === 'AAAA' ? 'Address' : 'Value'}
-          <input name="value" bind:value={ed.value} placeholder={ed.rtype === 'A' ? '192.168.1.10' : ed.rtype === 'CNAME' ? 'nas.home.arpa' : ''} required />
+          {ed.rtype === 'A' || ed.rtype === 'AAAA' ? words.address : words.value}
+          <input name="value" bind:value={ed.value} placeholder={ed.rtype === 'A' ? '192.168.1.10' : ed.rtype === 'CNAME' ? words.example : ''} required />
         </label>
-        {#if ed.existing.length}<p class="muted small">Also keeps: {ed.existing.map((r) => `${r.type} ${r.value}`).join(', ')}.</p>{/if}
+        {#if ed.existing.length}<p class="muted small">{t('Also keeps: {records}.', { records: ed.existing.map((r) => `${r.type} ${r.value}`).join(', ') })}</p>{/if}
         {#if fullName && ed.value.trim()}
-          <ChangePreview highlight="local" device="Any device" name={fullName} {sentence} />
+          <ChangePreview highlight="local" device={t('Any device')} name={fullName} {sentence} />
         {/if}
         {#if formError}<p class="notice bad" role="alert">{formError}</p>{/if}
-        {#if done}<p class="notice ok" role="status">{done} <a href={href('/explain', { name: fullName, client: '127.0.0.1' })}>Test it</a></p>{/if}
+        {#if done}<p class="notice ok" role="status">{done} <a href={href('/explain', { name: fullName, client: '127.0.0.1' })}>{words.testIt}</a></p>{/if}
         <div class="row">
-          {#if ed.wizard}<button type="button" onclick={() => ed && (ed.step = 1)}>Back</button>{/if}
-          <button type="submit" class="primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+          {#if ed.wizard}<button type="button" onclick={() => ed && (ed.step = 1)}>{t('Back')}</button>{/if}
+          <button type="submit" class="primary" disabled={busy}>{busy ? words.saving : words.save}</button>
         </div>
       {/if}
     </form>
@@ -306,25 +337,24 @@
 {/if}
 
 {#if fw}
-  <Drawer title="Send a domain to another server" onclose={() => (fw = null)}>
+  <Drawer title={t('Send a domain to another server')} onclose={() => (fw = null)}>
     <form class="stack" onsubmit={saveForward}>
-      <p>For names that only another DNS server knows: a work network over VPN, your router's own names, another lab.</p>
-      <label>Domain <input name="domain" bind:value={fw.domain} placeholder="corp.example" required /></label>
-      <label>Server address <input name="servers" bind:value={fw.servers} placeholder="10.0.0.53" required /></label>
-      <p class="muted small">Several servers: separate them with spaces (tried in order). Encrypted: <code>tls://10.0.0.53</code>.</p>
+      <p>{t('For names that only another DNS server knows: a work network over VPN, your router\'s own names, another lab.')}</p>
+      <label>{t('Domain')} <input name="domain" bind:value={fw.domain} placeholder={t('corp.example')} required /></label>
+      <label>{t('Server address')} <input name="servers" bind:value={fw.servers} placeholder="10.0.0.53" required /></label>
+      <p class="muted small"><T ctx="localDns" msg={'Several servers: separate them with spaces (tried in order). Encrypted: <tlsexample/>.'} {tlsexample} /></p>
       <label
-        ><input type="checkbox" name="stub" bind:checked={fw.stub} /> These servers only know this domain, and hand some sub-domains to other servers</label
+        ><input type="checkbox" name="stub" bind:checked={fw.stub} /> {t('These servers only know this domain, and hand some sub-domains to other servers')}</label
       >
       <p class="muted small">
-        A <em>stub zone</em>: the servers are asked directly (by IP address) and their hand-offs are followed, as BIND's stub zones do.
-        Use it when the servers refuse other questions.
+        <T ctx="localDns" msg={"A <em>stub zone</em>: the servers are asked directly (by IP address) and their hand-offs are followed, as BIND's stub zones do. Use it when the servers refuse other questions."} {em} />
       </p>
       {#if fw.domain.trim() && fw.servers.trim()}
-        <ChangePreview highlight="route" device="Any device" name={`anything.${fw.domain.trim()}`} sentence={fwSentence} />
+        <ChangePreview highlight="route" device={t('Any device')} name={`anything.${fw.domain.trim()}`} sentence={fwSentence} />
       {/if}
       {#if formError}<p class="notice bad" role="alert">{formError}</p>{/if}
       {#if done}<p class="notice ok" role="status">{done}</p>{/if}
-      <div class="row"><button type="submit" class="primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button></div>
+      <div class="row"><button type="submit" class="primary" disabled={busy}>{busy ? words.saving : words.save}</button></div>
     </form>
   </Drawer>
 {/if}

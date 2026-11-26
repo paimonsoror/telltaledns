@@ -2,6 +2,9 @@
 // the page (one request per window change, not one per chart), the Changes toggle (remembered
 // in this browser), and the kind filter.
 import { api, type S } from './api';
+import { tr, type Msg } from './i18n';
+
+const { m } = tr('annotations');
 
 export interface Marker {
   /** Unix seconds. */
@@ -14,19 +17,19 @@ export interface Marker {
   nodes: string[];
 }
 
-/** Every kind, in the order the filter chips show them. */
-export const KINDS: { id: string; label: string }[] = [
-  { id: 'config.applied', label: 'Configuration' },
-  { id: 'note', label: 'Notes' },
-  { id: 'lists.refreshed', label: 'Lists' },
-  { id: 'rollout.stage', label: 'Rollouts' },
-  { id: 'build.started', label: 'Builds' },
-  { id: 'node.restarted', label: 'Restarts' },
-  { id: 'maintenance.entered', label: 'Maintenance' },
-  { id: 'drill.started', label: 'Drills' },
-  { id: 'blocking.paused', label: 'Pauses' },
-  { id: 'cache.flushed', label: 'Cache' },
-  { id: 'upstream.breaker', label: 'Breakers' },
+/** Every kind, in the order the filter chips show them (REQ: API-012 — a label is shown with `tk()`). */
+export const KINDS: { id: string; label: Msg }[] = [
+  { id: 'config.applied', label: m('Configuration') },
+  { id: 'note', label: m('Notes') },
+  { id: 'lists.refreshed', label: m('Lists') },
+  { id: 'rollout.stage', label: m('Rollouts') },
+  { id: 'build.started', label: m('Builds') },
+  { id: 'node.restarted', label: m('Restarts') },
+  { id: 'maintenance.entered', label: m('Maintenance') },
+  { id: 'drill.started', label: m('Drills') },
+  { id: 'blocking.paused', label: m('Pauses') },
+  { id: 'cache.flushed', label: m('Cache') },
+  { id: 'upstream.breaker', label: m('Breakers') },
 ];
 /** Kinds a chip stands for besides its own. */
 const ALSO: Record<string, string[]> = {

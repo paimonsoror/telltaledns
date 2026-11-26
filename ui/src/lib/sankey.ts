@@ -2,17 +2,25 @@
 // response codes), node heights on one scale (a column's nodes add up to what flows through
 // it), links stacked within their nodes so each band's width is its exact count. Pure: the
 // page draws it as SVG.
+import { tk, tr, type Msg } from './i18n';
+
+const { t, m } = tr('sankey');
 
 export type FlowNode = { id: string; stage: string; name: string; count: number; deadEnd: number };
 export type FlowLink = { source: string; target: string; count: number; failure: boolean };
 
 export const STAGES = ['group', 'status', 'upstream', 'rcode'] as const;
-export const STAGE_LABEL: Record<string, string> = {
-  group: 'Groups',
-  status: 'Decision',
-  upstream: 'Upstream',
-  rcode: 'Response',
+const STAGE_LABEL: Record<string, Msg> = {
+  group: m('Groups'),
+  status: m('Decision'),
+  upstream: m('Upstream'),
+  rcode: m('Response'),
 };
+/** REQ: API-012 — a stage's column heading, or nothing for a stage the UI doesn't know (the stage
+ * comes from the server: read with `Object.hasOwn`). */
+export function stageLabel(stage: string): string | undefined {
+  return Object.hasOwn(STAGE_LABEL, stage) ? tk(STAGE_LABEL[stage]) : undefined;
+}
 
 export type PlacedNode = FlowNode & { col: number; x: number; y: number; w: number; h: number };
 export type PlacedLink = FlowLink & {
@@ -170,6 +178,6 @@ export function settle(sizes: number[], want: number[], gap: number, room: numbe
 /** A link's share of every answer and of its source's, as text. */
 export function share(l: FlowLink, total: number, from: FlowNode | undefined): string {
   const pct = (n: number, of: number) => (of > 0 ? `${((100 * n) / of).toFixed(n * 1000 < of ? 2 : 1)} %` : '–');
-  const of = from ? ` · ${pct(l.count, from.count)} of ${from.name}` : '';
-  return `${pct(l.count, total)} of all${of}`;
+  const all = pct(l.count, total);
+  return from ? t('{all} of all · {part} of {name}', { all, part: pct(l.count, from.count), name: from.name }) : t('{all} of all', { all });
 }

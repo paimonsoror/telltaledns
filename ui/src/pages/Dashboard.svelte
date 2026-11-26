@@ -6,6 +6,8 @@
   import { href, route } from '../lib/router.svelte';
   import DashboardCalm from './DashboardCalm.svelte';
   import DashboardLegacy from './DashboardLegacy.svelte';
+  import { tr } from '../lib/i18n';
+  const { t } = tr('dashboard');
 
   const KEY = 'dashboard.view';
   function stored(): boolean {
@@ -31,7 +33,7 @@
 
 {#if legacy}
   <DashboardLegacy />
-  <p class="muted small switch-back"><a href={href('/', { view: 'new' })} data-testid="dashboard-new-link">Switch to the new dashboard</a></p>
+  <p class="muted small switch-back"><a href={href('/', { view: 'new' })} data-testid="dashboard-new-link">{t('Switch to the new dashboard')}</a></p>
 {:else}
   <DashboardCalm />
 {/if}

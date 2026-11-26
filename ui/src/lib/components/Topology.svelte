@@ -36,9 +36,11 @@
   export type Box = { x: number; y: number; w: number; h: number };
   export type Chip = Box & { node: Node };
   export type PodChip = Box & { node?: Node; more?: Node[] };
-  export type Group = Box & { label: string; pods: PodChip[]; nodes: Node[] };
+  /** `kube`: the Kubernetes node the pods run on ('' for pods with none); the component words it. */
+  export type Group = Box & { kube: string; pods: PodChip[]; nodes: Node[] };
   export type Site = Box & { name: string; chips: Chip[]; groups: Group[] };
-  export type Link = { d: string; mx: number; my: number; health: Health; width: number; label?: string; key: string };
+  /** `rtt`: the round trip in whole milliseconds, when this node measured it. */
+  export type Link = { d: string; mx: number; my: number; health: Health; width: number; rtt?: number; key: string };
   export type Layout = { w: number; h: number; sites: Site[]; links: Link[] };
 
   function siteBox(name: string, nodes: Node[], hubId?: string): Site {
@@ -74,7 +76,7 @@
       }
       const rows = Math.ceil(chipsIn.length / 3);
       const h = 20 + rows * (POD_H + POD_GAP) + 4;
-      groups.push({ x: gx, y, w: CHIP_W - INDENT, h, label: kube ? `node ${kube}` : 'pods', pods: chipsIn, nodes: pods });
+      groups.push({ x: gx, y, w: CHIP_W - INDENT, h, kube, pods: chipsIn, nodes: pods });
       y += h + 8;
     }
     return { x: 0, y: 0, w: SITE_W, h: y + PAD - 8, name, chips, groups };
@@ -122,18 +124,18 @@
     const links: Link[] = [];
     const hubChip = first.chips.find((c) => c.node.nodeId === hub?.nodeId);
     // Round-trip times are measured by this node, to each peer.
-    const rtt = (target: Node[]): string | undefined => {
+    const rtt = (target: Node[]): number | undefined => {
       if (hub?.thisNode) {
         const r = target.map((n) => n.rttMs).filter((v): v is number => v != null);
-        return r.length ? `${Math.round(r.reduce((a, b) => a + b, 0) / r.length)} ms` : undefined;
+        return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : undefined;
       }
       const me = target.find((n) => n.thisNode);
-      return me && hub?.rttMs != null ? `${Math.round(hub.rttMs)} ms` : undefined;
+      return me && hub?.rttMs != null ? Math.round(hub.rttMs) : undefined;
     };
     for (const s of sites) {
       const targets: { box: Box; nodes: Node[]; key: string }[] = [
         ...s.chips.filter((c) => c.node.nodeId !== hub?.nodeId).map((c) => ({ box: c as Box, nodes: [c.node], key: c.node.nodeId })),
-        ...s.groups.map((g) => ({ box: g as Box, nodes: g.nodes, key: `${s.name}/${g.label}` })),
+        ...s.groups.map((g) => ({ box: g as Box, nodes: g.nodes, key: `${s.name}/${g.kube}` })),
       ];
       for (const [i, t] of targets.entries()) {
         const hs = worst(t.nodes.map(health));
@@ -155,7 +157,7 @@
           mx = (x0 + x1) / 2;
           my = (y0 + y1) / 2;
         }
-        links.push({ d, mx, my, health: hs, width: width(share(t.nodes)), label: rtt(t.nodes), key: t.key });
+        links.push({ d, mx, my, health: hs, width: width(share(t.nodes)), rtt: rtt(t.nodes), key: t.key });
       }
     }
     return { w, h, sites, links };
@@ -163,6 +165,10 @@
 </script>
 
 <script lang="ts">
+  import { tr } from '../i18n';
+  // REQ: API-012 — the counts are lengths and a u32 (never negative): tn() gives the ternaries' English.
+  const { t, tn } = tr('topology');
+
   // REQ: CLU-013 — `canaries`: the nodes running a version that bakes (dashed outline).
   let { nodes, onselect, canaries = [] }: { nodes: Node[]; onselect?: (n: Node) => void; canaries?: string[] } = $props();
 
@@ -180,37 +186,42 @@
   // The second line: load; whole items are left out (round trip first, then share) when they
   // don't fit, rather than cutting words. The role is the badge.
   // REQ: CLU-008 (ADR-056) — a witness answers no queries: "votes only" for its rate and share.
+  const qps = (n: Node) => t('{rate} q/s', { rate: rate(n.qps) });
   const sub = (n: Node, px: number) => {
     const parts = [
-      n.thisNode ? 'you' : '',
-      n.witness ? 'votes only' : `${rate(n.qps)} q/s`,
+      n.thisNode ? t('you') : '',
+      n.witness ? t('votes only') : qps(n),
       !n.witness && n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
-      n.rttMs != null && !n.thisNode ? `${Math.round(n.rttMs)} ms` : '',
+      n.rttMs != null && !n.thisNode ? t('{n} ms', { n: Math.round(n.rttMs) }) : '',
     ].filter(Boolean);
     while (parts.length > 1 && parts.join(' · ').length * 5.6 > px) parts.pop();
     return parts.join(' · ');
   };
   const podLabel = (n: Node) => (n.pod ? n.pod.slice(-5) : n.nodeId.slice(0, 5));
-  const role = (n: Node) => (n.witness ? 'witness' : n.role);
+  // A node's role is the server's word ('primary', 'secondary', …): shown as it is; a witness has its own.
+  const role = (n: Node) => (n.witness ? t('witness') : n.role);
   // T6.14 — the primary stands out: a filled badge and an accent stripe; replicas and
   // witnesses get a quiet outlined badge, an emergency primary an amber one.
   const badge = (n: Node) =>
     n.role.includes('emergency')
-      ? { kind: 'emergency', text: 'EMERGENCY' }
+      ? { kind: 'emergency', text: t('EMERGENCY') }
       : n.role === 'primary'
-        ? { kind: 'primary', text: 'PRIMARY' }
-        : { kind: 'replica', text: n.witness ? 'witness' : 'replica' };
+        ? { kind: 'primary', text: t('PRIMARY') }
+        : { kind: 'replica', text: n.witness ? t('witness') : t('replica') };
   const badgeW = (n: Node) => badge(n).text.length * 6.2 + 12;
+  // What a group of pods is called: the Kubernetes node they run on, or just "pods".
+  const groupName = (g: Group) => (g.kube ? t('node {name}', { name: g.kube }) : t('pods'));
   const describe = (n: Node) =>
     [
-      `${n.pod ?? n.nodeId} (${n.site}, ${role(n)})`,
-      n.kubeNode ? `on Kubernetes node ${n.kubeNode}` : '',
-      n.maintenance ? `in maintenance (${n.maintenance.reason})` : '',
-      n.up ? (n.witness ? 'up, votes only' : n.ready ? 'up, serving' : 'up, not ready') : 'down',
-      n.witness ? '' : n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
-      `${rate(n.qps)} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
-      n.cacheHitPercent != null ? `cache ${n.cacheHitPercent}% hits` : '',
-      n.restarts ? `${n.restarts} restart${n.restarts === 1 ? '' : 's'}` : '',
+      t('{name} ({site}, {role})', { name: n.pod ?? n.nodeId, site: n.site, role: role(n) }),
+      n.kubeNode ? t('on Kubernetes node {name}', { name: n.kubeNode }) : '',
+      n.maintenance ? t('in maintenance ({reason})', { reason: n.maintenance.reason }) : '',
+      n.up ? (n.witness ? t('up, votes only') : n.ready ? t('up, serving') : t('up, not ready')) : t('down'),
+      n.witness ? '' : n.configLag ? t('configuration {n} behind', { n: n.configLag }) : t('in sync'),
+      // One whole message per variant: with the share of the queries, or without.
+      n.querySharePercent != null ? t('{rate} q/s, {share}% of queries', { rate: rate(n.qps), share: n.querySharePercent }) : qps(n),
+      n.cacheHitPercent != null ? t('cache {n}% hits', { n: n.cacheHitPercent }) : '',
+      n.restarts ? tn('{n} restart', '{n} restarts', n.restarts, { n: n.restarts }) : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -223,7 +234,7 @@
 </script>
 
 <div class="topo" data-testid="cluster-topology">
-  <svg width={L.w} height={L.h} viewBox={`0 0 ${L.w} ${L.h}`} role="group" aria-label="Cluster topology">
+  <svg width={L.w} height={L.h} viewBox={`0 0 ${L.w} ${L.h}`} role="group" aria-label={t('Cluster topology')}>
     <defs>
       <!-- REQ: OPS-010 — nodes in maintenance are hatched. -->
       <pattern id="maint-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -239,13 +250,14 @@
     {/each}
     {#each L.links as l (l.key)}
       <path class="link {l.health}" d={l.d} stroke-width={l.width} />
-      {#if l.label}<text class="rtt" x={l.mx + 6} y={l.my}>{l.label}</text>{/if}
+      {#if l.rtt != null}<text class="rtt" x={l.mx + 6} y={l.my}>{t('{n} ms', { n: l.rtt })}</text>{/if}
     {/each}
     {#each L.sites as s (s.name)}
       <g>
         {#each s.chips as c (c.node.nodeId)}
           {@const b = badge(c.node)}
           {@const bw = badgeW(c.node)}
+          {@const said = describe(c.node)}
           <g
             class="chip {health(c.node)}"
             class:me={c.node.thisNode}
@@ -253,12 +265,12 @@
             class:canary={canaries.includes(c.node.nodeId) || (c.node.role === 'primary' && canaries.length > 0)}
             role="button"
             tabindex="0"
-            aria-label={describe(c.node)}
+            aria-label={said}
             data-testid="topology-node"
             onclick={() => onselect?.(c.node)}
             onkeydown={(e) => key(e, c.node)}
           >
-            <title>{describe(c.node)}</title>
+            <title>{said}</title>
             <rect x={c.x} y={c.y} width={c.w} height={c.h} rx="8" />
             {#if b.kind === 'primary'}<rect class="stripe" x={c.x + 3} y={c.y + 6} width="3" height={c.h - 12} rx="1.5" />{/if}
             <circle class="dot" cx={c.x + 14} cy={c.y + 14} r="4" />
@@ -270,25 +282,27 @@
             <text class="sub" x={c.x + 24} y={c.y + 32}>{sub(c.node, c.w - 32)}</text>
           </g>
         {/each}
-        {#each s.groups as g (g.label)}
+        {#each s.groups as g (g.kube)}
           <rect class="group" x={g.x} y={g.y} width={g.w} height={g.h} rx="6" />
-          {@const count = ` · ${g.nodes.length} replica pod${g.nodes.length === 1 ? '' : 's'}`}
-          <text class="group-name" x={g.x + 8} y={g.y + 14}>{fit(g.label, g.w - 16 - count.length * 6, 6)}{count}<title>{g.label}</title></text>
+          {@const name = groupName(g)}
+          {@const count = ` · ${tn('{n} replica pod', '{n} replica pods', g.nodes.length, { n: g.nodes.length })}`}
+          <text class="group-name" x={g.x + 8} y={g.y + 14}>{fit(name, g.w - 16 - count.length * 6, 6)}{count}<title>{name}</title></text>
           {#each g.pods as p, i (p.node?.nodeId ?? `more-${i}`)}
             {@const n = p.node ?? p.more?.[0]}
             {#if n}
+              {@const said = p.more ? null : describe(n)}
               <g
                 class="pod {p.more ? worstOf(p.more) : health(n)}"
                 class:maint={!p.more && !!n.maintenance}
                 class:canary={!p.more && canaries.includes(n.nodeId)}
                 role="button"
                 tabindex="0"
-                aria-label={p.more ? `${p.more.length} more pods on ${g.label}` : describe(n)}
+                aria-label={p.more ? t('{n} more pods on {where}', { n: p.more.length, where: name }) : said}
                 data-testid="topology-pod"
                 onclick={() => onselect?.(n)}
                 onkeydown={(e) => key(e, n)}
               >
-                <title>{p.more ? `${p.more.length} more pods` : describe(n)}</title>
+                <title>{p.more ? t('{n} more pods', { n: p.more.length }) : said}</title>
                 <rect x={p.x} y={p.y} width={p.w} height={p.h} rx="5" />
                 <text x={p.x + p.w / 2} y={p.y + 15} text-anchor="middle">{p.more ? `+${p.more.length}` : podLabel(n)}</text>
               </g>
@@ -300,11 +314,11 @@
   </svg>
   <!-- REQ: CLU-008 (ADR-056) — with a witness, green is also a witness that's up. -->
   <p class="legend muted small">
-    <span class="legend-badge">PRIMARY</span> publishes the configuration; replicas follow it ·
-    <span class="key ok"></span> serving, in sync{#if nodes.some((n) => n.witness)}, or a witness that's up (it only votes){/if} <span class="key warn"></span> not ready or behind <span class="key bad"></span> down
-    {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> in maintenance{/if} ·
-    {#if canaries.length}<span class="key canary"></span> runs the version baking ·{/if}
-    line thickness = share of queries{#if L.links.some((l) => l.label)}{' · times are round trips from this node'}{/if}
+    <span class="legend-badge">{t('PRIMARY')}</span> {t('publishes the configuration; replicas follow it ·')}
+    <span class="key ok"></span> {t('serving, in sync')}{#if nodes.some((n) => n.witness)}{t(", or a witness that's up (it only votes)")}{/if} <span class="key warn"></span> {t('not ready or behind')} <span class="key bad"></span> {t('down')}
+    {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> {t('in maintenance')}{/if} ·
+    {#if canaries.length}<span class="key canary"></span> {t('runs the version baking ·')}{/if}
+    {t('line thickness = share of queries')}{#if L.links.some((l) => l.rtt != null)}{` ${t('· times are round trips from this node')}`}{/if}
   </p>
 </div>
 

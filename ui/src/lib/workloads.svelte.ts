@@ -2,6 +2,9 @@
 // client chip can tell a workload (by its name, its analytics key, or a pod address) and show
 // its glyph and pod. Nothing is fetched when the feature is off.
 import { api, type S } from './api';
+import { tk, tr, type Msg } from './i18n';
+
+const { m } = tr('workloads');
 
 type Index = {
   /** Workloads by name, analytics key, and pod address. */
@@ -77,11 +80,15 @@ export function podAt(ip: string): string | undefined {
   return workloads.index.pods.get(ip);
 }
 
-/** Where a workload's group came from, in words. */
-export const groupFromText: Record<string, string> = {
-  pod_label: 'pod label',
-  namespace_label: 'namespace label',
-  map: 'rule',
-  default_group: 'default group',
-  none: 'network group',
+const GROUP_FROM: Record<string, Msg> = {
+  pod_label: m('pod label'),
+  namespace_label: m('namespace label'),
+  map: m('rule'),
+  default_group: m('default group'),
+  none: m('network group'),
 };
+/** Where a workload's group came from, in words; a value the UI doesn't know as it is (REQ:
+ * API-012 — the value comes from the server: read with `Object.hasOwn`). */
+export function groupFromText(from: string): string {
+  return Object.hasOwn(GROUP_FROM, from) ? tk(GROUP_FROM[from]) : from;
+}

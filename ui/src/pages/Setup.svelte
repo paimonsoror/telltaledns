@@ -4,6 +4,9 @@
   import { signedIn } from '../lib/session.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import AuthShell from './AuthShell.svelte';
+  import { tr } from '../lib/i18n';
+  import T from '../lib/i18n/T.svelte';
+  const { t } = tr('setup');
 
   let setupToken = $state('');
   let username = $state('admin');
@@ -15,7 +18,7 @@
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     if (password !== confirm) {
-      error = new Error('The passwords don’t match.');
+      error = new Error(t('The passwords don’t match.'));
       return;
     }
     busy = true;
@@ -30,25 +33,26 @@
   }
 </script>
 
-<AuthShell title="Welcome to TelltaleDNS">
+{#snippet setuptokencmd()}<code translate="no">telltale auth setup-token</code>{/snippet}
+
+<AuthShell title={t('Welcome to TelltaleDNS')}>
   <p class="muted">
-    Create the first admin. <code>telltale auth setup-token</code> prints the setup token (the server
-    log says which file holds it).
+    <T ctx="setup" msg={'Create the first admin. <setuptokencmd/> prints the setup token (the server log says which file holds it).'} {setuptokencmd} />
   </p>
   <form class="stack" onsubmit={submit}>
-    <label class="field">Setup token
+    <label class="field">{t('Setup token')}
       <input name="setupToken" autocomplete="off" required bind:value={setupToken} />
     </label>
-    <label class="field">Admin username
+    <label class="field">{t('Admin username')}
       <input name="username" autocomplete="username" required bind:value={username} />
     </label>
-    <label class="field">Password (at least 10 characters)
+    <label class="field">{t('Password (at least 10 characters)')}
       <input name="password" type="password" autocomplete="new-password" minlength="10" required bind:value={password} />
     </label>
-    <label class="field">Repeat password
+    <label class="field">{t('Repeat password')}
       <input name="confirm" type="password" autocomplete="new-password" minlength="10" required bind:value={confirm} />
     </label>
     <ErrorNote {error} />
-    <button class="primary" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create admin and sign in'}</button>
+    <button class="primary" type="submit" disabled={busy}>{busy ? t('Creating…') : t('Create admin and sign in')}</button>
   </form>
 </AuthShell>

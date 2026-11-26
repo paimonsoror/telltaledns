@@ -19,6 +19,8 @@
   // is one dark cell; a browser is a smear.
   import { href } from '../router.svelte';
   import { num } from '../format';
+  import { tr } from '../i18n';
+  const { t } = tr('rhythmStrip');
 
   let {
     rows,
@@ -36,24 +38,26 @@
   const bins = (r: RhythmRow) => (view === 'hour' ? r.hour : r.recent) ?? r.recent ?? r.hour ?? [];
 
   const label = (i: number) => {
-    const s = (x: number) => (x < 60 ? `${x} s` : x < 3600 ? `${Math.round(x / 60)} min` : `${(x / 3600).toFixed(1)} h`);
-    if (i === 0) return `under ${s(binsS[0])}`;
-    return i >= binsS.length ? `${s(binsS[binsS.length - 1])} and longer` : `${s(binsS[i - 1])}–${s(binsS[i])}`;
+    const s = (x: number) => (x < 60 ? t('{n} s', { n: x }) : x < 3600 ? t('{n} min', { n: Math.round(x / 60) }) : t('{n} h', { n: (x / 3600).toFixed(1) }));
+    if (i === 0) return t('under {n}', { n: s(binsS[0]) });
+    return i >= binsS.length ? t('{n} and longer', { n: s(binsS[binsS.length - 1]) }) : t('{from}–{to}', { from: s(binsS[i - 1]), to: s(binsS[i]) });
   };
+  // The words of the N cells are the same for every row: made once for the bins, not once per cell.
+  const labels = $derived(Array.from({ length: N }, (_, i) => label(i)));
   // Where a period sits on the axis (log within its bin).
-  function x(t: number): number {
-    const i = binsS.findIndex((e) => t < e);
+  function x(secs: number): number {
+    const i = binsS.findIndex((e) => secs < e);
     const bin = i === -1 ? N - 1 : i;
     const lo = bin === 0 ? 0.5 : binsS[bin - 1];
     const hi = bin < binsS.length ? binsS[bin] : lo * 1.5;
-    return (bin + Math.log(t / lo) / Math.log(hi / lo)) * CELL;
+    return (bin + Math.log(secs / lo) / Math.log(hi / lo)) * CELL;
   }
   const ticks = [
-    { t: 1, text: '1 s' },
-    { t: 10, text: '10 s' },
-    { t: 60, text: '1 min' },
-    { t: 600, text: '10 min' },
-    { t: 3600, text: '1 h' },
+    { at: 1, text: t('1 s') },
+    { at: 10, text: t('10 s') },
+    { at: 60, text: t('1 min') },
+    { at: 600, text: t('10 min') },
+    { at: 3600, text: t('1 h') },
   ];
   function cells(r: RhythmRow) {
     const b = bins(r);
@@ -68,30 +72,30 @@
   {#if toggle}
     <div class="controls">
       {#if hasRecent}
-        <div class="seg" role="group" aria-label="Which hours">
-          <button type="button" aria-pressed={view === 'recent'} onclick={() => (view = 'recent')}>Recent</button>
-          <button type="button" aria-pressed={view === 'hour'} onclick={() => (view = 'hour')}>This hour</button>
+        <div class="seg" role="group" aria-label={t('Which hours')}>
+          <button type="button" aria-pressed={view === 'recent'} onclick={() => (view = 'recent')}>{t('Recent')}</button>
+          <button type="button" aria-pressed={view === 'hour'} onclick={() => (view = 'hour')}>{t('This hour')}</button>
         </div>
       {/if}
-      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="rhythm-table-toggle" />Table</label></span>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="rhythm-table-toggle" />{t('Table')}</label></span>
     </div>
   {/if}
   {#if rows.length === 0}
-    <p class="empty">No tracked domains for this device yet.</p>
+    <p class="empty">{t('No tracked domains for this device yet.')}</p>
   {:else if table}
     <div class="scroll">
       <table data-testid="rhythm-table">
         <thead>
-          <tr><th>Domain</th>{#each Array(N) as _, i (i)}<th class="num" title={label(i)}>{i}</th>{/each}</tr>
+          <tr><th>{t('Domain')}</th>{#each Array(N) as _, i (i)}<th class="num" title={labels[i]}>{i}</th>{/each}</tr>
         </thead>
         <tbody>
           {#each rows as r (r.domain)}
-            <tr><td class="mono">{r.domain}</td>{#each bins(r) as n, i (i)}<td class="num">{n ? num(n) : ''}</td>{/each}</tr>
+            <tr><td class="mono" translate="no">{r.domain}</td>{#each bins(r) as n, i (i)}<td class="num">{n ? num(n) : ''}</td>{/each}</tr>
           {/each}
         </tbody>
       </table>
     </div>
-    <p class="muted small">Columns are the gap between two queries: 0 is under 1 s, then 1–1.5 s, 1.5–2.2 s, … up to 2 hours and longer.</p>
+    <p class="muted small">{t('Columns are the gap between two queries: 0 is under 1 s, then 1–1.5 s, 1.5–2.2 s, … up to 2 hours and longer.')}</p>
   {:else}
     <div class="scroll">
       <div class="grid">
@@ -103,9 +107,9 @@
             href={href('/queries', { client, name: r.domain, match: 'suffix' })}
             data-testid="rhythm-row"
             data-domain={r.domain}
-            title="Open these queries">{r.domain}</a
+            title={t('Open these queries')}>{r.domain}</a
           >
-          <svg width={W} height={CELL} viewBox="0 0 {W} {CELL}" role="img" aria-label="{r.domain}: {r.period ?? 'no single rhythm'}">
+          <svg width={W} height={CELL} viewBox="0 0 {W} {CELL}" role="img" aria-label={t('{domain}: {period}', { domain: r.domain, period: r.period ?? t('no single rhythm') })}>
             {#each cs as c (c.i)}
               <rect
                 x={c.i * CELL + 1}
@@ -118,19 +122,19 @@
                 class:dominant={c.i === top.i && top.share >= 0.5}
                 data-bin={c.i}
                 data-n={c.n}
-              ><title>{label(c.i)}: {num(c.n)} ({Math.round(c.share * 100)} %)</title></rect>
+              ><title>{t('{label}: {n} ({share} %)', { label: labels[c.i] ?? label(c.i), n: num(c.n), share: Math.round(c.share * 100) })}</title></rect>
             {/each}
           </svg>
           <span class="small period">
             {#if r.period}<span data-testid="rhythm-period">{r.period}</span>{/if}
-            {#if r.knownPeriodic}<span class="badge">usual</span>
-            {:else if (r.regularHours ?? 0) >= 4}<span class="badge warn">new rhythm</span>{/if}
+            {#if r.knownPeriodic}<span class="badge">{t('usual')}</span>
+            {:else if (r.regularHours ?? 0) >= 4}<span class="badge warn">{t('new rhythm')}</span>{/if}
           </span>
         {/each}
         <span></span>
         <svg width={W} height="14" viewBox="0 0 {W} 14" aria-hidden="true" class="axis">
-          {#each ticks as t (t.t)}
-            <text x={x(t.t)} y="11" text-anchor="middle">{t.text}</text>
+          {#each ticks as tick (tick.at)}
+            <text x={x(tick.at)} y="11" text-anchor="middle">{tick.text}</text>
           {/each}
         </svg>
         <span></span>

@@ -9,6 +9,9 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import SimulationCard from '../lib/components/SimulationCard.svelte';
+  import { tr, own } from '../lib/i18n';
+  import T from '../lib/i18n/T.svelte';
+  const { t } = tr('agentChanges');
 
   let plans = $state<S['Plan'][]>([]);
   let error = $state<unknown>(null);
@@ -39,19 +42,24 @@
     }
   }
 
+  // The words of a plan's card are read once, here (a card is drawn for every plan, every 5 s).
+  const words = {
+    why: t('Why'), askedBy: t('Asked by'), when: t('When'), decidedBy: t('Decided by'), change: t('Change'), whatItDoes: t('What it does:'), beforeAfter: t('Before and after'),
+    before: t('Before'), after: t('After'), approve: t('Approve'), reject: t('Reject'),
+  };
   const pending = $derived(plans.filter((p) => p.state === 'pending'));
   const others = $derived(plans.filter((p) => p.state !== 'pending'));
   const label: Record<string, [string, string]> = {
-    pending: ['waiting for approval', 'warn'],
-    ready: ['ready to apply', ''],
-    approved: ['approved', 'ok'],
-    rejected: ['rejected', 'bad'],
-    applying: ['applying', ''],
-    applied: ['applied', 'ok'],
-    stale: ['stale: the config changed', 'bad'],
-    failed: ['failed', 'bad'],
-    discarded: ['discarded', ''],
-    expired: ['expired', ''],
+    pending: [t('waiting for approval'), 'warn'],
+    ready: [t('ready to apply'), ''],
+    approved: [t('approved'), 'ok'],
+    rejected: [t('rejected'), 'bad'],
+    applying: [t('applying'), ''],
+    applied: [t('applied'), 'ok'],
+    stale: [t('stale: the config changed'), 'bad'],
+    failed: [t('failed'), 'bad'],
+    discarded: [t('discarded'), ''],
+    expired: [t('expired'), ''],
   };
   type Preview = { impact?: string; warnings?: string[]; before?: unknown; after?: unknown; simulation?: S['Simulation'] | null };
   const preview = (p: S['Plan']) => (p.preview ?? {}) as Preview;
@@ -59,65 +67,64 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>Agent changes<HelpButton id="agent-changes" /></h1>
+    <h1>{t('Agent changes')}<HelpButton id="agent-changes" /></h1>
   </div>
   <p class="muted small">
-    AI agents connected over MCP don't change anything directly: they make a plan, shown here with what it would do.
-    With <code>[agents] require_approval = true</code>, a plan waits for an operator before the agent can apply it.
-    Plans expire after 10 minutes.
+    <T ctx="agentChanges" msg={"AI agents connected over MCP don't change anything directly: they make a plan, shown here with what it would do. With <requireapproval/>, a plan waits for an operator before the agent can apply it. Plans expire after 10 minutes."} {requireapproval} />
   </p>
   <ErrorNote {error} />
 
+  {#snippet requireapproval()}<code translate="no">[agents] require_approval = true</code>{/snippet}
   {#snippet card(p: S['Plan'])}
-    {@const [text, cls] = label[p.state] ?? [p.state, '']}
+    {@const [text, cls] = own(label, p.state) ?? [p.state, '']}
     {@const pv = preview(p)}
     <section class="card plan" data-testid="plan" class:waiting={p.state === 'pending'}>
       <div class="head">
-        <strong>{p.summary}</strong>
+        <strong translate="no">{p.summary}</strong>
         <span class="badge {cls}">{text}</span>
       </div>
       <dl class="small">
-        <dt>Why</dt><dd>{p.reason}</dd>
-        <dt>Asked by</dt><dd class="mono">{p.requestedBy}</dd>
-        <dt>When</dt>
+        <dt>{words.why}</dt><dd translate="no">{p.reason}</dd>
+        <dt>{words.askedBy}</dt><dd class="mono" translate="no">{p.requestedBy}</dd>
+        <dt>{words.when}</dt>
         <dd>
           {ago(p.createdUnixSeconds)}
           {#if p.state === 'pending' || p.state === 'ready' || p.state === 'approved'}
-            · expires in {duration(Math.max(0, p.expiresUnixSeconds - now))}
+            {t('· expires in {time}', { time: duration(Math.max(0, p.expiresUnixSeconds - now)) })}
           {/if}
         </dd>
-        {#if p.decidedBy}<dt>Decided by</dt><dd>{p.decidedBy}</dd>{/if}
-        <dt>Change</dt><dd class="mono">{p.method} {p.path}</dd>
+        {#if p.decidedBy}<dt>{words.decidedBy}</dt><dd translate="no">{p.decidedBy}</dd>{/if}
+        <dt>{words.change}</dt><dd class="mono" translate="no">{p.method} {p.path}</dd>
       </dl>
-      {#if pv.impact}<p class="small"><b>What it does:</b> {pv.impact}</p>{/if}
-      {#each pv.warnings ?? [] as w (w)}<p class="small warn-text">{w}</p>{/each}
+      {#if pv.impact}<p class="small"><b>{words.whatItDoes}</b> <span translate="no">{pv.impact}</span></p>{/if}
+      {#each pv.warnings ?? [] as w (w)}<p class="small warn-text" translate="no">{w}</p>{/each}
       <!-- REQ: OBS-024 — what the plan would have done to the logged queries, when the agent asked. -->
       {#if pv.simulation}<SimulationCard result={pv.simulation} />{/if}
       <details class="small">
-        <summary>Before and after</summary>
+        <summary>{words.beforeAfter}</summary>
         <div class="diff">
-          <div><div class="muted">Before</div><pre class="mono">{JSON.stringify(pv.before ?? null, null, 2)}</pre></div>
-          <div><div class="muted">After</div><pre class="mono">{JSON.stringify(pv.after ?? null, null, 2)}</pre></div>
+          <div><div class="muted">{words.before}</div><pre class="mono" translate="no">{JSON.stringify(pv.before ?? null, null, 2)}</pre></div>
+          <div><div class="muted">{words.after}</div><pre class="mono" translate="no">{JSON.stringify(pv.after ?? null, null, 2)}</pre></div>
         </div>
       </details>
       {#if p.state === 'pending' && writable}
         <div class="row">
-          <button class="primary" disabled={busy === p.id} onclick={() => decide(p.id, true)}>Approve</button>
-          <button disabled={busy === p.id} onclick={() => decide(p.id, false)}>Reject</button>
+          <button class="primary" disabled={busy === p.id} onclick={() => decide(p.id, true)}>{words.approve}</button>
+          <button disabled={busy === p.id} onclick={() => decide(p.id, false)}>{words.reject}</button>
         </div>
       {/if}
     </section>
   {/snippet}
 
-  <h2>Waiting for approval</h2>
+  <h2>{t('Waiting for approval')}</h2>
   {#if pending.length === 0}
-    <p class="empty">Nothing is waiting.</p>
+    <p class="empty">{t('Nothing is waiting.')}</p>
   {:else}
     {#each pending as p (p.id)}{@render card(p)}{/each}
   {/if}
 
   {#if others.length}
-    <h2>Recent plans</h2>
+    <h2>{t('Recent plans')}</h2>
     {#each others as p (p.id)}{@render card(p)}{/each}
   {/if}
 </div>

@@ -1,6 +1,10 @@
 // REQ: OBS-029 (ADR-129) — the rhythm heatmap's layout: slots (UTC starts from the API) laid
 // out by local time, one row per day (or per weekday, folded to the mean), one column per slot of
 // the day; and drawing the grid on a canvas. Pure functions, like `treemap.ts`.
+import { weekdayDate } from './format';
+import { tk, tr } from './i18n';
+
+const { m } = tr('libHeatmap');
 
 export interface Cell {
   /** Queries (folded: the mean over the days it covers); `null` where nothing is known. */
@@ -24,7 +28,9 @@ export interface Grid {
   colSums: number[];
 }
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+/** REQ: API-012 — a folded row's label, shown with `tk()` when the grid is laid out (the canvas
+ * draws what `layout()` returns). */
+const WEEKDAYS = [m('Mon'), m('Tue'), m('Wed'), m('Thu'), m('Fri'), m('Sat'), m('Sun')];
 
 /** Local midnight (Unix seconds) of the day `t` (Unix seconds) falls in. */
 function dayStart(t: number): number {
@@ -67,7 +73,7 @@ export function layout(
       c.start = Math.max(c.start, t);
     });
     for (let wd = 0; wd < 7; wd++) {
-      rows.push({ label: WEEKDAYS[wd], start: 0 });
+      rows.push({ label: tk(WEEKDAYS[wd]), start: 0 });
       cells.push(
         sums[wd].map((c) => ({
           value: c.n ? c.sum / c.n : null,
@@ -85,10 +91,7 @@ export function layout(
       if (r === undefined) {
         r = rows.length;
         index.set(day, r);
-        rows.push({
-          label: new Date(day * 1000).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }),
-          start: day,
-        });
+        rows.push({ label: weekdayDate(day), start: day });
         cells.push(Array.from({ length: cols }, (_, c) => empty(day + c * slot)));
       }
       const cell = cells[r][column(t, slot, cols)];

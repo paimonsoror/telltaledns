@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { tr } from '../i18n';
+  const { t } = tr('drawer');
 
   let { title, onclose, children }: { title: string; onclose: () => void; children: Snippet } = $props();
   let panel = $state<HTMLElement | undefined>();
@@ -19,7 +21,7 @@
 <div class="drawer" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={panel}>
   <header>
     <h2>{title}</h2>
-    <button class="link" onclick={onclose} aria-label="Close">✕</button>
+    <button class="link" onclick={onclose} aria-label={t('Close')}>✕</button>
   </header>
   <div class="body">{@render children()}</div>
 </div>

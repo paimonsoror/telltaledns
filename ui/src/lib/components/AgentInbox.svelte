@@ -4,6 +4,9 @@
   import { can } from '../session.svelte';
   import { poll } from '../poll';
   import { href } from '../router.svelte';
+  import { tr } from '../i18n';
+  // REQ: API-012 — `waiting` is a length (never negative): tn() gives the ternary's English.
+  const { tn } = tr('agentInbox');
 
   let waiting = $state(0);
   $effect(() => {
@@ -20,7 +23,7 @@
 
 {#if waiting > 0}
   <a class="pill" href={href('/agent-changes')} data-testid="agent-inbox">
-    {waiting} agent change{waiting === 1 ? '' : 's'} to review
+    {tn('{n} agent change to review', '{n} agent changes to review', waiting, { n: waiting })}
   </a>
 {/if}
 

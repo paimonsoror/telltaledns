@@ -1,16 +1,20 @@
 // REQ: OBS-035 (ADR-135) — the wall display's moving parts, kept free of Svelte and the DOM so
 // the tests can check them directly: the panel list from the URL, tile tweens, the particle
 // budget, the live ticker's buffer, and an animation loop that stops when the tab is hidden.
+import { tr, type Msg } from './i18n';
+
+const { m } = tr('libWall');
 
 export const PANELS = ['map', 'flow', 'slo', 'latency', 'heat', 'kpi'] as const;
 export type Panel = (typeof PANELS)[number];
-export const PANEL_TITLE: Record<Panel, string> = {
-  map: 'What the network is reaching',
-  flow: 'Where queries go',
-  slo: 'Service level',
-  latency: 'Answer time',
-  heat: 'The week',
-  kpi: 'Right now',
+/** REQ: API-012 — each panel's title, shown with `tk()`. */
+export const PANEL_TITLE: Record<Panel, Msg> = {
+  map: m('What the network is reaching'),
+  flow: m('Where queries go'),
+  slo: m('Service level'),
+  latency: m('Answer time'),
+  heat: m('The week'),
+  kpi: m('Right now'),
 };
 
 /** `?panels=slo,flow` in that order; unknown names dropped; none (or nothing valid): all. */

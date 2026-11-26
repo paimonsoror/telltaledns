@@ -17,6 +17,9 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:18054',
     trace: 'retain-on-failure',
+    // REQ: API-012 — the suite reads English text and formats: pin the browser's language, so the
+    // machine's own language never changes what the tests see.
+    locale: 'en-US',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {

@@ -7,7 +7,7 @@
 
 <main class="shell">
   <div class="card box">
-    <div class="brand"><Logo /> <span>TelltaleDNS</span></div>
+    <div class="brand"><Logo /> <span translate="no">TelltaleDNS</span></div>
     <h1>{title}</h1>
     {@render children()}
   </div>

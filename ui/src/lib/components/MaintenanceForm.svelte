@@ -5,6 +5,9 @@
   // and the form says to promote another node first.
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
+  import { tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t } = tr('maintenanceForm');
 
   let {
     node,
@@ -25,10 +28,10 @@
   } = $props();
 
   const presets: [string, number][] = [
-    ['30 min', 1800],
-    ['1 h', 3600],
-    ['2 h', 7200],
-    ['4 h', 14_400],
+    [t('30 min'), 1800],
+    [t('1 h'), 3600],
+    [t('2 h'), 7200],
+    [t('4 h'), 14_400],
   ];
   let secs = $state<number | 'custom'>(3600);
   let customMinutes = $state(90);
@@ -53,39 +56,39 @@
   }
 </script>
 
-<div class="notice maint-form" role="dialog" aria-label={`Maintenance for ${label}`} data-testid="maintenance-form">
+<div class="notice maint-form" role="dialog" aria-label={t('Maintenance for {label}', { label })} data-testid="maintenance-form">
   <p>
-    <strong>Put {label} in maintenance?</strong> It reports not ready, so load balancers and Kubernetes stop sending it new
-    queries, but it keeps answering every query that still arrives. Its alerts and health conditions are left out until the
-    window ends.
+    <T
+      ctx="maintenanceForm"
+      msg={'<strong>Put {label} in maintenance?</strong> It reports not ready, so load balancers and Kubernetes stop sending it new queries, but it keeps answering every query that still arrives. Its alerts and health conditions are left out until the window ends.'}
+      params={{ label }}>{#snippet strong(text: string)}<strong>{text}</strong>{/snippet}</T
+    >
   </p>
-  <div class="row presets" role="radiogroup" aria-label="How long">
+  <div class="row presets" role="radiogroup" aria-label={t('How long')}>
     {#each presets as [text, s] (s)}
       <label class="seg-item"><input type="radio" name="maint-for" value={s} bind:group={secs} /> {text}</label>
     {/each}
-    <label class="seg-item"><input type="radio" name="maint-for" value="custom" bind:group={secs} /> other</label>
+    <label class="seg-item"><input type="radio" name="maint-for" value="custom" bind:group={secs} /> {t('other')}</label>
     {#if secs === 'custom'}
       <label class="minutes"
-        ><input type="number" min="1" max="1440" step="1" bind:value={customMinutes} aria-label="Minutes" /> minutes</label
+        ><input type="number" min="1" max="1440" step="1" bind:value={customMinutes} aria-label={t('Minutes')} /> {t('minutes')}</label
       >
     {/if}
   </div>
-  <label class="field">Why <input bind:value={reason} maxlength="200" placeholder="SD card swap" data-testid="maintenance-reason" /></label>
+  <label class="field">{t('Why')} <input bind:value={reason} maxlength="200" placeholder={t('SD card swap')} data-testid="maintenance-reason" /></label>
   {#if primary && canHandover}
     <label class="check"
-      ><input type="checkbox" bind:checked={handover} data-testid="maintenance-handover" /> Hand the primary role to another node first
-      (about 30 s without configuration changes)</label
+      ><input type="checkbox" bind:checked={handover} data-testid="maintenance-handover" /> {t('Hand the primary role to another node first (about 30 s without configuration changes)')}</label
     >
   {:else if primary}
     <p class="small muted" data-testid="maintenance-primary-note">
-      This node is the primary; it keeps publishing. Promote another node first if you're taking it offline (see Promote on that
-      node's Cluster page).
+      {t('This node is the primary; it keeps publishing. Promote another node first if you\'re taking it offline (see Promote on that node\'s Cluster page).')}
     </p>
   {/if}
   <ErrorNote {error} />
   <div class="row">
-    <button class="primary" onclick={start} disabled={busy || !valid} data-testid="maintenance-start">{busy ? 'Starting…' : 'Start maintenance'}</button>
-    <button onclick={onclose}>Cancel</button>
+    <button class="primary" onclick={start} disabled={busy || !valid} data-testid="maintenance-start">{busy ? t('Starting…') : t('Start maintenance')}</button>
+    <button onclick={onclose}>{t('Cancel')}</button>
   </div>
 </div>
 

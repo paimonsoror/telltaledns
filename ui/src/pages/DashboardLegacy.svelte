@@ -20,14 +20,16 @@
   import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
   import { changes } from '../lib/annotations.svelte';
   import { currentMode } from '../lib/mode.svelte';
+  import { own, tr } from '../lib/i18n';
+  const { t } = tr('dashboardLegacy');
 
   const ranges = [
-    { id: '15m', label: '15 min', from: '-15m', step: 'second' as const, summary: '-15m', secs: 900 },
-    { id: '1h', label: '1 h', from: '-1h', step: 'minute' as const, summary: '-1h', secs: 3600 },
-    { id: '24h', label: '24 h', from: '-24h', step: 'minute' as const, summary: '-24h', secs: 86400 },
-    { id: '48h', label: '48 h', from: '-48h', step: 'minute' as const, summary: '-48h', secs: 172800 },
-    { id: '7d', label: '7 d', from: '-7d', step: 'hour' as const, summary: '-7d', secs: 604800 },
-    { id: '30d', label: '30 d', from: '-30d', step: 'hour' as const, summary: '-30d', secs: 2592000 },
+    { id: '15m', label: t('15 min'), from: '-15m', step: 'second' as const, summary: '-15m', secs: 900 },
+    { id: '1h', label: t('1 h'), from: '-1h', step: 'minute' as const, summary: '-1h', secs: 3600 },
+    { id: '24h', label: t('24 h'), from: '-24h', step: 'minute' as const, summary: '-24h', secs: 86400 },
+    { id: '48h', label: t('48 h'), from: '-48h', step: 'minute' as const, summary: '-48h', secs: 172800 },
+    { id: '7d', label: t('7 d'), from: '-7d', step: 'hour' as const, summary: '-7d', secs: 604800 },
+    { id: '30d', label: t('30 d'), from: '-30d', step: 'hour' as const, summary: '-30d', secs: 2592000 },
   ];
   let range = $state(ranges[2]);
 
@@ -47,33 +49,51 @@
   // and alerts.
   let slo = $state<S['SloStatus'] | null>(null);
   const advanced = $derived(currentMode() === 'advanced');
-  // What each "Where time goes" row means (path/transport, or a wait stage).
+  // What each "Where time goes" row means (path/transport, or a wait stage). The paths, transports
+  // and stages come from the server: read with `Object.hasOwn`.
   const paths: Record<string, string> = {
-    cache:
+    cache: t(
       'Answered from the cache: a repeat question, no upstream asked. Includes answers whose cached copy had just expired and was given at once while it was refreshed in the background. Usually well under a millisecond.',
-    upstream:
+    ),
+    upstream: t(
       'Not in the cache: asked an upstream resolver and waited for it. Also counts stale answers served because the upstream was slow or failing, and SERVFAIL. Usually the slowest path.',
-    local: 'Answered from names on your network (local records), without asking anyone.',
-    synthesized:
+    ),
+    local: t('Answered from names on your network (local records), without asking anyone.'),
+    synthesized: t(
       "Answered without looking anything up: blocked names, refused or rate-limited queries, malformed ones, and special names (like Firefox's DNS-over-HTTPS canary).",
+    ),
   };
   const protos: Record<string, string> = {
-    udp: 'plain DNS over UDP, what most devices use',
-    tcp: 'plain DNS over TCP, for large answers and some tools',
-    dot: 'DNS over TLS (port 853), e.g. Android Private DNS',
-    doh: 'DNS over HTTPS, e.g. browsers or Apple devices with a profile',
+    udp: t('plain DNS over UDP, what most devices use'),
+    tcp: t('plain DNS over TCP, for large answers and some tools'),
+    dot: t('DNS over TLS (port 853), e.g. Android Private DNS'),
+    doh: t('DNS over HTTPS, e.g. browsers or Apple devices with a profile'),
   };
+  // A wait stage's row is keyed `wait: <stage>`; the key stays an identifier, the row says it in words.
+  const WAIT = 'wait: ';
+  const rowName = (key: string) => (key.startsWith(WAIT) ? t('wait: {stage}', { stage: key.slice(WAIT.length) }) : key);
+  const waitUpstream = t("Of the upstream path above: the time spent waiting for upstream resolvers (the rest is this node's own work).");
   const pathTip = (key: string) => {
-    if (key.startsWith('wait: ')) {
-      const what = key.slice(6);
-      return what === 'upstream'
-        ? "Of the upstream path above: the time spent waiting for upstream resolvers (the rest is this node's own work)."
-        : `Time spent waiting for ${what} when it answered.`;
+    if (key.startsWith(WAIT)) {
+      const what = key.slice(WAIT.length);
+      return what === 'upstream' ? waitUpstream : t('Time spent waiting for {what} when it answered.', { what });
     }
     const [path, proto] = key.split('/');
-    const p = paths[path] ?? 'Answers that took this path.';
-    return proto && protos[proto] ? `${p} Over ${protos[proto]}.` : p;
+    const p = own(paths, path) ?? t('Answers that took this path.');
+    const over = own(protos, proto);
+    return over ? t('{path} Over {transport}.', { path: p, transport: over }) : p;
   };
+  // The status words of the charts, the legend and the clients' split; the ids stay beside them.
+  const statusText: Record<string, string> = {
+    blocked: t('blocked'),
+    cached: t('cached'),
+    refreshed: t('refreshed'),
+    forwarded: t('forwarded'),
+    local: t('local'),
+    other: t('other'),
+  };
+  const upstreamLabel = { queries: t('upstream queries'), failures: t('failures') };
+  const listTitle = { domains: t('Top domains'), blocked: t('Top blocked'), clients: t('Top clients') };
   let groups = $state<S['GroupInfo'][]>([]);
   // ADR-050 — the top lists for one kind of device ('' = everyone).
   let group = $state('');
@@ -97,17 +117,21 @@
     }
   });
   const nodeLabel = (n: S['ClusterView']['nodes'][number]) =>
-    (n.ephemeral ? `${n.site} pod ${n.pod ?? n.nodeId.slice(0, 8)}` : n.site) +
-    (n.role.includes('primary') ? ' (primary)' : '') +
-    (n.thisNode ? ' · this node' : '');
+    (n.ephemeral ? t('{site} pod {pod}', { site: n.site, pod: n.pod ?? n.nodeId.slice(0, 8) }) : n.site) +
+    (n.role.includes('primary') ? ` ${t('(primary)')}` : '') +
+    (n.thisNode ? ` ${t('· this node')}` : '');
   // Sites with resolver pods get a choice of their own: the pods come and go.
   const podSites = $derived([...new Set(nodes.filter((n) => n.ephemeral).map((n) => n.site))]);
   const scopeLabel = $derived(
     scope.startsWith('node:')
-      ? (nodes.find((n) => `node:${n.nodeId}` === scope)?.site ?? 'one node')
+      ? (nodes.find((n) => `node:${n.nodeId}` === scope)?.site ?? t('one node'))
       : scope.startsWith('site:')
-        ? `site ${scope.slice(5)}`
-        : 'every node',
+        ? t('site {site}', { site: scope.slice(5) })
+        : t('every node'),
+  );
+  // What the first tile says about the range, and the scope when there is one.
+  const queriesSub = $derived(
+    scope ? t('last {range} · {scope}', { range: range.label, scope: scopeLabel }) : t('last {range}', { range: range.label }),
   );
   // Upstream health is each node's own: say whose when another node is shown.
   const otherNode = $derived(
@@ -123,9 +147,11 @@
   // hours: a range under a day says from which hour; a group's lists cover this hour only.
   let nowS = $state(Math.floor(Date.now() / 1000));
   const rangeLabel = $derived(
-    range.secs < 86400 ? `since ${clock(Math.floor((nowS - range.secs) / 3600) * 3600)}` : `last ${range.label}`,
+    range.secs < 86400
+      ? t('since {time}', { time: clock(Math.floor((nowS - range.secs) / 3600) * 3600) })
+      : t('last {range}', { range: range.label }),
   );
-  const topLabel = $derived(group ? 'this hour' : rangeLabel);
+  const topLabel = $derived(group ? t('this hour') : rangeLabel);
 
   async function load() {
     const r = range;
@@ -175,10 +201,10 @@
     const first = Math.floor((now - secs) / step) * step + step;
     const byStart = new Map(items.map((b) => [b.startUnixSeconds, b]));
     const out: S['TimeBucket'][] = [];
-    for (let t = first; t <= last; t += step) {
+    for (let ts = first; ts <= last; ts += step) {
       out.push(
-        byStart.get(t) ?? {
-          startUnixSeconds: t,
+        byStart.get(ts) ?? {
+          startUnixSeconds: ts,
           total: 0,
           byStatus: {},
           byQtype: {},
@@ -216,7 +242,7 @@
   };
   const times = $derived(buckets.map((b) => b.startUnixSeconds));
   const statusSeries = $derived.by(() => {
-    const series = [...main, 'other'].map((k) => ({ label: k, color: colors[k], values: [] as number[] }));
+    const series = [...main, 'other'].map((k) => ({ label: statusText[k], color: colors[k], values: [] as number[] }));
     for (const b of buckets) {
       let rest = b.total;
       main.forEach((k, i) => {
@@ -240,8 +266,8 @@
       .filter((s) => s.values.some((v) => v > 0));
   });
   const upstreamSeries = $derived([
-    { label: 'upstream queries', color: '--s-forwarded', values: buckets.map((b) => b.upstreamQueries) },
-    { label: 'failures', color: '--s-blocked', values: buckets.map((b) => b.upstreamFailures) },
+    { label: upstreamLabel.queries, color: '--s-forwarded', values: buckets.map((b) => b.upstreamQueries) },
+    { label: upstreamLabel.failures, color: '--s-blocked', values: buckets.map((b) => b.upstreamFailures) },
   ]);
 
   // The busiest upstream path stands in for "typical answer time" until per-node p95 lands.
@@ -273,8 +299,8 @@
   );
   const cacheSub = $derived(
     advanced && refreshedPercent != null && (summary?.refreshed ?? 0) > 0
-      ? `${pct((summary?.cacheHitPercent ?? 0) - refreshedPercent)} fresh · ${pct(refreshedPercent)} refreshed`
-      : `${short(summary?.cached)} answers`,
+      ? t('{fresh} fresh · {refreshed} refreshed', { fresh: pct((summary?.cacheHitPercent ?? 0) - refreshedPercent), refreshed: pct(refreshedPercent) })
+      : t('{n} answers', { n: short(summary?.cached) }),
   );
   const sparkFailures = $derived(buckets.map((b) => b.upstreamFailures));
 
@@ -293,45 +319,45 @@
     if (!s) return [];
     const other = Math.max(0, i.count - s.blocked - s.cached - s.forwarded);
     return [
-      { label: 'blocked', n: s.blocked },
-      { label: 'cached', n: s.cached },
-      { label: 'forwarded', n: s.forwarded },
-      { label: 'other', n: other },
+      { id: 'blocked', n: s.blocked },
+      { id: 'cached', n: s.cached },
+      { id: 'forwarded', n: s.forwarded },
+      { id: 'other', n: other },
     ];
   };
   const splitText = (i: S['TopItem']) =>
     clientSplit(i)
       .filter((p) => p.n > 0)
-      .map((p) => `${num(p.n)} ${p.label}`)
+      .map((p) => `${num(p.n)} ${statusText[p.id]}`)
       .join(' · ');
 </script>
 
 <div class="page">
   <div class="page-head">
-    <h1>Dashboard<HelpButton id="how-it-works" /></h1>
+    <h1>{t('Dashboard')}<HelpButton id="how-it-works" /></h1>
     <!-- The view controls, one group: on a narrow screen they wrap together below the heading. -->
     <div class="head-controls">
       {#if nodes.length > 1}
         <!-- REQ: CLU-002 — every node together, or one node (or site) at a time. -->
         <label class="pill-field">
-          Showing
-          <select bind:value={scope} aria-label="Nodes">
-            <option value="">every node</option>
+          {t('Showing')}
+          <select bind:value={scope} aria-label={t('Nodes')}>
+            <option value="">{t('every node')}</option>
             {#each nodes as n (n.nodeId)}<option value={`node:${n.nodeId}`}>{nodeLabel(n)}</option>{/each}
-            {#each podSites as s (s)}<option value={`site:${s}`}>site {s} (all its nodes)</option>{/each}
+            {#each podSites as s (s)}<option value={`site:${s}`}>{t('site {site} (all its nodes)', { site: s })}</option>{/each}
           </select>
         </label>
       {/if}
       {#if groups.length > 1}
         <label class="pill-field">
-          Top lists for
-          <select bind:value={group} aria-label="Group">
-            <option value="">every device</option>
-            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
+          {t('Top lists for')}
+          <select bind:value={group} aria-label={t('Group')}>
+            <option value="">{t('every device')}</option>
+            {#each groups as g (g.name)}<option value={g.name} translate="no">{g.name}</option>{/each}
           </select>
         </label>
       {/if}
-      <div class="seg" role="group" aria-label="Time range">
+      <div class="seg" role="group" aria-label={t('Time range')}>
         {#each ranges as r (r.id)}
           <button aria-pressed={range.id === r.id} onclick={() => (range = r)}>{r.label}</button>
         {/each}
@@ -345,37 +371,37 @@
   {#if summary?.missingNodes?.length}
     <!-- REQ: CLU-002 — a node that doesn't answer leaves partial totals, said plainly. -->
     <div class="notice warn small">
-      Partial results: {summary.missingNodes.join(', ')} didn't answer, so these numbers cover the other cluster nodes.
+      {t("Partial results: {nodes} didn't answer, so these numbers cover the other cluster nodes.", { nodes: summary.missingNodes.join(', ') })}
     </div>
   {/if}
 
   <div class="kpis">
     <!-- More blocking or more queries isn't good or bad, so those changes stay neutral. -->
-    <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}${scope ? ` · ${scopeLabel}` : ''}`} delta={change(summary?.queries, previous?.queries)} spark={sparkTotal} sparkColor="--s-forwarded" />
-    <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" ring={summary?.blockedPercent} />
-    <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={cacheSub} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" ring={summary?.cacheHitPercent} />
-    <Kpi label="Upstream p90" value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? `cache p50 ${ms(cacheP50.p50Ms)}` : 'this hour'} delta={change(upstreamP90?.p90Ms, prevP90?.p90Ms)} good="down" />
-    <Kpi label="Active clients" value={num(summary?.activeClients)} sub={rangeLabel} delta={change(summary?.activeClients, previous?.activeClients)} />
-    <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />
+    <Kpi label={t('Queries')} value={short(summary?.queries)} sub={queriesSub} delta={change(summary?.queries, previous?.queries)} spark={sparkTotal} sparkColor="--s-forwarded" />
+    <Kpi label={t('Blocked')} value={pct(summary?.blockedPercent)} sub={t('{n} queries', { n: short(summary?.blocked) })} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" ring={summary?.blockedPercent} />
+    <Kpi label={t('Cache hits')} value={pct(summary?.cacheHitPercent)} sub={cacheSub} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" ring={summary?.cacheHitPercent} />
+    <Kpi label={t('Upstream p90')} value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? t('cache p50 {p50}', { p50: ms(cacheP50.p50Ms) }) : t('this hour')} delta={change(upstreamP90?.p90Ms, prevP90?.p90Ms)} good="down" />
+    <Kpi label={t('Active clients')} value={num(summary?.activeClients)} sub={rangeLabel} delta={change(summary?.activeClients, previous?.activeClients)} />
+    <Kpi label={t('NXDOMAIN / SERVFAIL')} value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={t('last {range}', { range: range.label })} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />
   </div>
 
   {#if advanced}<SloCard {slo} />{/if}
 
   <div class="status-row">
-    <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} markers={changes.markers} />
+    <Chart title={t('Queries by status')} {times} series={statusSeries} stacked seconds={range.step === 'second'} markers={changes.markers} />
     <section class="card">
-      <h2>Answers by status</h2>
+      <h2>{t('Answers by status')}</h2>
       {#if statusParts.length === 0}
-        <p class="empty">No answers in this range.</p>
+        <p class="empty">{t('No answers in this range.')}</p>
       {:else}
-        <Donut parts={statusParts} center={`answers · ${range.label}`} format={short} />
+        <Donut parts={statusParts} center={t('answers · {range}', { range: range.label })} format={short} />
       {/if}
     </section>
   </div>
 
   <!-- Advanced view only (owner, 2026-10-09), like the Service level card above. -->
   {#if advanced && (groupSeries.length > 1 || (groupSeries.length === 1 && groupSeries[0].label !== 'default'))}
-    <Chart title="Traffic by group" {times} series={groupSeries} stacked seconds={range.step === 'second'} markers={changes.markers} />
+    <Chart title={t('Traffic by group')} {times} series={groupSeries} stacked seconds={range.step === 'second'} markers={changes.markers} />
   {/if}
   <!-- REQ: OBS-025 — devices by what they look like (Advanced view). -->
   {#if advanced}<DevicesByType />{/if}
@@ -384,24 +410,24 @@
   <div class="grid-2">
     <section class="card" class:wide={timeView === 'heatmap'}>
       <div class="card-head">
-        <h2>Where time goes {#if timeView === 'table'}<span class="muted small">(this hour)</span>{/if}{#if timeView === 'heatmap'}<HelpButton id="latency-heatmap" />{:else}<HelpButton id="cache" />{/if}</h2>
-        <div class="seg" role="group" aria-label="Where time goes as">
-          <button type="button" aria-pressed={timeView === 'table'} onclick={() => (timeView = 'table')}>Percentiles</button>
-          <button type="button" aria-pressed={timeView === 'heatmap'} onclick={() => (timeView = 'heatmap')} data-testid="time-heatmap-tab">Heatmap</button>
+        <h2>{t('Where time goes')} {#if timeView === 'table'}<span class="muted small">{t('(this hour)')}</span>{/if}{#if timeView === 'heatmap'}<HelpButton id="latency-heatmap" />{:else}<HelpButton id="cache" />{/if}</h2>
+        <div class="seg" role="group" aria-label={t('Where time goes as')}>
+          <button type="button" aria-pressed={timeView === 'table'} onclick={() => (timeView = 'table')}>{t('Percentiles')}</button>
+          <button type="button" aria-pressed={timeView === 'heatmap'} onclick={() => (timeView = 'heatmap')} data-testid="time-heatmap-tab">{t('Heatmap')}</button>
         </div>
       </div>
       {#if timeView === 'heatmap'}
         <LatencyHeatmap />
       {:else if byPath.length + stages.length === 0}
-        <p class="empty">No answers yet this hour.</p>
+        <p class="empty">{t('No answers yet this hour.')}</p>
       {:else}
         <div class="table-wrap">
           <table class="compact">
-            <thead><tr><th>Path</th><th class="num">Answers</th><th class="num">p50</th><th class="num">p90</th><th class="num">p99</th><th class="num">max</th></tr></thead>
+            <thead><tr><th>{t('Path')}</th><th class="num">{t('Answers')}</th><th class="num">{t('p50')}</th><th class="num">{t('p90')}</th><th class="num">{t('p99')}</th><th class="num">{t('max')}</th></tr></thead>
             <tbody>
-              {#each [...byPath, ...stages.map((s) => ({ ...s, key: `wait: ${s.key}` }))] as r (r.key)}
+              {#each [...byPath, ...stages.map((s) => ({ ...s, key: `${WAIT}${s.key}` }))] as r (r.key)}
                 <tr>
-                  <td><Tip text={pathTip(r.key)}>{r.key}</Tip></td>
+                  <td><Tip text={pathTip(r.key)}>{rowName(r.key)}</Tip></td>
                   <td class="num">{num(r.count)}</td>
                   <td class="num">{ms(r.p50Ms)}</td>
                   <td class="num">{ms(r.p90Ms)}</td>
@@ -416,15 +442,15 @@
     </section>
 
     <section class="card">
-      <div class="card-head"><h2>Upstreams{#if otherNode} <span class="muted small">(as this node sees them)</span>{/if}</h2><a href={href('/upstreams')} class="small">Details</a></div>
+      <div class="card-head"><h2>{t('Upstreams')}{#if otherNode} <span class="muted small">{t('(as this node sees them)')}</span>{/if}</h2><a href={href('/upstreams')} class="small">{t('Details')}</a></div>
       {#if upstreams.length === 0}
-        <p class="empty">No upstreams configured.</p>
+        <p class="empty">{t('No upstreams configured.')}</p>
       {:else}
         <ul class="bars">
           {#each upstreams as u (u.id)}
             <li>
               <div class="row">
-                <strong>{u.name}</strong>
+                <strong translate="no">{u.name}</strong>
                 <BreakerBadge value={u.breaker} />
                 <span class="spacer"></span>
                 <span class="muted small">{pct(totalUpstream ? (u.requests / totalUpstream) * 100 : 0, 0)} · {ms(u.latencyEwmaMs)}</span>
@@ -437,59 +463,59 @@
     </section>
   </div>
 
-    <Chart title="Upstream exchanges" {times} series={upstreamSeries} height={160} bars seconds={range.step === 'second'} markers={changes.markers} />
+    <Chart title={t('Upstream exchanges')} {times} series={upstreamSeries} height={160} bars seconds={range.step === 'second'} markers={changes.markers} />
   {/if}
 
   <div class="grid-3">
     {#each [
-      { title: 'Top domains', items: topDomains, link: (k: string) => href('/queries', { name: k, match: 'exact' }) },
-      { title: 'Top blocked', items: topBlocked, link: (k: string) => href('/queries', { name: k, match: 'exact', status: 'blocked' }) },
-      { title: 'Top clients', items: topClients, link: (k: string) => href('/queries', { client: k }) },
-    ] as t (t.title)}
+      { id: 'domains' as const, items: topDomains, link: (k: string) => href('/queries', { name: k, match: 'exact' }) },
+      { id: 'blocked' as const, items: topBlocked, link: (k: string) => href('/queries', { name: k, match: 'exact', status: 'blocked' }) },
+      { id: 'clients' as const, items: topClients, link: (k: string) => href('/queries', { client: k }) },
+    ] as l (l.id)}
       <section class="card">
-        {#if t.title === 'Top domains'}
+        {#if l.id === 'domains'}
           <div class="card-head">
-            <h2>{t.title} <span class="muted small">({topLabel})</span><HelpButton id="internal-names" /></h2>
-            <div class="seg" role="group" aria-label="Top domains on the internet or internal">
-              <button type="button" aria-pressed={domainsView === 'internet'} onclick={() => { domainsView = 'internet'; void load(); }}>Internet</button>
-              <button type="button" aria-pressed={domainsView === 'internal'} onclick={() => { domainsView = 'internal'; void load(); }} data-testid="domains-internal-tab">Internal</button>
+            <h2>{listTitle[l.id]} <span class="muted small">({topLabel})</span><HelpButton id="internal-names" /></h2>
+            <div class="seg" role="group" aria-label={t('Top domains on the internet or internal')}>
+              <button type="button" aria-pressed={domainsView === 'internet'} onclick={() => { domainsView = 'internet'; void load(); }}>{t('Internet')}</button>
+              <button type="button" aria-pressed={domainsView === 'internal'} onclick={() => { domainsView = 'internal'; void load(); }} data-testid="domains-internal-tab">{t('Internal')}</button>
             </div>
           </div>
         {:else}
-          <h2>{t.title} <span class="muted small">({topLabel})</span></h2>
+          <h2>{listTitle[l.id]} <span class="muted small">({topLabel})</span></h2>
         {/if}
-        {#if t.title === 'Top clients' && t.items.some((i) => i.byStatus)}
+        {#if l.id === 'clients' && l.items.some((i) => i.byStatus)}
           <p class="legend small muted" data-testid="clients-legend">
-            {#each ['blocked', 'cached', 'forwarded', 'other'] as k (k)}<span><i style:background={`var(${colors[k]})`}></i>{k}</span>{/each}
+            {#each ['blocked', 'cached', 'forwarded', 'other'] as k (k)}<span><i style:background={`var(${colors[k]})`}></i>{statusText[k]}</span>{/each}
           </p>
         {/if}
-        {#if t.items.length === 0}
-          <p class="empty">Nothing yet.</p>
+        {#if l.items.length === 0}
+          <p class="empty">{t('Nothing yet.')}</p>
         {:else}
           <ol class="bars">
-            {#each t.items as i (i.key)}
+            {#each l.items as i (i.key)}
               <li>
                 <div class="row">
-                  {#if t.title === 'Top clients'}
+                  {#if l.id === 'clients'}
                     <span class="name"><ClientChip ip={i.key} name={i.name} onchanged={() => void load()} /></span>
                     <!-- ADR-050 — the groups whose settings apply to the device. -->
-                    {#each i.groups ?? [] as g (g)}<span class="group-chip small" style:--gc={groupColor(g)}>{g}</span>{/each}
+                    {#each i.groups ?? [] as g (g)}<span class="group-chip small" style:--gc={groupColor(g)} translate="no">{g}</span>{/each}
                   {:else}
-                    <a class="name" href={t.link(i.key)}>{i.key}</a>
+                    <a class="name" href={l.link(i.key)}>{i.key}</a>
                   {/if}
                   <span class="spacer"></span>
                   <span class="num small">{num(i.count)}</span>
                 </div>
-                {#if t.title === 'Top clients' && i.byStatus}
+                {#if l.id === 'clients' && i.byStatus}
                   <div class="bar" title={splitText(i)} role="img" aria-label={splitText(i)} data-testid="client-split">
-                    <span class="stack" style:width={`${(i.count / maxTop(t.items)) * 100}%`}>
-                      {#each clientSplit(i) as p (p.label)}
-                        {#if p.n > 0}<span style:flex-grow={p.n} style:background={`var(${colors[p.label]})`}></span>{/if}
+                    <span class="stack" style:width={`${(i.count / maxTop(l.items)) * 100}%`}>
+                      {#each clientSplit(i) as p (p.id)}
+                        {#if p.n > 0}<span style:flex-grow={p.n} style:background={`var(${colors[p.id]})`}></span>{/if}
                       {/each}
                     </span>
                   </div>
                 {:else}
-                  <div class="bar"><span style:width={`${(i.count / maxTop(t.items)) * 100}%`}></span></div>
+                  <div class="bar"><span style:width={`${(i.count / maxTop(l.items)) * 100}%`}></span></div>
                 {/if}
               </li>
             {/each}

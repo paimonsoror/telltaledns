@@ -4,6 +4,9 @@
   // matches nothing, a MAC address) shows here before anything is saved.
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
+  import { tk, tr, type Msg } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t, tn, m } = tr('muteForm');
 
   let {
     finding,
@@ -19,21 +22,21 @@
     oncancel?: () => void;
   } = $props();
 
-  const kindTitles: Record<string, string> = {
-    rate_spike: 'Many more queries than usual',
-    domain_volume: 'Unusual traffic to one domain',
-    drift: 'Many new domains',
-    beacon: 'Regular phone-home',
-    nxdomain_storm: 'Burst of failed lookups',
-    reverse_sweep: 'Sweep of local addresses',
-    dga: 'Machine-generated-looking domains',
-    chatty_loop: 'Chatty loop',
+  const kindTitles: Record<string, Msg> = {
+    rate_spike: m('Many more queries than usual'),
+    domain_volume: m('Unusual traffic to one domain'),
+    drift: m('Many new domains'),
+    beacon: m('Regular phone-home'),
+    nxdomain_storm: m('Burst of failed lookups'),
+    reverse_sweep: m('Sweep of local addresses'),
+    dga: m('Machine-generated-looking domains'),
+    chatty_loop: m('Chatty loop'),
   };
   const durations: { v: string; l: string; ms: number | null }[] = [
-    { v: '1d', l: '1 day', ms: 86_400_000 },
-    { v: '1w', l: '1 week', ms: 7 * 86_400_000 },
-    { v: '30d', l: '30 days', ms: 30 * 86_400_000 },
-    { v: 'never', l: 'Until I remove it', ms: null },
+    { v: '1d', l: t('1 day'), ms: 86_400_000 },
+    { v: '1w', l: t('1 week'), ms: 7 * 86_400_000 },
+    { v: '30d', l: t('30 days'), ms: 30 * 86_400_000 },
+    { v: 'never', l: t('Until I remove it'), ms: null },
   ];
 
   // The address is what findings are made from, so it is the default; a device name works too when
@@ -107,6 +110,10 @@
     }
   }
 
+  // REQ: API-012 — `similar` is a count (a length, never negative). English keeps its "This
+  // finding" for one; the other branch is a plural whose two English forms are the same sentence,
+  // so a translation has its language's forms there.
+
   function toggle(k: string, on: boolean) {
     kinds = on ? [...kinds, k] : kinds.filter((x) => x !== k);
   }
@@ -114,43 +121,52 @@
 
 <form class="mute" onsubmit={save} data-testid="mute-form">
   <p class="small">
-    Stop counting the kinds below for this device. The findings are still recorded and listed (turn on <b>Show muted</b>),
-    and every other device is still checked.
+    <T
+      ctx="muteForm"
+      msg={'Stop counting the kinds below for this device. The findings are still recorded and listed (turn on <b>Show muted</b>), and every other device is still checked.'}
+      >{#snippet b(text: string)}<b>{text}</b>{/snippet}</T
+    >
   </p>
-  <label class="small field">Device (name, IP or network)
-    <input class="mono" bind:value={device} required aria-label="Device" />
+  <label class="small field">{t('Device (name, IP or network)')}
+    <input class="mono" bind:value={device} required aria-label={t('Device')} />
   </label>
   <fieldset class="kinds">
-    <legend class="small">Kinds of finding</legend>
+    <legend class="small">{t('Kinds of finding')}</legend>
     {#each Object.keys(kindTitles) as k (k)}
       <label class="small">
         <input type="checkbox" checked={kinds.includes(k)} onchange={(e) => toggle(k, e.currentTarget.checked)} />
-        {kindTitles[k]}
+        {tk(kindTitles[k])}
       </label>
     {/each}
   </fieldset>
   <div class="row">
-    <label class="small">For
-      <select bind:value={duration} aria-label="How long">
+    <label class="small">{t('For')}
+      <select bind:value={duration} aria-label={t('How long')}>
         {#each durations as d (d.v)}<option value={d.v}>{d.l}</option>{/each}
       </select>
     </label>
-    <input class="grow" aria-label="Note" placeholder="Why (optional), e.g. hourly reverse-DNS sweep" maxlength="200" bind:value={note} />
+    <input class="grow" aria-label={t('Note')} placeholder={t('Why (optional), e.g. hourly reverse-DNS sweep')} maxlength="200" bind:value={note} />
   </div>
   {#if similar > 0}
     <p class="muted small" data-testid="mute-similar">
-      {similar === 1 ? 'This finding' : `These ${similar} findings`} in the period shown would have been muted.
+      {similar === 1
+        ? t('This finding in the period shown would have been muted.')
+        : tn('These {n} findings in the period shown would have been muted.', 'These {n} findings in the period shown would have been muted.', similar, { n: similar })}
     </p>
   {/if}
   {#if preview}
-    <div class="notice small" data-testid="mute-preview"><b>What this will do:</b> {preview.impact || 'Mutes these findings for this device.'}</div>
+    <div class="notice small" data-testid="mute-preview">
+      <T ctx="muteForm" msg={'<b>What this will do:</b> {impact}'} params={{ impact: preview.impact || t('Mutes these findings for this device.') }}
+        >{#snippet b(text: string)}<b>{text}</b>{/snippet}</T
+      >
+    </div>
     {#each preview.warnings as w (w)}<div class="notice warn small">{w}</div>{/each}
   {/if}
   <ErrorNote error={previewError} />
   <ErrorNote {error} />
   <div class="row">
-    <button class="primary" disabled={saving || !!previewError || !preview} data-testid="mute-save">{saving ? 'Saving…' : 'Mute'}</button>
-    <button type="button" class="link" onclick={() => oncancel?.()}>Cancel</button>
+    <button class="primary" disabled={saving || !!previewError || !preview} data-testid="mute-save">{saving ? t('Saving…') : t('Mute')}</button>
+    <button type="button" class="link" onclick={() => oncancel?.()}>{t('Cancel')}</button>
   </div>
 </form>
 

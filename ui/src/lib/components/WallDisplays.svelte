@@ -6,6 +6,9 @@
   import { ago, dateTime } from '../format';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  import { tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t } = tr('wallDisplays');
 
   let items = $state<S['DisplayInfo'][]>([]);
   let error = $state<unknown>(null);
@@ -68,41 +71,43 @@
 </script>
 
 <section class="card" data-testid="wall-displays">
-  <h2>Wall displays<HelpButton id="wall-display" /></h2>
+  <h2>{t('Wall displays')}<HelpButton id="wall-display" /></h2>
   <p class="muted small">
-    A link for a screen on the wall: open it once on that screen's browser and it stays signed in, showing only the wall
-    (the traffic map, the flow, the service level, the heatmaps, and the live queries). It can't open any other page or change
-    anything. Limit it to the screen's address if you can; revoke it here to sign the screen out.
+    {t('A link for a screen on the wall: open it once on that screen\'s browser and it stays signed in, showing only the wall (the traffic map, the flow, the service level, the heatmaps, and the live queries). It can\'t open any other page or change anything. Limit it to the screen\'s address if you can; revoke it here to sign the screen out.')}
   </p>
   <ErrorNote {error} />
   <form class="row" onsubmit={create}>
-    <label class="small">Name <input bind:value={name} placeholder="hallway" maxlength="64" required data-testid="display-name" /></label>
-    <label class="small">Only from <input bind:value={networks} placeholder="192.168.2.40, 10.0.0.0/24 (optional)" data-testid="display-networks" /></label>
-    <label class="small">Ends after <input bind:value={days} inputmode="numeric" placeholder="days (optional)" size="10" /></label>
-    <button class="primary" disabled={busy || !name.trim()} data-testid="display-create">Make a link</button>
+    <label class="small">{t('Name')} <input bind:value={name} placeholder={t('hallway')} maxlength="64" required data-testid="display-name" /></label>
+    <label class="small">{t('Only from')} <input bind:value={networks} placeholder={t('192.168.2.40, 10.0.0.0/24 (optional)')} data-testid="display-networks" /></label>
+    <label class="small">{t('Ends after')} <input bind:value={days} inputmode="numeric" placeholder={t('days (optional)')} size="10" /></label>
+    <button class="primary" disabled={busy || !name.trim()} data-testid="display-create">{t('Make a link')}</button>
   </form>
   {#if made}
     <div class="notice ok" data-testid="display-link">
-      <p><strong>{made.info.name}</strong>: open this on the wall's browser. It's shown only now.</p>
-      <p class="mono small link">{link(made)}</p>
-      <button type="button" class="small" onclick={() => made && copy(made)}>{copied ? 'Copied' : 'Copy the link'}</button>
+      <p>
+        <T ctx="wallDisplays" msg={"<strong>{name}</strong>: open this on the wall's browser. It's shown only now."} params={{ name: made.info.name }}
+          >{#snippet strong(text: string)}<strong translate="no">{text}</strong>{/snippet}</T
+        >
+      </p>
+      <p class="mono small link" translate="no">{link(made)}</p>
+      <button type="button" class="small" onclick={() => made && copy(made)}>{copied ? t('Copied') : t('Copy the link')}</button>
     </div>
   {/if}
   {#if items.length === 0}
-    <p class="empty">No wall displays.</p>
+    <p class="empty">{t('No wall displays.')}</p>
   {:else}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Only from</th><th>Made by</th><th>Last used</th><th>Ends</th><th></th></tr></thead>
+        <thead><tr><th>{t('Name')}</th><th>{t('Only from')}</th><th>{t('Made by')}</th><th>{t('Last used')}</th><th>{t('Ends')}</th><th></th></tr></thead>
         <tbody>
           {#each items as d (d.id)}
             <tr data-testid="display-row">
-              <td><strong>{d.name}</strong></td>
-              <td class="mono small">{d.networks.length ? d.networks.join(', ') : 'anywhere'}</td>
-              <td class="small">{d.owner}</td>
-              <td class="small">{d.lastUsedUnixSeconds ? ago(d.lastUsedUnixSeconds) : 'never'}</td>
-              <td class="small">{d.expiresUnixSeconds ? dateTime(d.expiresUnixSeconds) : 'when revoked'}</td>
-              <td class="num"><button class="link small danger" disabled={busy} onclick={() => revoke(d)} data-testid="display-revoke">Revoke</button></td>
+              <td><strong translate="no">{d.name}</strong></td>
+              <td class="mono small">{d.networks.length ? d.networks.join(', ') : t('anywhere')}</td>
+              <td class="small" translate="no">{d.owner}</td>
+              <td class="small">{d.lastUsedUnixSeconds ? ago(d.lastUsedUnixSeconds) : t('never')}</td>
+              <td class="small">{d.expiresUnixSeconds ? dateTime(d.expiresUnixSeconds) : t('when revoked')}</td>
+              <td class="num"><button class="link small danger" disabled={busy} onclick={() => revoke(d)} data-testid="display-revoke">{t('Revoke')}</button></td>
             </tr>
           {/each}
         </tbody>

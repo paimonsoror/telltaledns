@@ -17,6 +17,9 @@
   import DomainIcon from '../icons/DomainIcon.svelte';
   import { num } from '../format';
   import { parseName, workloadName, type Parsed } from './names';
+  import { tk, tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t, m } = tr('topList');
 
   let {
     items,
@@ -93,6 +96,8 @@
   // A device's split: blocked, cached (stale and refreshed included) and forwarded come from the API;
   // "other" is the rest of its count (local, special, refused, …, and the sketch's error bound).
   const COLORS = { blocked: '--s-blocked', cached: '--s-cached', forwarded: '--s-forwarded', other: '--s-other' } as const;
+  /** REQ: API-012 — how each part is named (`k` stays the status). */
+  const PART_TEXT = { blocked: m('blocked'), cached: m('cached'), forwarded: m('forwarded'), other: m('other') } as const;
   function splitOf(it: S['TopItem'], count: number) {
     const s = it.byStatus;
     if (!s) return null;
@@ -101,7 +106,7 @@
       .map((k) => ({ k, n: k === 'other' ? other : s[k], color: COLORS[k] }))
       .filter((p) => p.n > 0);
   }
-  const splitText = (parts: { k: string; n: number }[]) => parts.map((p) => `${num(p.n)} ${p.k}`).join(' · ');
+  const splitText = (parts: { k: keyof typeof PART_TEXT; n: number }[]) => parts.map((p) => `${num(p.n)} ${tk(PART_TEXT[p.k])}`).join(' · ');
 
   async function copy(text: string) {
     try {
@@ -115,7 +120,7 @@
 </script>
 
 {#if shown.length === 0}
-  <p class="empty">Nothing yet.</p>
+  <p class="empty">{t('Nothing yet.')}</p>
 {:else}
   <ol class="tl">
     {#each shown as r (r.it.key)}
@@ -125,22 +130,22 @@
       {@const target = merged ? (p?.main ?? it.key) : it.key}
       {@const [sub, base] = p ? cut(p.main) : kind === 'clients' ? ['', ''] : cut(it.key)}
       {@const [head, tail] = ends(base)}
-      {@const tag = merged ? `search suffix ×${r.variants.length}` : (p?.tag ?? '')}
+      {@const tag = merged ? t('search suffix ×{n}', { n: r.variants.length }) : (p?.tag ?? '')}
       {@const sp = kind === 'clients' ? splitOf(it, r.count) : null}
       <li class:open={open[it.key]} style:--w={`${(r.count / max) * 100}%`}>
         <div class="line">
           <span class="who">
             {#if kind === 'clients'}
               <span class="dev"><ClientChip ip={it.key} name={it.name} display={it.name ? workloadName(it.name) : undefined} {onchanged} /></span>
-              {#each it.groups ?? [] as g (g)}<i class="gdot" style:--gc={groupColor(g)} title={g}></i>{/each}
+              {#each it.groups ?? [] as g (g)}<i class="gdot" style:--gc={groupColor(g)} title={g} translate="no"></i>{/each}
             {:else}
               <!-- REQ: OBS-039 (ADR-167) — the name's mark; nothing when icons are off. -->
               <DomainIcon name={target} quiet={kind === 'blocked'} />
-              <a class="dom" href={link(target, merged)} title={p?.note || it.key} aria-label={target}>{#if sub}<span class="sub">{sub}</span>{/if}{#if tail}<span class="head">{head}</span><span class="tail">{tail}</span>{:else}<span class="base">{base}</span>{/if}</a>
+              <a class="dom" href={link(target, merged)} title={p?.note || it.key} aria-label={target}>{#if sub}<span class="sub" translate="no">{sub}</span>{/if}{#if tail}<span class="head" translate="no">{head}</span><span class="tail" translate="no">{tail}</span>{:else}<span class="base" translate="no">{base}</span>{/if}</a>
               {#if tag}<span class="tag">{tag}</span>{/if}
             {/if}
           </span>
-          <button class="n" aria-expanded={!!open[it.key]} aria-label={`Details for ${it.name ?? p?.main ?? it.key}`} onclick={() => (open[it.key] = !open[it.key])}>
+          <button class="n" aria-expanded={!!open[it.key]} aria-label={t('Details for {name}', { name: it.name ?? p?.main ?? it.key })} onclick={() => (open[it.key] = !open[it.key])}>
             <span class="num">{num(r.count)}</span><span class="chev" aria-hidden="true"></span>
           </button>
         </div>
@@ -152,30 +157,41 @@
         {#if open[it.key]}
           <div class="more">
             {#if merged}
-              <p class="small muted">Pods asked for <b class="real">{p?.main}</b> with each of their DNS search suffixes added, so it's one question that looks like {r.variants.length}:</p>
+              <p class="small muted">
+                <T ctx="topList" msg={"Pods asked for <b>{name}</b> with each of their DNS search suffixes added, so it's one question that looks like {n}:"} params={{ name: p?.main, n: r.variants.length }}
+                  >{#snippet b(text: string)}<b class="real" translate="no">{text}</b>{/snippet}</T
+                >
+              </p>
               <ul class="vars">
                 {#each r.variants as v (v.key)}
-                  <li><code>{v.key}</code><b>{num(v.count)}</b></li>
+                  <li><code translate="no">{v.key}</code><b>{num(v.count)}</b></li>
                 {/each}
               </ul>
             {:else}
               <div class="full">
-                <code>{it.key}</code>
-                <button class="link small" onclick={() => copy(it.key)}>{copied === it.key ? 'Copied' : 'Copy'}</button>
+                <code translate="no">{it.key}</code>
+                <button class="link small" onclick={() => copy(it.key)}>{copied === it.key ? t('Copied') : t('Copy')}</button>
               </div>
-              {#if it.name && kind === 'clients'}<div class="small muted">{it.name}</div>{/if}
+              {#if it.name && kind === 'clients'}<div class="small muted" translate="no">{it.name}</div>{/if}
               {#if p?.note}<p class="small muted">{p.note}</p>{/if}
             {/if}
             {#if sp}
               <ul class="how">
                 {#each sp as q (q.k)}
-                  <li><i style:background={`var(${q.color})`}></i><span>{q.k}</span><b>{num(q.n)}</b><span class="muted">{pctOf(q.n, r.count)}</span></li>
+                  <li><i style:background={`var(${q.color})`}></i><span>{tk(PART_TEXT[q.k])}</span><b>{num(q.n)}</b><span class="muted">{pctOf(q.n, r.count)}</span></li>
                 {/each}
               </ul>
             {/if}
             <p class="small muted">
-              {num(r.count)} queries · {pctOf(r.count, total)} of this list ·
-              <a href={link(target, merged)}>{kind === 'clients' ? 'Show its queries' : 'Show in the query log'}</a>
+              {#if kind === 'clients'}
+                <T ctx="topList" msg={'{n} queries · {share} of this list · <a>Show its queries</a>'} params={{ n: num(r.count), share: pctOf(r.count, total) }}
+                  >{#snippet a(text: string)}<a href={link(target, merged)}>{text}</a>{/snippet}</T
+                >
+              {:else}
+                <T ctx="topList" msg={'{n} queries · {share} of this list · <a>Show in the query log</a>'} params={{ n: num(r.count), share: pctOf(r.count, total) }}
+                  >{#snippet a(text: string)}<a href={link(target, merged)}>{text}</a>{/snippet}</T
+                >
+              {/if}
             </p>
           </div>
         {/if}

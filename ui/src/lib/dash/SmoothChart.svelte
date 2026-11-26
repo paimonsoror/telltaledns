@@ -6,10 +6,12 @@
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
   import { onDestroy, untrack } from 'svelte';
-  import { clock, num, short } from '../format';
+  import { clock, monthDay, num, short } from '../format';
   import type { Marker } from '../annotations.svelte';
   import { visibleMarkers } from '../markers';
   import { bucketLabel, bucketStart, rebucket, type RawSeries, type Shown } from './smooth';
+  import { tr } from '../i18n';
+  const { t: tx } = tr('smoothChart');
 
   let {
     title,
@@ -198,7 +200,7 @@
           values: (_u, vals) =>
             vals.map((v) =>
               multiDay
-                ? new Date(v * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                ? monthDay(v)
                 : clock(v, view.span < 60 && view.times[view.times.length - 1] - view.times[0] < 180),
             ),
         },
@@ -234,7 +236,7 @@
     // so a tooltip being read isn't wiped.
     void [view, width, h, themeTick, showTable, mode, axes, yMax];
     untrack(() => {
-      const sig = [width, h, themeTick, showTable, mode, axes, yMax, view.span, view.times.length, view.series.map((s) => s.label + s.color).join(',')].join('|');
+      const sig = [width, h, themeTick, showTable, mode, axes, yMax, view.span, view.times.length, view.series.map((s) => s.key + s.color).join(',')].join('|');
       if (plot && sig === lastSig) {
         const { ys, order } = layout();
         plot.setData([view.times, ...order.map((i) => ys[i])]);
@@ -271,34 +273,34 @@
     <div class="bar" class:solo={!legend}>
       {#if legend && view.series.length}
         <ul class="legend">
-          {#each view.series as s (s.label)}
+          {#each view.series as s (s.key)}
             <li><i style:background={css(s.color)}></i><span>{s.label}</span><b>{fmt(s, s.total)}</b></li>
           {/each}
         </ul>
       {/if}
       <span class="spacer"></span>
       {#if tableToggle}
-        <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? 'Chart' : 'Table'}</button>
+        <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? tx('Chart') : tx('Table')}</button>
       {/if}
     </div>
   {/if}
   {#if times.length === 0}
-    <p class="empty">No data yet.</p>
+    <p class="empty">{tx('No data yet.')}</p>
   {/if}
   {#if showTable}
     <div class="table-wrap table-view" class:below={!legend}>
       <table class="compact">
         <thead>
           <tr>
-            <th>Time</th>
-            {#each view.series as s (s.label)}<th class="num">{s.label}</th>{/each}
+            <th>{tx('Time')}</th>
+            {#each view.series as s (s.key)}<th class="num">{s.label}</th>{/each}
           </tr>
         </thead>
         <tbody>
           {#each view.times as t, i (t)}
             <tr>
               <td>{bucketLabel(t, view.span, multiDay)}</td>
-              {#each view.series as s (s.label)}<td class="num">{fmt(s, s.shown[i] ?? 0)}</td>{/each}
+              {#each view.series as s (s.key)}<td class="num">{fmt(s, s.shown[i] ?? 0)}</td>{/each}
             </tr>
           {/each}
         </tbody>
@@ -306,10 +308,10 @@
       {#if inRange.length}
         <!-- REQ: OBS-033 — the markers in this range, as rows. -->
         <table class="compact changes-table">
-          <thead><tr><th>Changed</th><th>What</th></tr></thead>
+          <thead><tr><th>{tx('Changed')}</th><th>{tx('What')}</th></tr></thead>
           <tbody>
             {#each inRange as m, i (i)}
-              <tr><td>{clock(m.time)}</td><td>{m.summary}{#if m.actor} · {m.actor}{/if}{#if m.nodes.length} · {m.nodes.join(', ')}{/if}</td></tr>
+              <tr><td>{clock(m.time)}</td><td translate="no">{m.summary}{#if m.actor} · {m.actor}{/if}{#if m.nodes.length} · {m.nodes.join(', ')}{/if}</td></tr>
             {/each}
           </tbody>
         </table>
@@ -335,6 +337,7 @@
             data-kind={p.marks[0].kind}
             style:left={`${p.x}px`}
             aria-label={markLabel(p.marks)}
+            translate="no"
             onmouseenter={() => (mtip = p)}
             onmouseleave={() => (mtip = null)}
             onfocus={() => (mtip = p)}
@@ -354,7 +357,7 @@
                 {#if m.nodes.length}<span class="muted"> · {m.nodes.join(', ')}</span>{/if}
               </div>
             {/each}
-            {#if mtip.marks.length > 5}<div class="muted">and {mtip.marks.length - 5} more</div>{/if}
+            {#if mtip.marks.length > 5}<div class="muted">{tx('and {n} more', { n: mtip.marks.length - 5 })}</div>{/if}
           </div>
         {/if}
       </div>
@@ -362,11 +365,11 @@
     {#if hover && view.times[hover.i] != null}
       <div class="tip" class:compact role="tooltip" bind:clientWidth={tipW} style:left={`${tipLeft}px`} style:top={`${hover.y}px`}>
         <div class="when">{compact ? bucketStart(view.times[hover.i], view.span, multiDay) : bucketLabel(view.times[hover.i], view.span, multiDay)}</div>
-        {#each view.series as s (s.label)}
+        {#each view.series as s (s.key)}
           <div class="line"><i style:background={css(s.color)}></i><span>{s.label}</span><b>{fmt(s, s.shown[hover.i] ?? 0)}</b></div>
         {/each}
         {#if hoverTotal != null}
-          <div class="line sum"><span>Total</span><b>{format(hoverTotal)}</b></div>
+          <div class="line sum"><span>{tx('Total')}</span><b>{format(hoverTotal)}</b></div>
         {/if}
       </div>
     {/if}

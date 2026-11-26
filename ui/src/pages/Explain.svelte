@@ -5,6 +5,8 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import ExplainView from '../lib/components/ExplainView.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import { tr } from '../lib/i18n';
+  const { t } = tr('explain');
 
   let name = $state(route.params.get('name') ?? '');
   let client = $state(route.params.get('client') ?? '');
@@ -37,18 +39,18 @@
 </script>
 
 <div class="page">
-  <h1>Explain<HelpButton id="explain" /></h1>
+  <h1>{t('Explain')}<HelpButton id="explain" /></h1>
   <form class="card row" onsubmit={submit}>
-    <label class="field grow">Name
-      <input name="name" required placeholder="ads.example.com" bind:value={name} />
+    <label class="field grow">{t('Name')}
+      <input name="name" required placeholder={t('ads.example.com')} bind:value={name} />
     </label>
-    <label class="field">Client IP
+    <label class="field">{t('Client IP')}
       <input name="client" placeholder="192.168.1.20" bind:value={client} />
     </label>
-    <label class="field narrow">Type
+    <label class="field narrow">{t('Type')}
       <input name="qtype" bind:value={qtype} />
     </label>
-    <button class="primary" type="submit" disabled={busy}>Explain</button>
+    <button class="primary" type="submit" disabled={busy}>{t('Explain')}</button>
   </form>
   <ErrorNote {error} />
   {#if result}<ExplainView x={result} />{/if}

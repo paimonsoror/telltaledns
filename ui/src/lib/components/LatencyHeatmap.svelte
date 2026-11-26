@@ -7,10 +7,12 @@
   import { api, type S } from '../api';
   import { poll } from '../poll';
   import { href } from '../router.svelte';
-  import { clock, ms, num } from '../format';
+  import { clock, monthDay, ms, num } from '../format';
   import { changes } from '../annotations.svelte';
   import { strength } from '../heatmap';
   import ErrorNote from './ErrorNote.svelte';
+  import { own, tr } from '../i18n';
+  const { t } = tr('latencyHeatmap');
 
   let {
     by = 'path',
@@ -20,13 +22,15 @@
   }: { by?: 'path' | 'upstream'; upstream?: string; testid?: string; wall?: boolean } = $props();
 
   const windows = [
-    { id: '1h', label: '1 h', from: '-1h', step: 'minute' },
-    { id: '6h', label: '6 h', from: '-6h', step: 'minute' },
-    { id: '24h', label: '24 h', from: '-24h', step: 'minute' },
-    { id: '7d', label: '7 d', from: '-7d', step: 'hour' },
+    { id: '1h', label: t('1 h'), from: '-1h', step: 'minute' },
+    { id: '6h', label: t('6 h'), from: '-6h', step: 'minute' },
+    { id: '24h', label: t('24 h'), from: '-24h', step: 'minute' },
+    { id: '7d', label: t('7 d'), from: '-7d', step: 'hour' },
   ];
   const PATHS = ['cache', 'upstream', 'local', 'synthesized'];
-  const PATH_LABEL: Record<string, string> = { cache: 'cache', upstream: 'upstream', local: 'local names', synthesized: 'blocked & special' };
+  // The paths' words, by id (an exemplar's path comes from the server: read with `Object.hasOwn`).
+  const PATH_LABEL: Record<string, string> = { cache: t('cache'), upstream: t('upstream'), local: t('local names'), synthesized: t('blocked & special') };
+  const pathLabel = (p: string) => (own(PATH_LABEL, p) ?? p);
   const PATH_COLOR: Record<string, string> = { cache: '--s-cached', upstream: '--s-forwarded', local: '--s-local', synthesized: '--s-blocked' };
 
   // REQ: OBS-035 — on the wall: the last hour, no controls, refreshed every 30 s.
@@ -87,8 +91,8 @@
     cw: data && data.starts.length ? Math.max(1, (width - LABEL_W - 4) / data.starts.length) : 1,
     h: top + rows * ROW_H + 18,
   });
-  const boundLabel = (us: number) => (us >= 1_000_000 ? `${us / 1_000_000} s` : us >= 1000 ? `${us / 1000} ms` : `${us} µs`);
-  const rowLabel = (r: number) => (data && r < data.boundsUs.length ? `≤ ${boundLabel(data.boundsUs[r])}` : '> 5 s');
+  const boundLabel = (us: number) => (us >= 1_000_000 ? t('{n} s', { n: us / 1_000_000 }) : us >= 1000 ? t('{n} ms', { n: us / 1000 }) : t('{n} µs', { n: us }));
+  const rowLabel = (r: number) => (data && r < data.boundsUs.length ? t('≤ {bound}', { bound: boundLabel(data.boundsUs[r]) }) : t('> 5 s'));
   /** The row of a latency (the first bound at or above it). */
   const rowOf = (us: number) => {
     const i = data?.boundsUs.findIndex((b) => us <= b) ?? -1;
@@ -170,8 +174,8 @@
     // Time labels.
     ctx.fillStyle = muted;
     const every = Math.max(1, Math.ceil(70 / geo.cw));
-    data.starts.forEach((t, c) => {
-      if (c % every === 0) ctx.fillText(win.step === 'hour' ? new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' }) : clock(t), LABEL_W + c * geo.cw, top + rows * ROW_H + 9);
+    data.starts.forEach((ts, c) => {
+      if (c % every === 0) ctx.fillText(win.step === 'hour' ? monthDay(ts) : clock(ts), LABEL_W + c * geo.cw, top + rows * ROW_H + 9);
     });
   });
 
@@ -187,11 +191,17 @@
       return;
     }
     const lo = row === 0 ? '0' : boundLabel(data.boundsUs[row - 1]);
-    const hi = row < data.boundsUs.length ? boundLabel(data.boundsUs[row]) : 'more';
-    tip = { x, y, text: `${clock(data.starts[c])} · ${lo}–${hi} · ${num(grid[c][row])} answers` };
+    const hi = row < data.boundsUs.length ? boundLabel(data.boundsUs[row]) : t('more');
+    tip = { x, y, text: t('{time} · {lo}–{hi} · {n} answers', { time: clock(data.starts[c]), lo, hi, n: num(grid[c][row]) }) };
   }
-  const dotLabel = (x: S['LatencyExemplar']) =>
-    `${ms(x.latencyUs / 1000)} ${PATH_LABEL[x.path] ?? x.path}${x.upstream ? ` via ${x.upstream}` : ''} at ${clock(x.tsUnixMicros / 1_000_000, true)}: open this query`;
+  // One whole message per variant: with the upstream the answer came from, or without.
+  const dotLabel = (x: S['LatencyExemplar']) => {
+    const latency = ms(x.latencyUs / 1000);
+    const time = clock(x.tsUnixMicros / 1_000_000, true);
+    return x.upstream
+      ? t('{latency} {path} via {upstream} at {time}: open this query', { latency, path: pathLabel(x.path), upstream: x.upstream, time })
+      : t('{latency} {path} at {time}: open this query', { latency, path: pathLabel(x.path), time });
+  };
   function togglePath(p: string) {
     paths = paths.includes(p) ? paths.filter((x) => x !== p) : [...paths, p];
   }
@@ -200,13 +210,13 @@
 <div class="lh" data-testid={testid}>
   {#if !wall}
   <div class="row controls">
-    <div class="seg" role="group" aria-label="Window">
+    <div class="seg" role="group" aria-label={t('Window')}>
       {#each windows as w (w.id)}
         <button type="button" aria-pressed={win.id === w.id} onclick={() => (win = w)}>{w.label}</button>
       {/each}
     </div>
     {#if by === 'path'}
-      <div class="chips" role="group" aria-label="Paths">
+      <div class="chips" role="group" aria-label={t('Paths')}>
         {#each PATHS as p (p)}
           <button type="button" class="chip" aria-pressed={paths.includes(p)} onclick={() => togglePath(p)}>
             <i style:background={`var(${PATH_COLOR[p]})`}></i>{PATH_LABEL[p]}
@@ -215,21 +225,21 @@
       </div>
     {/if}
     <span class="spacer"></span>
-    <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? 'Grid' : 'Table'}</button>
+    <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? t('Grid') : t('Table')}</button>
   </div>
   {/if}
   <ErrorNote {error} />
   {#if !data}
-    <p class="empty">Loading…</p>
+    <p class="empty">{t('Loading…')}</p>
   {:else if data.starts.length === 0}
-    <p class="empty">No answers in this window yet.</p>
+    <p class="empty">{t('No answers in this window yet.')}</p>
   {:else if showTable}
     <div class="table-wrap table-view">
       <table class="compact" data-testid="{testid}-table">
-        <thead><tr><th>Time</th>{#each Array.from({ length: rows }, (_, r) => r) as r (r)}<th class="num">{rowLabel(r)}</th>{/each}</tr></thead>
+        <thead><tr><th>{t('Time')}</th>{#each Array.from({ length: rows }, (_, r) => r) as r (r)}<th class="num">{rowLabel(r)}</th>{/each}</tr></thead>
         <tbody>
-          {#each data.starts as t, c (t)}
-            <tr><td>{clock(t)}</td>{#each grid[c] as v, r (r)}<td class="num">{v ? num(v) : ''}</td>{/each}</tr>
+          {#each data.starts as ts, c (ts)}
+            <tr><td>{clock(ts)}</td>{#each grid[c] as v, r (r)}<td class="num">{v ? num(v) : ''}</td>{/each}</tr>
           {/each}
         </tbody>
       </table>
@@ -259,11 +269,11 @@
       </div>
     </div>
     <p class="muted small">
-      Darker = more answers in that time and latency band.
-      {#if thresholdMs != null}<span class="thr"></span> the latency objective ({thresholdMs} ms).{/if}
-      Dots are real queries: select one to open it.
-      {#if data.partial}Some {data.step}s are from an older build and have no bands.{/if}
-      {#if data.missingNodes?.length}Without {data.missingNodes.join(', ')}.{/if}
+      {t('Darker = more answers in that time and latency band.')}
+      {#if thresholdMs != null}<span class="thr"></span> {t('the latency objective ({ms} ms).', { ms: thresholdMs })}{/if}
+      {t('Dots are real queries: select one to open it.')}
+      {#if data.partial}{t('Some {step}s are from an older build and have no bands.', { step: data.step })}{/if}
+      {#if data.missingNodes?.length}{t('Without {nodes}.', { nodes: data.missingNodes.join(', ') })}{/if}
     </p>
   {/if}
 </div>

@@ -31,4 +31,4 @@
   const tone = $derived(value ? (tones[value] ?? '') : '');
 </script>
 
-<span class="badge {tone}" {title}>{label ?? value ?? '–'}</span>
+<span class="badge {tone}" {title}>{#if label !== undefined}{label}{:else}<span translate="no">{value ?? '–'}</span>{/if}</span>

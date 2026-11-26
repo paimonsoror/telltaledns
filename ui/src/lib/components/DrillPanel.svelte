@@ -10,6 +10,10 @@
   import Drawer from './Drawer.svelte';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  import { own, tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  // REQ: API-012 — `devicesDropped` is a count (u32 on the server): tn() gives the ternary's English.
+  const { t, tn } = tr('drillPanel');
 
   let { open = null }: { /** A report to open (`#/cluster?tab=drills&drill=<id>`). */ open?: string | null } = $props();
 
@@ -64,18 +68,20 @@
   }
 
   const statusText: Record<string, string> = {
-    running: 'running',
-    collecting: 'collecting the report',
-    complete: 'complete',
-    cancelled: 'cancelled (restart)',
+    running: t('running'),
+    collecting: t('collecting the report'),
+    complete: t('complete'),
+    cancelled: t('cancelled (restart)'),
   };
   const verdictText: Record<string, string> = {
-    followed: 'followed',
-    stuck: 'stuck',
-    quiet: 'quiet',
-    elsewhere: 'elsewhere',
+    followed: t('followed'),
+    stuck: t('stuck'),
+    quiet: t('quiet'),
+    elsewhere: t('elsewhere'),
   };
   const verdictClass: Record<string, string> = { followed: 'ok', stuck: 'bad', quiet: '', elsewhere: '' };
+  /** A status or a verdict comes from the server: read with `Object.hasOwn` (one the UI doesn't know
+   * shows as it is). */
   const when = (t: string) => `${logDate(t)} ${logTime(t)}`;
   const maxTtf = $derived(Math.max(1, ...(report?.devices.map((d) => d.timeToFailoverMs ?? 0) ?? [1])));
 </script>
@@ -83,105 +89,117 @@
 {#each running as d (d.id)}
   {@const a = live[d.id]}
   <section class="card drill-live" data-testid="drill-live">
-    <h2>Drill running on {d.node}<HelpButton id="failover-drill" /></h2>
+    <h2>{t('Drill running on {node}', { node: d.node })}<HelpButton id="failover-drill" /></h2>
     <p>
-      Not answering <strong>{d.targets}</strong> ({d.reason}).
+      <T ctx="drillPanel" msg={'Not answering <strong>{targets}</strong> ({reason}).'} params={{ targets: d.targets, reason: d.reason }}
+        >{#snippet strong(x: string)}<strong translate="no">{x}</strong>{/snippet}</T
+      >
       {#if a}
         <span data-testid="drill-counters"
-          >{num(a.dropped)} queries unanswered from {num(a.devicesDropped)} device{a.devicesDropped === 1 ? '' : 's'} · {duration(a.secondsLeft)} left</span
+          >{tn('{n} queries unanswered from {devices} device · {left} left', '{n} queries unanswered from {devices} devices · {left} left', a.devicesDropped, { n: num(a.dropped), devices: num(a.devicesDropped), left: duration(a.secondsLeft) })}</span
         >
       {/if}
     </p>
     {#if can('operator')}
-      <button onclick={() => end(d)} disabled={ending} data-testid="drill-end">End now</button>
+      <button onclick={() => end(d)} disabled={ending} data-testid="drill-end">{t('End now')}</button>
     {/if}
   </section>
 {/each}
 
 <section class="card">
-  <h2>Failover drills<HelpButton id="failover-drill" /></h2>
+  <h2>{t('Failover drills')}<HelpButton id="failover-drill" /></h2>
   <p class="muted small">
-    A drill makes one node stop answering chosen devices for up to five minutes, then shows which devices switched to another
-    node (they have a working second DNS server) and which were stuck. Start one with <em>Drill…</em> on a node's row.
+    <T
+      ctx="drillPanel"
+      msg={"A drill makes one node stop answering chosen devices for up to five minutes, then shows which devices switched to another node (they have a working second DNS server) and which were stuck. Start one with <em>Drill…</em> on a node's row."}
+      >{#snippet em(x: string)}<em>{x}</em>{/snippet}</T
+    >
   </p>
   <ErrorNote {error} />
   {#if page && page.items.length === 0}
-    <p class="empty">No drills yet.</p>
+    <p class="empty">{t('No drills yet.')}</p>
   {:else if page}
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>When</th><th>Node</th><th>Targets</th><th>Status</th><th class="num">Coverage</th><th class="num">Followed</th><th class="num">Stuck</th><th class="num">Quiet</th><th></th></tr>
+          <tr><th>{t('When')}</th><th>{t('Node')}</th><th>{t('Targets')}</th><th>{t('Status')}</th><th class="num">{t('Coverage')}</th><th class="num">{t('Followed')}</th><th class="num">{t('Stuck')}</th><th class="num">{t('Quiet')}</th><th></th></tr>
         </thead>
         <tbody>
           {#each page.items as d (d.id)}
             <tr data-testid="drill-row">
               <td class="small">{when(d.since)}</td>
-              <td>{d.node}{#if d.viaBalancer}<span class="muted small"> · via balancer</span>{/if}</td>
-              <td class="small">{d.targets}</td>
-              <td class="small">{statusText[d.status] ?? d.status}</td>
+              <td>{d.node}{#if d.viaBalancer}<span class="muted small"> {t('· via balancer')}</span>{/if}</td>
+              <td class="small" translate="no">{d.targets}</td>
+              <td class="small">{own(statusText, d.status) ?? d.status}</td>
               <td class="num">{d.coveragePercent != null ? pct(d.coveragePercent) : '–'}</td>
               <td class="num">{d.followed}</td>
               <td class="num" class:bad-text={d.stuck > 0}>{d.stuck}</td>
               <td class="num">{d.quiet}</td>
-              <td>{#if d.status === 'complete'}<button class="link small" onclick={() => show(d.id)} data-testid="drill-open">Report</button>{/if}</td>
+              <td>{#if d.status === 'complete'}<button class="link small" onclick={() => show(d.id)} data-testid="drill-open">{t('Report')}</button>{/if}</td>
             </tr>
           {/each}
         </tbody>
       </table>
     </div>
-    {#if page.missingNodes.length}<p class="muted small">Not answering: {page.missingNodes.join(', ')}.</p>{/if}
+    {#if page.missingNodes.length}<p class="muted small">{t('Not answering: {nodes}.', { nodes: page.missingNodes.join(', ') })}</p>{/if}
   {/if}
 </section>
 <ErrorNote error={reportError} />
 
 {#if report}
-  <Drawer title={`Drill on ${report.node}, ${when(report.since)}`} onclose={() => (report = null)}>
+  <Drawer title={t('Drill on {node}, {when}', { node: report.node, when: when(report.since) })} onclose={() => (report = null)}>
     <div class="report" data-testid="drill-report">
       <p class="small muted">
-        {report.targets} for {duration(Math.round((Date.parse(report.ended ?? report.until) - Date.parse(report.since)) / 1000))} · {report.reason} · by {report.by}
+        {t('{targets} for {duration} · {reason} · by {by}', {
+          targets: report.targets,
+          duration: duration(Math.round((Date.parse(report.ended ?? report.until) - Date.parse(report.since)) / 1000)),
+          reason: report.reason,
+          by: report.by,
+        })}
       </p>
       <div class="tiles">
-        <div class="tile"><span class="big">{report.coveragePercent != null ? pct(report.coveragePercent) : '–'}</span><span class="small muted">coverage</span></div>
-        <div class="tile"><span class="big ok-text">{report.followed}</span><span class="small muted">followed</span></div>
-        <div class="tile"><span class="big" class:bad-text={report.stuck > 0}>{report.stuck}</span><span class="small muted">stuck</span></div>
-        <div class="tile"><span class="big">{report.quiet}</span><span class="small muted">quiet</span></div>
+        <div class="tile"><span class="big">{report.coveragePercent != null ? pct(report.coveragePercent) : '–'}</span><span class="small muted">{t('coverage')}</span></div>
+        <div class="tile"><span class="big ok-text">{report.followed}</span><span class="small muted">{t('followed')}</span></div>
+        <div class="tile"><span class="big" class:bad-text={report.stuck > 0}>{report.stuck}</span><span class="small muted">{t('stuck')}</span></div>
+        <div class="tile"><span class="big">{report.quiet}</span><span class="small muted">{t('quiet')}</span></div>
         <div class="tile">
-          <span class="big">{report.medianFailoverMs != null ? `${(report.medianFailoverMs / 1000).toFixed(1)} s` : '–'}</span>
-          <span class="small muted">median failover{#if report.p90FailoverMs != null}, p90 {(report.p90FailoverMs / 1000).toFixed(1)} s{/if}</span>
+          <span class="big">{report.medianFailoverMs != null ? t('{n} s', { n: (report.medianFailoverMs / 1000).toFixed(1) }) : '–'}</span>
+          <span class="small muted"
+            >{#if report.p90FailoverMs != null}{t('median failover, p90 {n} s', { n: (report.p90FailoverMs / 1000).toFixed(1) })}{:else}{t('median failover')}{/if}</span
+          >
         </div>
       </div>
       {#if report.viaBalancer}
         <p class="notice small">
-          This node is a resolver pod behind one balancer address: devices never see a server change, so the verdicts measure the
-          balancer.{#if report.balancerSwitchMs != null} It kept sending queries to the silent pod for {(report.balancerSwitchMs / 1000).toFixed(1)} s.{/if}
+          {t('This node is a resolver pod behind one balancer address: devices never see a server change, so the verdicts measure the balancer.')}{#if report.balancerSwitchMs != null} {t('It kept sending queries to the silent pod for {n} s.', { n: (report.balancerSwitchMs / 1000).toFixed(1) })}{/if}
         </p>
       {/if}
-      {#if report.missingNodes.length}<p class="notice warn small">Missing parts from {report.missingNodes.join(', ')}: devices that went there count as stuck or quiet.</p>{/if}
+      {#if report.missingNodes.length}<p class="notice warn small">{t('Missing parts from {nodes}: devices that went there count as stuck or quiet.', { nodes: report.missingNodes.join(', ') })}</p>{/if}
       {#if report.devices.length === 0}
-        <p class="muted small">The query log's privacy level hides the devices; the counts above still hold.</p>
+        <p class="muted small">{t('The query log\'s privacy level hides the devices; the counts above still hold.')}</p>
       {:else}
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Device</th><th>Verdict</th><th class="num">Unanswered</th><th>Time to failover</th><th>Afterwards</th><th>Group</th></tr>
+              <tr><th>{t('Device')}</th><th>{t('Verdict')}</th><th class="num">{t('Unanswered')}</th><th>{t('Time to failover')}</th><th>{t('Afterwards')}</th><th>{t('Group')}</th></tr>
             </thead>
             <tbody>
               {#each report.devices as d (d.client)}
+                {@const on = (d.nodes ?? []).join(', ')}
                 <tr data-testid="drill-device">
                   <td class="mono"><ClientChip ip={d.client} name={d.name ?? undefined} /></td>
-                  <td><span class="badge {verdictClass[d.verdict] ?? ''}">{verdictText[d.verdict] ?? d.verdict}</span></td>
+                  <td><span class="badge {own(verdictClass, d.verdict) ?? ''}">{own(verdictText, d.verdict) ?? d.verdict}</span></td>
                   <td class="num">{num(d.dropped)}</td>
                   <td>
                     {#if d.timeToFailoverMs != null}
                       <span class="ttf"><span class="bar" style:width={`${Math.max(4, (d.timeToFailoverMs / maxTtf) * 100)}%`}></span></span>
-                      <span class="small">{(d.timeToFailoverMs / 1000).toFixed(1)} s</span>
+                      <span class="small">{t('{n} s', { n: (d.timeToFailoverMs / 1000).toFixed(1) })}</span>
                     {:else}<span class="muted">–</span>{/if}
                   </td>
                   <td class="small">
-                    {#if d.returned === true}came back{:else if d.returned === false}stayed on {(d.nodes ?? []).join(', ') || 'the other node'}{:else if d.verdict === 'followed'}<span class="muted">checked 15 min after</span>{/if}
+                    {#if d.returned === true}{t('came back')}{:else if d.returned === false}{on ? t('stayed on {nodes}', { nodes: on }) : t('stayed on the other node')}{:else if d.verdict === 'followed'}<span class="muted">{t('checked 15 min after')}</span>{/if}
                   </td>
-                  <td class="small">{d.group ?? ''}</td>
+                  <td class="small" translate="no">{d.group ?? ''}</td>
                 </tr>
               {/each}
             </tbody>
@@ -189,7 +207,7 @@
         </div>
       {/if}
       <p class="small muted">
-        {#each report.nodes as n, i (n.node)}{i ? ' · ' : ''}{n.node}: {num(n.queries)} queries from {num(n.devices)} devices{/each}
+        {#each report.nodes as n, i (n.node)}{i ? ' · ' : ''}{t('{node}: {queries} queries from {devices} devices', { node: n.node, queries: num(n.queries), devices: num(n.devices) })}{/each}
       </p>
     </div>
   </Drawer>

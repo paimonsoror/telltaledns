@@ -5,10 +5,12 @@
   import { api, type S } from '../lib/api';
   import { href } from '../lib/router.svelte';
   import { poll } from '../lib/poll';
-  import { num, pct, short } from '../lib/format';
+  import { num, pct, short, timeOfDay } from '../lib/format';
   import { squarify } from '../lib/treemap';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import { tr } from '../lib/i18n';
+  const { t } = tr('traffic');
 
   type Mode = 'service' | 'site' | 'name';
   type Show = 'all' | 'allowed' | 'blocked';
@@ -143,11 +145,11 @@
           label = site(i.key);
         }
         const id = `${status}:${label}`;
-        const t = out.get(id) ?? { id, status, label, service: svc, count: 0, delta: 0, members: [] };
-        t.count += i.count;
-        t.delta += deltas.get(`${status}:${i.key}`) ?? 0;
-        t.members.push({ name: i.key, count: i.count });
-        out.set(id, t);
+        const tile = out.get(id) ?? { id, status, label, service: svc, count: 0, delta: 0, members: [] };
+        tile.count += i.count;
+        tile.delta += deltas.get(`${status}:${i.key}`) ?? 0;
+        tile.members.push({ name: i.key, count: i.count });
+        out.set(id, tile);
       }
     };
     if (show !== 'blocked') add('allowed', allowed);
@@ -155,62 +157,75 @@
     return [...out.values()].sort((a, b) => b.count - a.count);
   });
 
-  const total = $derived(tiles.reduce((a, t) => a + t.count, 0));
-  const rects = $derived(squarify(tiles.map((t) => t.count), w, h));
+  const total = $derived(tiles.reduce((a, tile) => a + tile.count, 0));
+  const rects = $derived(squarify(tiles.map((tile) => tile.count), w, h));
   // The tiles growing fastest since the last refresh.
   const hot = $derived(
     new Set(
       tiles
-        .filter((t) => t.delta > 0)
+        .filter((tile) => tile.delta > 0)
         .sort((a, b) => b.delta - a.delta)
         .slice(0, HOT)
-        .map((t) => t.id),
+        .map((tile) => tile.id),
     ),
   );
   // Each colour's shade is the tile's size against the biggest of that colour.
   const maxBy = $derived({
-    allowed: Math.max(1, ...tiles.filter((t) => t.status === 'allowed').map((t) => t.count)),
-    blocked: Math.max(1, ...tiles.filter((t) => t.status === 'blocked').map((t) => t.count)),
+    allowed: Math.max(1, ...tiles.filter((tile) => tile.status === 'allowed').map((tile) => tile.count)),
+    blocked: Math.max(1, ...tiles.filter((tile) => tile.status === 'blocked').map((tile) => tile.count)),
   });
-  const strength = (t: Tile) => 30 + 70 * Math.sqrt(t.count / maxBy[t.status]);
+  const strength = (tile: Tile) => 30 + 70 * Math.sqrt(tile.count / maxBy[tile.status]);
 
-  function link(t: Tile): string {
-    const status = t.status === 'blocked' ? 'blocked' : undefined;
-    if (mode === 'name') return href('/queries', { name: t.label, match: 'exact', status });
+  function link(tile: Tile): string {
+    const status = tile.status === 'blocked' ? 'blocked' : undefined;
+    if (mode === 'name') return href('/queries', { name: tile.label, match: 'exact', status });
     // A service spans several sites: show the biggest.
-    const top = mode === 'service' && t.service ? site(t.members[0]?.name ?? t.label) : t.label;
+    const top = mode === 'service' && tile.service ? site(tile.members[0]?.name ?? tile.label) : tile.label;
     return href('/queries', { name: top, match: 'suffix', status });
   }
   const modes: { id: Mode; label: string }[] = [
-    { id: 'service', label: 'Services' },
-    { id: 'site', label: 'Sites' },
-    { id: 'name', label: 'Names' },
+    { id: 'service', label: t('Services') },
+    { id: 'site', label: t('Sites') },
+    { id: 'name', label: t('Names') },
   ];
   const shows: { id: Show; label: string }[] = [
-    { id: 'all', label: 'All' },
-    { id: 'allowed', label: 'Allowed' },
-    { id: 'blocked', label: 'Blocked' },
+    { id: 'all', label: t('All') },
+    { id: 'allowed', label: t('Allowed') },
+    { id: 'blocked', label: t('Blocked') },
   ];
+  // A tile's status word, as the details and the tile's description say it (language is fixed for
+  // the page's life, so these are read once).
+  const statusText: Record<Status, string> = { allowed: t('allowed'), blocked: t('blocked') };
+  // What the lists cover, and when they were read: one whole sentence for each of the four cases.
+  const busiest = $derived(
+    hour === 'current'
+      ? refreshed
+        ? t('The busiest {limit} names and {limit} blocked names this hour, every node; counts are approximate. Updated {time}.', { limit: LIMIT, time: timeOfDay(refreshed) })
+        : t('The busiest {limit} names and {limit} blocked names this hour, every node; counts are approximate.', { limit: LIMIT })
+      : refreshed
+        ? t('The busiest {limit} names and {limit} blocked names in the previous clock hour, every node; counts are approximate. Updated {time}.', { limit: LIMIT, time: timeOfDay(refreshed) })
+        : t('The busiest {limit} names and {limit} blocked names in the previous clock hour, every node; counts are approximate.', { limit: LIMIT }),
+  );
 </script>
 
 <div class="page">
   <div class="page-head">
-    <h1>Traffic map<HelpButton id="traffic-map" /></h1>
+    <h1>{t('Traffic map')}<HelpButton id="traffic-map" /></h1>
     <div class="row">
-      <div class="seg" role="group" aria-label="Group by">
+      <div class="seg" role="group" aria-label={t('Group by')}>
         {#each modes as m (m.id)}
           <button type="button" aria-pressed={mode === m.id} onclick={() => (mode = m.id)}>{m.label}</button>
         {/each}
       </div>
-      <div class="seg" role="group" aria-label="Show">
+      <div class="seg" role="group" aria-label={t('Show')}>
         {#each shows as s (s.id)}
           <button type="button" aria-pressed={show === s.id} onclick={() => (show = s.id)}>{s.label}</button>
         {/each}
       </div>
       <span class="pill-field bare">
-        <select bind:value={hour} aria-label="Hour">
-          <option value="current">this hour</option>
-          <option value="previous">previous hour</option>
+        <select bind:value={hour} aria-label={t('Hour')}>
+          <option value="current">{t('this hour')}</option>
+          <option value="previous">{t('previous hour')}</option>
         </select>
       </span>
     </div>
@@ -220,70 +235,70 @@
 
   <section class="card map-card">
     <div class="map" bind:clientWidth={w} bind:clientHeight={h}>
-      {#each tiles as t, i (t.id)}
+      {#each tiles as tile, i (tile.id)}
         {@const r = rects[i]}
         {#if r && r.w > 0}
-          {@const s = strength(t)}
+          {@const s = strength(tile)}
           <a
-            class="tile {t.status}"
-            class:hot={hot.has(t.id)}
+            class="tile {tile.status}"
+            class:hot={hot.has(tile.id)}
             class:strong={s >= 62}
-            href={link(t)}
+            href={link(tile)}
             style:left={`${r.x}px`}
             style:top={`${r.y}px`}
             style:width={`${r.w}px`}
             style:height={`${r.h}px`}
             style:--mix={`${s}%`}
-            aria-label={`${t.label}, ${t.status}, ${num(t.count)} queries`}
-            onmouseenter={() => (hover = t)}
-            onfocus={() => (hover = t)}
+            aria-label={t('{label}, {status}, {n} queries', { label: tile.label, status: statusText[tile.status], n: num(tile.count) })}
+            onmouseenter={() => (hover = tile)}
+            onfocus={() => (hover = tile)}
           >
             {#if r.w > 64 && r.h > 30}
-              <span class="name">{t.label}</span>
+              <span class="name" translate="no">{tile.label}</span>
               {#if r.h > 50}
-                <span class="count">{short(t.count)}{#if t.delta > 0}<span class="delta"> +{short(t.delta)}</span>{/if}</span>
+                <span class="count">{short(tile.count)}{#if tile.delta > 0}<span class="delta"> +{short(tile.delta)}</span>{/if}</span>
               {/if}
             {/if}
           </a>
         {/if}
       {/each}
       {#if tiles.length === 0 && refreshed}
-        <p class="empty">No queries yet this hour.</p>
+        <p class="empty">{t('No queries yet this hour.')}</p>
       {/if}
     </div>
   </section>
 
   <section class="card details" aria-live="polite">
     {#if hover}
-      {@const t = tiles.find((x) => x.id === hover?.id) ?? hover}
+      {@const tile = tiles.find((x) => x.id === hover?.id) ?? hover}
       <div class="row between">
-        <strong>{t.label}</strong>
-        <span class="badge {t.status}">{t.status}</span>
+        <strong translate="no">{tile.label}</strong>
+        <span class="badge {tile.status}">{statusText[tile.status]}</span>
       </div>
       <p class="small muted">
-        {num(t.count)} queries · {pct((100 * t.count) / Math.max(1, total))} of what's shown{#if t.delta > 0}
-          · +{num(t.delta)} in the last {REFRESH_MS / 1000} s{/if}
+        {#if tile.delta > 0}
+          {t("{n} queries · {share} of what's shown· +{delta} in the last {secs} s", { n: num(tile.count), share: pct((100 * tile.count) / Math.max(1, total)), delta: num(tile.delta), secs: REFRESH_MS / 1000 })}
+        {:else}
+          {t("{n} queries · {share} of what's shown", { n: num(tile.count), share: pct((100 * tile.count) / Math.max(1, total)) })}
+        {/if}
       </p>
       {#if mode !== 'name'}
         <ul class="members">
-          {#each t.members.slice(0, 8) as m (m.name)}
-            <li><a href={href('/queries', { name: m.name, match: 'exact' })}>{m.name}</a><span><a class="when" href={href('/heatmap', { kind: 'name', key: m.name })} aria-label={`When ${m.name} is asked for`}>when</a> {num(m.count)}</span></li>
+          {#each tile.members.slice(0, 8) as m (m.name)}
+            <li><a href={href('/queries', { name: m.name, match: 'exact' })}>{m.name}</a><span><a class="when" href={href('/heatmap', { kind: 'name', key: m.name })} aria-label={t('When {name} is asked for', { name: m.name })}>{t('when')}</a> {num(m.count)}</span></li>
           {/each}
-          {#if t.members.length > 8}<li class="muted">and {t.members.length - 8} more</li>{/if}
+          {#if tile.members.length > 8}<li class="muted">{t('and {n} more', { n: tile.members.length - 8 })}</li>{/if}
         </ul>
       {/if}
     {:else}
-      <p class="small muted">Point at a tile to see the names behind it. Select one to open them in the query log.</p>
+      <p class="small muted">{t('Point at a tile to see the names behind it. Select one to open them in the query log.')}</p>
     {/if}
     <div class="legend small muted">
-      <span><i class="sw allowed"></i>Allowed</span>
-      <span><i class="sw blocked"></i>Blocked</span>
-      <span>Bigger and stronger colour = more queries</span>
-      <span><i class="sw ring"></i>Growing fastest right now</span>
-      <span>
-        The busiest {LIMIT} names and {LIMIT} blocked names {hour === 'current' ? 'this hour' : 'in the previous clock hour'}, every node;
-        counts are approximate{#if refreshed}. Updated {refreshed.toLocaleTimeString()}{/if}.
-      </span>
+      <span><i class="sw allowed"></i>{t('Allowed')}</span>
+      <span><i class="sw blocked"></i>{t('Blocked')}</span>
+      <span>{t('Bigger and stronger colour = more queries')}</span>
+      <span><i class="sw ring"></i>{t('Growing fastest right now')}</span>
+      <span>{busiest}</span>
     </div>
   </section>
 </div>

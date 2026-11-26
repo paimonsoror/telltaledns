@@ -30,7 +30,7 @@
 | Ops | `/backup`, `/restore`, `/import/pihole`, `/import/technitium`, `/audit`, `/system/info`, `/system/health` (healthy, degraded, or severe, and why; OBS-015), `/healthz`, `/readyz`, `/livez`, `/metrics` |
 
 ## 3. UI scope (API-005)
-Tech: Svelte 5 + Vite + TypeScript, uPlot for charts (fast, tiny), no CSS framework (design tokens + CSS variables), embedded in the binary. Budget: ≤ 400 KiB gzipped total and first paint < 1 s on a Pi-served LAN. Responsive down to 360 px (phone use is common for "pause blocking").
+Tech: Svelte 5 + Vite + TypeScript, uPlot for charts (fast, tiny), no CSS framework (design tokens + CSS variables), embedded in the binary. Budget: the UI with English (everything outside `assets/locales/`) ≤ 400 KiB gzipped, each further language ≤ 80 KiB gzipped and all of them together ≤ 400 KiB (API-012, ADR-189); first paint < 1 s on a Pi-served LAN. Responsive down to 360 px (phone use is common for "pause blocking").
 
 | Page | Must show |
 |---|---|

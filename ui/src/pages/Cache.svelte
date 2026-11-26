@@ -13,6 +13,9 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ShareBar from '../lib/components/ShareBar.svelte';
+  import { tr, own } from '../lib/i18n';
+  import T from '../lib/i18n/T.svelte';
+  const { t, tn } = tr('cache');
 
   type Stats = S['CacheNodeStats'];
   type NodeEntries = S['CacheNodeEntries'];
@@ -57,7 +60,10 @@
     void loadEntries();
   });
 
-  const label = (s: { node?: string | null }) => s.node ?? 'this node';
+  // The words read in the rows are read once, here: the language is fixed for the life of the page.
+  const thisNode = t('this node');
+  const rowWords = { lookItUp: t('Look it up below'), dnssecOk: t('(DO)'), validated: t('validated') };
+  const label = (s: { node?: string | null }) => s.node ?? thisNode;
   const colors = ['--s-cached', '--s-forwarded', '--s-local', '--s-blocked', '--s-other'];
 
   // History points are per node, every 15 s: aligned on 15 s steps, gaps where a node has none.
@@ -65,7 +71,7 @@
     const step = 15;
     const at = (iso: string) => Math.round(Date.parse(iso) / 1000 / step) * step;
     const times = [...new Set(stats.flatMap((s) => (s.history ?? []).map((p) => at(p.at))))].sort((a, b) => a - b);
-    const index = new Map(times.map((t, i) => [t, i]));
+    const index = new Map(times.map((time, i) => [time, i]));
     const series = (pick: (p: S['CachePoint']) => number | null | undefined): Series[] =>
       stats.map((s, i) => {
         const values: (number | null)[] = times.map(() => null);
@@ -80,13 +86,22 @@
   });
 
   const lastHour = (s: Stats, k: 'staleServed' | 'prefetches' | 'evictions' | 'lookups') =>
-    (s.history ?? []).reduce((t, p) => t + p[k], 0);
+    (s.history ?? []).reduce((sum, p) => sum + p[k], 0);
   const hitLastHour = (s: Stats, fresh = false) => {
     const looked = lastHour(s, 'lookups');
-    const hits = (s.history ?? []).reduce((t, p) => t + (((fresh ? p.hitPercent : (p.answeredPercent ?? p.hitPercent)) ?? 0) / 100) * p.lookups, 0);
+    const hits = (s.history ?? []).reduce((sum, p) => sum + (((fresh ? p.hitPercent : (p.answeredPercent ?? p.hitPercent)) ?? 0) / 100) * p.lookups, 0);
     return looked > 0 ? (hits * 100) / looked : null;
   };
-  const plural = (n: number, one: string, many: string) => `${num(n)} ${n === 1 ? one : many}`;
+  const answersOf = (n: number) => tn('{n} answer', '{n} answers', n, { n: num(n) });
+  const hitsOf = (n: number) => tn('{n} hit', '{n} hits', n, { n: num(n) });
+  // One whole message for each plural form of the last hour's line (lookups: 1 or more).
+  const lastHourText = (s: Stats) => {
+    const lookups = lastHour(s, 'lookups');
+    const p = { n: num(lookups), prefetched: num(lastHour(s, 'prefetches')), stale: num(lastHour(s, 'staleServed')), evicted: num(lastHour(s, 'evictions')) };
+    return lookups === 1
+      ? t('{n} lookup · {prefetched} prefetched · {stale} stale served · {evicted} evicted', p)
+      : t('{n} lookups · {prefetched} prefetched · {stale} stale served · {evicted} evicted', p);
+  };
   const LIMIT = 25;
   const NODES_SHOWN = 6;
   const barColors = ['--ok', '--warn', '--info', '--bad'];
@@ -150,23 +165,29 @@
     else rows.sort((a, b) => b.hits - a.hits || b.nodes.length - a.nodes.length);
     return rows.slice(0, LIMIT);
   });
-  const kinds: [keyof S['CacheMakeup'], string, string][] = [
-    ['positive', 'answer', 'answers'],
-    ['nxdomain', 'no such name', 'no such name'],
-    ['nodata', 'no data', 'no data'],
-    ['servfail', 'SERVFAIL', 'SERVFAIL'],
-  ];
+  const kinds: (keyof S['CacheMakeup'])[] = ['positive', 'nxdomain', 'nodata', 'servfail'];
+  // A kind's count with its name, for the bar's tooltip: one message for each kind.
+  const kindCount = (k: keyof S['CacheMakeup'], c: number) =>
+    k === 'positive'
+      ? answersOf(c)
+      : k === 'nxdomain'
+        ? t('{n} no such name', { n: num(c) })
+        : k === 'nodata'
+          ? t('{n} no data', { n: num(c) })
+          : t('{n} SERVFAIL', { n: num(c) });
   const total = (m: S['CacheMakeup']) => m.positive + m.nxdomain + m.nodata + m.servfail;
-  const ttl = (s: number) => (s >= 0 ? `${duration(s)} left` : `stale ${duration(-s)}`);
+  const ttl = (s: number) => (s >= 0 ? t('{time} left', { time: duration(s) }) : t('stale {time}', { time: duration(-s) }));
   let lookupName = $state('');
   // REQ: OBS-021 — the size advice's verdicts.
-  const sizingLabel: Record<string, string> = { grow: 'could grow', shrink: 'could shrink', ok: 'right size', learning: 'learning' };
+  const sizingLabel: Record<string, string> = { grow: t('could grow'), shrink: t('could shrink'), ok: t('right size'), learning: t('learning') };
   const sizingTone: Record<string, string> = { grow: 'warn', shrink: 'info', ok: 'ok', learning: '' };
 </script>
 
+{#snippet cachekey()}<span class="mono" translate="no">[cache]</span>{/snippet}
+
 <div class="page">
   <div class="page-head">
-    <h1>Cache<HelpButton id="cache-page" /></h1>
+    <h1>{t('Cache')}<HelpButton id="cache-page" /></h1>
   </div>
   <ErrorNote {error} />
 
@@ -176,29 +197,31 @@
       <section class="card node" data-testid="cache-node">
         <h2>{label(s)}</h2>
         <dl class="facts">
-          <dt>Answered from the cache</dt>
+          <dt>{t('Answered from the cache')}</dt>
           <dd data-testid="cache-answered">
-            <strong>{pct(hitLastHour(s))}</strong> <span class="muted small">last hour</span>
-            <span class="muted small">· {pct(s.answeredPercent ?? s.hitPercent)} since start</span>
+            <strong>{pct(hitLastHour(s))}</strong> <span class="muted small">{t('last hour')}</span>
+            <span class="muted small">{t('· {pct} since start', { pct: pct(s.answeredPercent ?? s.hitPercent) })}</span>
             {#if s.answeredPercent != null && s.hitPercent != null && s.answeredPercent - s.hitPercent >= 0.1}
-              <div class="muted small">{pct(hitLastHour(s, true))} fresh last hour; the rest had just expired and was answered at once while it was refreshed (or kept answering while upstreams failed).</div>
+              <div class="muted small">{t('{pct} fresh last hour; the rest had just expired and was answered at once while it was refreshed (or kept answering while upstreams failed).', { pct: pct(hitLastHour(s, true)) })}</div>
             {/if}
           </dd>
-          <dt>Holds</dt>
-          <dd>{plural(s.entries, 'answer', 'answers')} · {bytes(s.bytes)}{#if s.settings}{` of ${bytes(s.settings.maxBytes)}`}{/if}</dd>
-          {#if used != null}<dd class="bar"><ShareBar value={used} label={`${pct(used)} of the memory budget`} /></dd>{/if}
-          <dt>Last hour</dt>
+          <dt>{t('Holds')}</dt>
+          <dd>{answersOf(s.entries)} · {bytes(s.bytes)}{#if s.settings}{` ${t('of {max}', { max: bytes(s.settings.maxBytes) })}`}{/if}</dd>
+          {#if used != null}<dd class="bar"><ShareBar value={used} label={t('{pct} of the memory budget', { pct: pct(used) })} /></dd>{/if}
+          <dt>{t('Last hour')}</dt>
           <dd class="small">
-            {plural(lastHour(s, 'lookups'), 'lookup', 'lookups')} · {num(lastHour(s, 'prefetches'))} prefetched · {num(lastHour(s, 'staleServed'))} stale served · {num(lastHour(s, 'evictions'))} evicted
+            {lastHourText(s)}
           </dd>
-          <dt>Started</dt>
+          <dt>{t('Started')}</dt>
           <dd class="small" data-testid="cache-warm">
             {#if !s.settings?.persist}
-              cold (keeping the cache across restarts is off)
+              {t('cold (keeping the cache across restarts is off)')}
             {:else if s.warmStart?.loaded != null}
-              warm: {plural(s.warmStart.loaded, 'answer', 'answers')} reloaded, {logDate(s.warmStart.at)} {logTime(s.warmStart.at)}
+              {s.warmStart.loaded === 1
+                ? t('warm: {n} answer reloaded, {date} {time}', { n: num(s.warmStart.loaded), date: logDate(s.warmStart.at), time: logTime(s.warmStart.at) })
+                : t('warm: {n} answers reloaded, {date} {time}', { n: num(s.warmStart.loaded), date: logDate(s.warmStart.at), time: logTime(s.warmStart.at) })}
             {:else if s.warmStart}
-              cold: {s.warmStart.note}
+              {t('cold: {note}', { note: s.warmStart.note })}
             {:else}
               –
             {/if}
@@ -206,15 +229,14 @@
           {#if s.sizing}
             <!-- REQ: OBS-021 — whether the cache is the right size. -->
             {@const z = s.sizing}
-            <dt>Size</dt>
+            <dt>{t('Size')}</dt>
             <dd class="small" data-testid="cache-sizing">
-              <span class="badge {sizingTone[z.verdict] ?? ''}">{sizingLabel[z.verdict] ?? z.verdict}</span>
-              {z.advice}
+              <span class="badge {sizingTone[z.verdict] ?? ''}">{own(sizingLabel, z.verdict) ?? z.verdict}</span>
+              <span translate="no">{z.advice}</span>
               {#if z.verdict !== 'learning'}
                 <span class="muted">
-                  Bigger:
-                  {#each z.steps as st, j (st.sizePercent)}{j ? ' · ' : ''}{st.sizePercent}% → +{st.extraHitPercent}% hits{/each}.
-                  Peak {bytes(z.peakBytes)}.
+                  {t('Bigger:')}
+                  {#each z.steps as st, j (st.sizePercent)}{j ? ' · ' : ''}{t('{size}% → +{extra}% hits', { size: st.sizePercent, extra: st.extraHitPercent })}{/each}{t('. Peak {size}.', { size: bytes(z.peakBytes) })}
                 </span>
               {/if}
             </dd>
@@ -223,20 +245,21 @@
         {#if s.settings}
           {@const c = s.settings}
           <details class="settings">
-            <summary class="small">Settings</summary>
+            <summary class="small">{t('Settings')}</summary>
             <dl class="facts small" data-testid="cache-settings">
-              <dt>Memory</dt><dd>{bytes(c.maxBytes)}{#if c.maxEntries}{`, at most ${num(c.maxEntries)} answers`}{/if}</dd>
-              <dt>TTL</dt><dd>{duration(c.minTtlSeconds)} to {duration(c.maxTtlSeconds)}; negative answers up to {duration(c.negativeTtlMaxSeconds)}; SERVFAIL {duration(c.servfailTtlSeconds)}</dd>
-              <dt>Serve stale</dt>
+              <dt>{t('Memory')}</dt><dd>{bytes(c.maxBytes)}{#if c.maxEntries}{t(', at most {n} answers', { n: num(c.maxEntries) })}{/if}</dd>
+              <dt>{t('TTL')}</dt><dd>{t('{min} to {max}; negative answers up to {negative}; SERVFAIL {servfail}', { min: duration(c.minTtlSeconds), max: duration(c.maxTtlSeconds), negative: duration(c.negativeTtlMaxSeconds), servfail: duration(c.servfailTtlSeconds) })}</dd>
+              <dt>{t('Serve stale')}</dt>
               <dd>
-                {#if !c.serveStale}off
-                {:else if c.staleAnswerWaitMs === 0}answered at once and refreshed in the background, for up to {duration(c.staleMaxAgeSeconds)} after expiry
-                {:else}when upstreams don't answer{c.staleAnswerWaitMs != null ? ` within ${(c.staleAnswerWaitMs / 1000).toFixed(1)} s` : ''}, for up to {duration(c.staleMaxAgeSeconds)} after expiry{/if}
+                {#if !c.serveStale}{t('off')}
+                {:else if c.staleAnswerWaitMs === 0}{t('answered at once and refreshed in the background, for up to {age} after expiry', { age: duration(c.staleMaxAgeSeconds) })}
+                {:else if c.staleAnswerWaitMs != null}{t("when upstreams don't answer within {wait} s, for up to {age} after expiry", { wait: (c.staleAnswerWaitMs / 1000).toFixed(1), age: duration(c.staleMaxAgeSeconds) })}
+                {:else}{t("when upstreams don't answer, for up to {age} after expiry", { age: duration(c.staleMaxAgeSeconds) })}{/if}
               </dd>
-              <dt>Prefetch</dt><dd>{c.prefetch ? `on, with under ${c.prefetchThresholdPercent}% of the TTL left, after ${c.prefetchMinHits} hits` : 'off'}</dd>
-              <dt>Across restarts</dt><dd>{c.persist ? 'kept' : 'not kept'}</dd>
+              <dt>{t('Prefetch')}</dt><dd>{c.prefetch ? t('on, with under {pct}% of the TTL left, after {hits} hits', { pct: c.prefetchThresholdPercent, hits: c.prefetchMinHits }) : t('off')}</dd>
+              <dt>{t('Across restarts')}</dt><dd>{c.persist ? t('kept') : t('not kept')}</dd>
             </dl>
-            <p class="muted small">Change these under <span class="mono">[cache]</span> in the configuration.</p>
+            <p class="muted small"><T ctx="cache" msg={'Change these under <cachekey/> in the configuration.'} {cachekey} /></p>
           </details>
         {/if}
       </section>
@@ -244,32 +267,32 @@
   </section>
 
   {#if charts.times.length > 1}
-    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} markers={changes.markers} />
-    <Chart title="Lookups per 15 s" times={charts.times} series={charts.lookups} height={160} markers={changes.markers} />
+    <Chart title={t('Answered from the cache, last hour (%)')} times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} markers={changes.markers} />
+    <Chart title={t('Lookups per 15 s')} times={charts.times} series={charts.lookups} height={160} markers={changes.markers} />
   {:else if stats.length}
-    <p class="muted small">The charts fill in over the first minutes (a sample every 15 s).</p>
+    <p class="muted small">{t('The charts fill in over the first minutes (a sample every 15 s).')}</p>
   {/if}
 
   <section class="card">
     <div class="head-row">
-      <h2>What's cached<HelpButton id="cache-page" /></h2>
+      <h2>{t('What\'s cached')}<HelpButton id="cache-page" /></h2>
       <span class="spacer"></span>
-      <label class="pill-field">Sort
-        <select bind:value={sort} aria-label="Sort by">
-          <option value="hits">most hits</option>
-          <option value="bytes">largest</option>
-          <option value="expiring">expiring soonest</option>
+      <label class="pill-field">{t('Sort')}
+        <select bind:value={sort} aria-label={t('Sort by')}>
+          <option value="hits">{t('most hits')}</option>
+          <option value="bytes">{t('largest')}</option>
+          <option value="expiring">{t('expiring soonest')}</option>
         </select>
       </label>
       {#if stats.length > 1}
-        <label class="pill-field">Showing
-          <select bind:value={node} aria-label="Node">
-            <option value="">every node</option>
+        <label class="pill-field">{t('Showing')}
+          <select bind:value={node} aria-label={t('Node')}>
+            <option value="">{t('every node')}</option>
             {#each stats as s, i (s.node ?? i)}<option value={s.node ?? ''}>{label(s)}</option>{/each}
           </select>
         </label>
       {/if}
-      <button onclick={loadEntries} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+      <button onclick={loadEntries} disabled={loading}>{loading ? t('Loading…') : t('Refresh')}</button>
     </div>
     <ErrorNote error={entriesError} />
     <!-- T6.15 — scales with the cluster: one row per node for the makeup, and one merged
@@ -280,32 +303,32 @@
         <table class="compact makeup-table" data-testid="cache-makeup">
           <thead>
             <tr>
-              {#if entries.length > 1}<th>Node</th>{/if}
-              <th>Holds</th>
+              {#if entries.length > 1}<th>{t('Node')}</th>{/if}
+              <th>{t('Holds')}</th>
               <th class="bar-col">
-                <span class="key k-ok"></span>answers
-                <span class="key k-warn"></span>no such name
-                <span class="key k-info"></span>no data
-                <span class="key k-bad"></span>SERVFAIL
+                <span class="key k-ok"></span>{t('answers')}
+                <span class="key k-warn"></span>{t('no such name')}
+                <span class="key k-info"></span>{t('no data')}
+                <span class="key k-bad"></span>{t('SERVFAIL')}
               </th>
-              <th class="num">Stale</th>
-              <th class="num">Validated</th>
+              <th class="num">{t('Stale')}</th>
+              <th class="num">{t('Validated')}</th>
             </tr>
           </thead>
           <tbody>
             {#each shownNodes as n, i (n.node ?? i)}
-              {@const t = total(n.makeup)}
+              {@const all = total(n.makeup)}
               <tr>
                 {#if entries.length > 1}<td>{label(n)}</td>{/if}
                 {#if n.error}
-                  <td colspan="4" class="small warn-text">{n.error}</td>
+                  <td colspan="4" class="small warn-text" translate="no">{n.error}</td>
                 {:else}
-                  <td class="small">{plural(t, 'answer', 'answers')}</td>
+                  <td class="small">{answersOf(all)}</td>
                   <td class="bar-col">
-                    {#if t}
-                      <span class="stack" title={kinds.map(([k, one, many]) => `${num(n.makeup[k])} ${n.makeup[k] === 1 ? one : many}`).join(' · ')}>
-                        {#each kinds as [k], j (k)}
-                          {#if n.makeup[k]}<span style:width={`${(n.makeup[k] * 100) / t}%`} style:--c={`var(${barColors[j]})`}></span>{/if}
+                    {#if all}
+                      <span class="stack" title={kinds.map((k) => kindCount(k, n.makeup[k])).join(' · ')}>
+                        {#each kinds as k, j (k)}
+                          {#if n.makeup[k]}<span style:width={`${(n.makeup[k] * 100) / all}%`} style:--c={`var(${barColors[j]})`}></span>{/if}
                         {/each}
                       </span>
                     {/if}
@@ -320,33 +343,33 @@
       </div>
       {#if entries.length > NODES_SHOWN}
         <button class="link small" onclick={() => (showAllNodes = !showAllNodes)}>
-          {showAllNodes ? 'Show fewer nodes' : `Show all ${entries.length} nodes`}
+          {showAllNodes ? t('Show fewer nodes') : t('Show all {n} nodes', { n: entries.length })}
         </button>
       {/if}
 
       {#if merged.length === 0}
-        <p class="empty">Nothing cached{sort === 'expiring' ? ' that is still fresh' : ''}.</p>
+        <p class="empty">{sort === 'expiring' ? t('Nothing cached that is still fresh.') : t('Nothing cached.')}</p>
       {:else}
         <div class="table-wrap" data-testid="cache-top">
           <table class="compact">
             <thead>
               <tr>
-                <th>Name</th><th>Type</th><th>Answer</th><th>Fresh</th>
-                {#if multi}<th>Nodes</th>{/if}
-                <th class="num">Hits</th><th class="num">Size</th>
+                <th>{t('Name')}</th><th>{t('Type')}</th><th>{t('Answer')}</th><th>{t('Fresh')}</th>
+                {#if multi}<th>{t('Nodes')}</th>{/if}
+                <th class="num">{t('Hits')}</th><th class="num">{t('Size')}</th>
               </tr>
             </thead>
             <tbody>
               {#each merged as m (m.key)}
                 <tr class:open={expanded === m.key}>
-                  <td class="mono"><button class="link" onclick={() => (lookupName = m.name)} title="Look it up below">{m.name}</button></td>
-                  <td>{m.qtype}{#if m.dnssecOk}<span class="muted small"> (DO)</span>{/if}</td>
-                  <td class="small">{m.rcode} · {m.answers}{#if m.authentic}<span class="badge ok">validated</span>{/if}</td>
-                  <td class="small {m.ttlMax < 0 ? 'muted' : ''}">{ttlShort(m.ttlMin) === ttlShort(m.ttlMax) ? ttl(m.ttlMin) : `${ttlShort(m.ttlMin)} to ${ttlShort(m.ttlMax)}`}</td>
+                  <td class="mono"><button class="link" onclick={() => (lookupName = m.name)} title={rowWords.lookItUp}><span translate="no">{m.name}</span></button></td>
+                  <td><span translate="no">{m.qtype}</span>{#if m.dnssecOk}<span class="muted small">{rowWords.dnssecOk}</span>{/if}</td>
+                  <td class="small"><span translate="no">{m.rcode} · {m.answers}</span>{#if m.authentic}<span class="badge ok">{rowWords.validated}</span>{/if}</td>
+                  <td class="small {m.ttlMax < 0 ? 'muted' : ''}">{ttlShort(m.ttlMin) === ttlShort(m.ttlMax) ? ttl(m.ttlMin) : t('{from} to {to}', { from: ttlShort(m.ttlMin), to: ttlShort(m.ttlMax) })}</td>
                   {#if multi}
                     <td class="small">
                       <button class="link" aria-expanded={expanded === m.key} onclick={() => (expanded = expanded === m.key ? null : m.key)}
-                        >{m.nodes.length} of {nodeCount}</button
+                        >{t('{n} of {total}', { n: m.nodes.length, total: nodeCount })}</button
                       >
                     </td>
                   {/if}
@@ -358,7 +381,7 @@
                     <td colspan="7">
                       <ul class="per-node">
                         {#each m.nodes as d (d.node)}
-                          <li><strong>{d.node}</strong> · {ttl(d.entry.ttlLeftSeconds)} · {plural(d.entry.hits, 'hit', 'hits')}</li>
+                          <li><strong translate="no">{d.node}</strong> · {ttl(d.entry.ttlLeftSeconds)} · {hitsOf(d.entry.hits)}</li>
                         {/each}
                       </ul>
                     </td>
@@ -370,8 +393,7 @@
         </div>
         {#if multi}
           <p class="muted small">
-            Merged across nodes: each name once, with the hits of the nodes where it's among their top {LIMIT}. Pick a node
-            above for its own list.
+            {t("Merged across nodes: each name once, with the hits of the nodes where it's among their top {n}. Pick a node above for its own list.", { n: LIMIT })}
           </p>
         {/if}
       {/if}
@@ -379,7 +401,7 @@
   </section>
 
   {#key lookupName}
-    <CacheCard name={lookupName} compact title="Look up and flush" />
+    <CacheCard name={lookupName} compact title={t('Look up and flush')} />
   {/key}
 </div>
 

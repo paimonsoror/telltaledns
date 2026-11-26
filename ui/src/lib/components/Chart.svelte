@@ -3,9 +3,14 @@
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
   import { onDestroy, untrack } from 'svelte';
-  import { clock, num } from '../format';
+  import { clock, monthDay, num } from '../format';
   import type { Marker } from '../annotations.svelte';
   import { markerColumns, visibleMarkers } from '../markers';
+  import { visibleMarkers } from '../markers';
+  import { tr } from '../i18n';
+  // REQ: API-012 — a series' label is shown as given (the caller's text), never a key: the table
+  // keys its columns by place, so two labels that read alike in a language cannot collide.
+  const { t: tx } = tr('chart');
 
   export interface Series {
     label: string;
@@ -150,7 +155,7 @@
     late.setHours(22, 22, 22, 0);
     // In legend order (after the stacked reverse).
     legendChars = [
-      Math.max('total'.length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
+      Math.max(tx('total').length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
       ...order.map((i) => format(series[i].values.reduce((a, v) => a + (v ?? 0), 0)).length),
     ];
     const opts: uPlot.Options = {
@@ -178,7 +183,7 @@
           values: (_u, vals) =>
             vals.map((v) =>
               times.length > 1 && times[times.length - 1] - times[0] > 172_800
-                ? new Date(v * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                ? monthDay(v)
                 : clock(v, seconds && times[times.length - 1] - times[0] < 180),
             ),
         },
@@ -191,7 +196,7 @@
         },
       ],
       series: [
-        { value: (_u, v) => (v == null ? 'total' : clock(v, true)) },
+        { label: tx('Time'), value: (_u, v) => (v == null ? tx('total') : clock(v, true)) },
         ...order.map((i) => {
           const c = color(series[i].color);
           return {
@@ -236,25 +241,25 @@
   <div class="card-head">
     <h2>{title}</h2>
     <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>
-      {showTable ? 'Chart' : 'Table'}
+      {showTable ? tx('Chart') : tx('Table')}
     </button>
   </div>
   {#if times.length === 0}
-    <p class="empty">No data yet.</p>
+    <p class="empty">{tx('No data yet.')}</p>
   {:else if showTable}
     <div class="table-wrap table-view">
       <table>
         <thead>
           <tr>
-            <th>Time</th>
-            {#each series as s (s.label)}<th class="num">{s.label}</th>{/each}
+            <th>{tx('Time')}</th>
+            {#each series as s}<th class="num">{s.label}</th>{/each}
           </tr>
         </thead>
         <tbody>
           {#each times as t, i (t)}
             <tr>
               <td>{clock(t, seconds)}</td>
-              {#each series as s (s.label)}<td class="num">{format(s.values[i] ?? 0)}</td>{/each}
+              {#each series as s}<td class="num">{format(s.values[i] ?? 0)}</td>{/each}
             </tr>
           {/each}
         </tbody>
@@ -262,7 +267,7 @@
       {#if inRange.length}
         <!-- REQ: OBS-033 — the markers in this range, as rows. -->
         <table class="compact changes-table">
-          <thead><tr><th>Changed</th><th>What</th></tr></thead>
+          <thead><tr><th>{tx('Changed')}</th><th>{tx('What')}</th></tr></thead>
           <tbody>
             {#each inRange as m, i (i)}
               <tr><td>{clock(m.time)}</td><td>{m.summary}{#if m.actor} · {m.actor}{/if}{#if m.nodes.length} · {m.nodes.join(', ')}{/if}</td></tr>
@@ -292,6 +297,7 @@
             data-kind={p.marks[0].kind}
             style:left={`${p.x}px`}
             aria-label={markLabel(p.marks)}
+            translate="no"
             onmouseenter={() => (tip = p)}
             onmouseleave={() => (tip = null)}
             onfocus={() => (tip = p)}
@@ -311,7 +317,7 @@
                 {#if m.nodes.length}<span class="muted"> · {m.nodes.join(', ')}</span>{/if}
               </div>
             {/each}
-            {#if tip.marks.length > 5}<div class="muted">and {tip.marks.length - 5} more</div>{/if}
+            {#if tip.marks.length > 5}<div class="muted">{tx('and {n} more', { n: tip.marks.length - 5 })}</div>{/if}
           </div>
         {/if}
       </div>

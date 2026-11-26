@@ -6,17 +6,31 @@ import { poll } from '../poll';
 import { currentMode } from '../mode.svelte';
 import { clock } from '../format';
 import { changes } from '../annotations.svelte';
+import { tk, tr, type Msg } from '../i18n';
 import type { RawSeries } from './smooth';
 
+const { t, m } = tr('data');
+
+/** REQ: API-012 — a range's `label` is shown with `tk()`. */
 export const RANGES = [
-  { id: '15m', label: '15 min', from: '-15m', step: 'second' as const, secs: 900 },
-  { id: '1h', label: '1 h', from: '-1h', step: 'minute' as const, secs: 3600 },
-  { id: '24h', label: '24 h', from: '-24h', step: 'minute' as const, secs: 86400 },
-  { id: '48h', label: '48 h', from: '-48h', step: 'minute' as const, secs: 172800 },
-  { id: '7d', label: '7 d', from: '-7d', step: 'hour' as const, secs: 604800 },
-  { id: '30d', label: '30 d', from: '-30d', step: 'hour' as const, secs: 2592000 },
+  { id: '15m', label: m('15 min'), from: '-15m', step: 'second' as const, secs: 900 },
+  { id: '1h', label: m('1 h'), from: '-1h', step: 'minute' as const, secs: 3600 },
+  { id: '24h', label: m('24 h'), from: '-24h', step: 'minute' as const, secs: 86400 },
+  { id: '48h', label: m('48 h'), from: '-48h', step: 'minute' as const, secs: 172800 },
+  { id: '7d', label: m('7 d'), from: '-7d', step: 'hour' as const, secs: 604800 },
+  { id: '30d', label: m('30 d'), from: '-30d', step: 'hour' as const, secs: 2592000 },
 ];
 export type Range = (typeof RANGES)[number];
+
+/** How a status series is named on the chart (its `key` stays the status). */
+const STATUS_TEXT: Record<string, Msg> = {
+  blocked: m('blocked'),
+  cached: m('cached'),
+  refreshed: m('refreshed'),
+  forwarded: m('forwarded'),
+  local: m('local'),
+  other: m('other'),
+};
 
 const STEP_SECS = { second: 1, minute: 60, hour: 3600, day: 86400 } as const;
 
@@ -112,9 +126,11 @@ export class DashData {
    *  range under a day says from which hour; a group's lists cover this hour only. */
   nowS = $state(Math.floor(Date.now() / 1000));
   rangeLabel = $derived(
-    this.range.secs < 86400 ? `since ${clock(Math.floor((this.nowS - this.range.secs) / 3600) * 3600)}` : `last ${this.range.label}`,
+    this.range.secs < 86400
+      ? t('since {time}', { time: clock(Math.floor((this.nowS - this.range.secs) / 3600) * 3600) })
+      : t('last {range}', { range: tk(this.range.label) }),
   );
-  topLabel = $derived(this.group ? 'this hour' : this.rangeLabel);
+  topLabel = $derived(this.group ? t('this hour') : this.rangeLabel);
 
   times = $derived(this.buckets.map((b) => b.startUnixSeconds));
   stepSecs = $derived(STEP_SECS[this.range.step]);
@@ -124,7 +140,7 @@ export class DashData {
     // DNS-007: answers refreshed in the background count as cached; Advanced shows them apart.
     const adv = this.advanced;
     const keys = adv ? (['blocked', 'cached', 'refreshed', 'forwarded', 'local'] as const) : (['blocked', 'cached', 'forwarded', 'local'] as const);
-    const series = [...keys, 'other'].map((k) => ({ label: k, color: STATUS_COLORS[k], values: [] as number[] }));
+    const series = [...keys, 'other'].map((k) => ({ key: k, label: tk(STATUS_TEXT[k]), color: STATUS_COLORS[k], values: [] as number[] }));
     for (const b of this.buckets) {
       let rest = b.total;
       keys.forEach((k, i) => {
@@ -139,22 +155,24 @@ export class DashData {
   });
 
   /** Queries and their blocked part, for the two-line view. */
-  totalSeries = $derived<RawSeries>({ label: 'Queries', color: '--s-forwarded', values: this.buckets.map((b) => b.total) });
-  blockedSeries = $derived<RawSeries>({ label: 'Blocked', color: '--s-blocked', values: this.buckets.map((b) => b.byStatus['blocked'] ?? 0) });
+  totalSeries = $derived<RawSeries>({ key: 'queries', label: t('Queries'), color: '--s-forwarded', values: this.buckets.map((b) => b.total) });
+  blockedSeries = $derived<RawSeries>({ key: 'blocked', label: t('Blocked'), color: '--s-blocked', values: this.buckets.map((b) => b.byStatus['blocked'] ?? 0) });
   /** Ratios: the numerators with their per-bucket totals as the denominators. */
   blockedPctSeries = $derived<RawSeries>({
-    label: 'Blocked',
+    key: 'blocked',
+    label: t('Blocked'),
     color: '--s-blocked',
     values: this.buckets.map((b) => b.byStatus['blocked'] ?? 0),
     den: this.buckets.map((b) => b.total),
   });
   cachedPctSeries = $derived<RawSeries>({
-    label: 'Cache hits',
+    key: 'cached',
+    label: t('Cache hits'),
     color: '--s-cached',
     values: this.buckets.map((b) => (b.byStatus['cached'] ?? 0) + (b.byStatus['stale'] ?? 0) + (b.byStatus['refreshed'] ?? 0)),
     den: this.buckets.map((b) => b.total),
   });
-  failuresSeries = $derived<RawSeries>({ label: 'Upstream failures', color: '--s-blocked', values: this.buckets.map((b) => b.upstreamFailures) });
+  failuresSeries = $derived<RawSeries>({ key: 'failures', label: t('Upstream failures'), color: '--s-blocked', values: this.buckets.map((b) => b.upstreamFailures) });
 
   /** Which kinds of devices make the traffic, in each group's color. */
   groupSeries = $derived.by((): RawSeries[] => {
@@ -163,13 +181,13 @@ export class DashData {
     const color = (n: string) => this.groups.find((g) => g.name === n)?.color ?? '--s-other';
     return [...names]
       .sort()
-      .map((n) => ({ label: n, color: color(n), values: this.buckets.map((b) => b.byGroup?.[n] ?? 0) }))
+      .map((n) => ({ key: n, label: n, color: color(n), values: this.buckets.map((b) => b.byGroup?.[n] ?? 0) }))
       .filter((s) => s.values.some((v) => v > 0));
   });
   /** Exchanges with upstream resolvers, and the failed ones. */
   upstreamSeries = $derived<RawSeries[]>([
-    { label: 'Upstream queries', color: '--s-forwarded', values: this.buckets.map((b) => b.upstreamQueries) },
-    { label: 'Failures', color: '--s-blocked', values: this.buckets.map((b) => b.upstreamFailures) },
+    { key: 'upstream', label: t('Upstream queries'), color: '--s-forwarded', values: this.buckets.map((b) => b.upstreamQueries) },
+    { key: 'failures', label: t('Failures'), color: '--s-blocked', values: this.buckets.map((b) => b.upstreamFailures) },
   ]);
   /** DNS-007: of the answers that weren't blocked or local, the share given from an expired cached copy. */
   refreshedPercent = $derived(

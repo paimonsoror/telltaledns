@@ -2,6 +2,9 @@
 // Every "?" in the UI names a topic id; `npm run check:help` (CI) proves each id exists and
 // every topic not marked `general` is used somewhere.
 import data from '../../../docs/help/topics.json';
+import { tr } from './i18n';
+
+const { t } = tr('help');
 
 /** Paths through the query flow a diagram can highlight. */
 export type FlowPath = 'cache' | 'local' | 'blocked' | 'route' | 'upstream' | 'refused';
@@ -28,7 +31,7 @@ export function topic(id: string): Topic {
       id,
       title: id,
       term: '',
-      summary: 'No help text for this yet.',
+      summary: t('No help text for this yet.'),
       when: '',
       example: '',
       caution: '',

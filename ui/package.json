@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build && node scripts/postbuild.mjs",
-    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "dev": "node scripts/i18n.mjs prebuild && vite",
+    "build": "node scripts/i18n.mjs prebuild && vite build && node scripts/postbuild.mjs",
+    "check": "node scripts/i18n.mjs prebuild && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "types": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
     "check:help": "node scripts/check-help.mjs",
-    "test:e2e": "playwright test"
+    "check:i18n": "node scripts/i18n.mjs check",
+    "test:e2e": "node scripts/i18n.mjs prebuild && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",
