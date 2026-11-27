@@ -12,6 +12,7 @@ use http_body_util::{BodyExt, Full};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, ServerName};
+use telltale_net::proxy::NoAddress;
 use telltale_net::{
     CertStore, DohConfig, DohServer, RequestMeta, Response, TcpConfig, TcpServer, Transport,
 };
@@ -163,6 +164,106 @@ async fn dns_020_proxy_header_sets_the_client_address() {
             .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
+    server.shutdown().await;
+}
+
+/// The three headers that name no client address: `LOCAL`, and `PROXY` with `AF_UNSPEC` and with
+/// `AF_UNIX` (two 108-byte paths).
+fn no_address_headers() -> Vec<(Vec<u8>, NoAddress)> {
+    let with = |cmd: u8, fam: u8, block: &[u8]| {
+        let mut v = telltale_net::proxy::SIGNATURE.to_vec();
+        v.extend_from_slice(&[cmd, fam]);
+        v.extend_from_slice(&(block.len() as u16).to_be_bytes());
+        v.extend_from_slice(block);
+        v
+    };
+    vec![
+        (with(0x20, 0x00, &[]), NoAddress::Local),
+        (with(0x21, 0x00, &[]), NoAddress::Unspec),
+        (with(0x21, 0x31, &[b'p'; 216]), NoAddress::Unix),
+    ]
+}
+
+/// REQ: DNS-020 (ADR-039) — on a `tcp` (and so `dot`) listener with `proxy_protocol`, a header
+/// without a client address is answered exactly as before, as the socket's peer, and counted by
+/// kind; a header with an address is not counted.
+#[tokio::test]
+async fn dns_020_headers_without_an_address_are_counted_and_answered_as_before() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let seen = Seen::default();
+    let mut cfg = TcpConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.proxy_protocol = true;
+    let server = TcpServer::bind(cfg, Arc::new(handler(Arc::clone(&seen)))).unwrap();
+    for (i, (header, kind)) in no_address_headers().into_iter().enumerate() {
+        let id = i as u16 + 1;
+        let mut s = TcpStream::connect(server.local_addr()).await.unwrap();
+        let me = s.local_addr().unwrap();
+        s.write_all(&header).await.unwrap();
+        let r = dot_exchange(&mut s, id).await;
+        assert_eq!(u16::from_be_bytes([r[0], r[1]]), id, "{kind:?}: answered");
+        assert_eq!(
+            seen.lock().unwrap()[i].0,
+            me,
+            "{kind:?}: as the socket's peer"
+        );
+    }
+    let client: SocketAddr = "192.168.1.77:40000".parse().unwrap();
+    let mut s = TcpStream::connect(server.local_addr()).await.unwrap();
+    s.write_all(&telltale_net::proxy::encode(client, server.local_addr()))
+        .await
+        .unwrap();
+    dot_exchange(&mut s, 9).await;
+    assert_eq!(seen.lock().unwrap()[3].0, client);
+    let stats = server.stats();
+    for kind in NoAddress::ALL {
+        assert_eq!(
+            stats.proxy_no_address.counter(kind).load(Relaxed),
+            1,
+            "{kind:?}"
+        );
+    }
+    assert_eq!(stats.proxy_rejected.load(Relaxed), 0, "nothing refused");
+    server.shutdown().await;
+}
+
+/// REQ: DNS-020 (ADR-039) — the same on a `doh` listener: answered as the socket's peer, counted
+/// by kind, a header with an address not counted.
+#[tokio::test]
+async fn dns_020_doh_headers_without_an_address_are_counted_and_answered_as_before() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (server, seen) = doh_server(true);
+    let addr = server.local_addr();
+    let stats = server.stats_handle();
+    let get = |id: u16| {
+        hyper::Request::get(format!(
+            "https://dns.test/dns-query?dns={}",
+            b64url(&query(id))
+        ))
+        .body(Full::new(Bytes::new()))
+        .unwrap()
+    };
+    for (i, (header, kind)) in no_address_headers().into_iter().enumerate() {
+        let mut c = h2(addr, "dns.test", &header).await;
+        let (st, _, _) = send(&mut c, get(i as u16)).await;
+        assert_eq!(st, 200, "{kind:?}: answered");
+        assert_eq!(
+            seen.lock().unwrap()[i].0.ip(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap(),
+            "{kind:?}: as the socket's peer"
+        );
+    }
+    let client: SocketAddr = "[2001:db8::42]:5555".parse().unwrap();
+    let mut c = h2(addr, "dns.test", &telltale_net::proxy::encode(client, addr)).await;
+    assert_eq!(send(&mut c, get(9)).await.0, 200);
+    assert_eq!(seen.lock().unwrap()[3].0, client);
+    for kind in NoAddress::ALL {
+        assert_eq!(
+            stats.proxy_no_address.counter(kind).load(Relaxed),
+            1,
+            "{kind:?}"
+        );
+    }
+    assert_eq!(stats.proxy_rejected.load(Relaxed), 0, "nothing refused");
     server.shutdown().await;
 }
 

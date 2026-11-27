@@ -80,6 +80,8 @@ pub struct DohStats {
     pub bad_requests: AtomicU64,
     pub tls_failed: AtomicU64,
     pub proxy_rejected: AtomicU64,
+    /// Connections whose PROXY header named no client address, by kind (DNS-020).
+    pub proxy_no_address: crate::proxy::NoAddressStats,
 }
 
 /// A running DoH listener.
@@ -194,12 +196,16 @@ async fn serve_conn<H: QueryHandler>(
     if cfg.proxy_protocol {
         match timeout(
             cfg.handshake_timeout,
-            crate::proxy::read_header(&mut stream),
+            crate::proxy::read_source(&mut stream),
         )
         .await
         {
-            Ok(Ok(Some(src))) => peer = src,
-            Ok(Ok(None)) => {}
+            Ok(Ok(crate::proxy::Source::Client(src))) => peer = src,
+            // REQ: DNS-020 (ADR-039) — LOCAL, AF_UNSPEC and AF_UNIX keep the socket's address,
+            // as before; they are only counted (and logged for loopback).
+            Ok(Ok(crate::proxy::Source::NoAddress(kind))) => {
+                stats.proxy_no_address.note(kind, peer, cfg.addr);
+            }
             _ => {
                 stats.proxy_rejected.fetch_add(1, Ordering::Relaxed);
                 return;

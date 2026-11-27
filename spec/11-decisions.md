@@ -484,6 +484,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Clients must trust the certificate (a public CA, or a private one distributed to devices). DoQ and DoH3 remain skipped until their listeners (M7). *(Update: both shipped in M7, T7.7 and T7.8.)*
 
+**Amended 2026-11-27 (amendment Proposed):** a header that names no client address (`LOCAL`, or `PROXY` with `AF_UNSPEC` or `AF_UNIX`) keeps the socket address, as before; such connections are counted by kind in `telltale_proxy_protocol_no_address_total{kind}` (summed over the `tcp`, `dot` and `doh` listeners, like `telltale_proxy_protocol_rejected_total`), and when the socket's peer is loopback a line says so and names the listener, at most once a minute per listener: at info for `AF_UNSPEC` and `AF_UNIX`, at debug for `LOCAL` (a balancer's health checks), each on its own minute. Such a connection keeps the socket address, and the settings for that address apply. No behaviour change, no new setting.
+
 ## ADR-040 — Config made through the API before clustering: managed entries in state.db (Accepted)
 **Context:** API-002 (everything configurable through the API) and API-010 (name a device from the UI) need API writes now. Today the configuration is files only (on Kubernetes, the chart's values), and `spec/12` describes the end state: a change log held by the cluster primary, with GitOps mode refusing writes. Rewriting config files from the server would fight GitOps and lose comments.
 

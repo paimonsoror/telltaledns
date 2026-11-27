@@ -1959,6 +1959,27 @@ fn write_tcp_metrics(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
+    // REQ: DNS-020, OBS-005 (ADR-039) — connections whose PROXY header named no client address
+    // and kept the socket's peer, by kind; summed over the `tcp`, `dot` and `doh` listeners like
+    // the refusals above.
+    let doh = src.doh.load();
+    let name = "telltale_proxy_protocol_no_address_total";
+    let f = w.family(
+        name,
+        "counter",
+        "Connections whose PROXY protocol v2 header named no client address (LOCAL, AF_UNSPEC, AF_UNIX), answered as the socket's peer, by kind.",
+    );
+    for kind in telltale_net::proxy::NoAddress::ALL {
+        let n = tcp
+            .iter()
+            .map(|s| s.proxy_no_address.counter(kind).load(Relaxed))
+            .chain(
+                doh.iter()
+                    .map(|s| s.proxy_no_address.counter(kind).load(Relaxed)),
+            )
+            .sum::<u64>();
+        f.sample(name, &[("kind", kind.label())], n);
+    }
 }
 
 fn write_doh_metrics(w: &mut PromWriter, src: &Sources) {
