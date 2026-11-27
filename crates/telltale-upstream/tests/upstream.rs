@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use telltale_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
-use telltale_upstream::health::Breaker;
+use telltale_upstream::health::{Admission, Breaker};
 use telltale_upstream::{Endpoint, Group, Question, Strategy, Upstream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
@@ -753,6 +753,75 @@ async fn ups_006_dead_sole_upstream_is_benched() {
     }
     assert_eq!(timeouts_of(&dead), 3);
     assert_eq!(dead.health.snapshot().breaker, Breaker::Open);
+}
+
+/// Opens `up`'s breaker with three timeouts recorded `ago`: its 10 s backoff runs out 10 s
+/// after that.
+fn bench(up: &Upstream, ago: Duration) {
+    let then = Instant::now().checked_sub(ago).unwrap();
+    for _ in 0..3 {
+        up.health.record(false, Duration::from_millis(1), then);
+    }
+    assert_eq!(up.health.snapshot().breaker, Breaker::Open);
+}
+
+/// REQ: UPS-006 (ADR-197) — an upstream benched during an outage, on a node whose clients send
+/// it no queries, is closed again by the first active check after its backoff: the check is
+/// the half-open probe. Before, only a query's attempt order admitted the probe, so the
+/// breaker stayed open for as long as no query came, while every check succeeded.
+#[tokio::test]
+async fn ups_006_active_check_closes_a_recovered_idle_upstream() {
+    let up = upstream(
+        1,
+        fake(Fake::Healthy {
+            tag: 1,
+            delay: Duration::ZERO,
+        })
+        .await,
+        1,
+    );
+    bench(&up, Duration::from_secs(11));
+    up.health_check().await;
+    assert_eq!(up.health.snapshot().breaker, Breaker::Closed);
+    assert_eq!(up.health.admit(Instant::now()), Admission::Yes);
+}
+
+/// REQ: UPS-006 (ADR-197) — before its backoff runs out, a benched upstream stays benched
+/// whatever the check sees, as with a query's last-resort attempt.
+#[tokio::test]
+async fn ups_006_active_check_waits_for_the_backoff() {
+    let up = upstream(
+        1,
+        fake(Fake::Healthy {
+            tag: 1,
+            delay: Duration::ZERO,
+        })
+        .await,
+        1,
+    );
+    bench(&up, Duration::ZERO);
+    up.health_check().await;
+    assert_eq!(up.health.snapshot().breaker, Breaker::Open);
+}
+
+/// REQ: UPS-006 (ADR-197) — a check that fails as the probe opens the breaker again with the
+/// backoff doubled, as a query's failed probe does.
+#[tokio::test]
+async fn ups_006_failed_active_check_doubles_the_backoff() {
+    let up = upstream(1, fake(Fake::Blackhole).await, 1);
+    bench(&up, Duration::from_secs(11));
+    up.health_check().await;
+    assert_eq!(up.health.snapshot().breaker, Breaker::Open);
+    let now = Instant::now();
+    assert_eq!(
+        up.health.admit(now + Duration::from_secs(15)),
+        Admission::No,
+        "backoff now 20 s"
+    );
+    assert_eq!(
+        up.health.admit(now + Duration::from_secs(21)),
+        Admission::Probe
+    );
 }
 
 /// REQ: UPS-006 (ADR-165) — the client gets its answer at the query's deadline and doesn't wait
