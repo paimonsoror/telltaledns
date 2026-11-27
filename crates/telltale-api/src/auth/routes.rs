@@ -158,8 +158,10 @@ fn forwarded_by(headers: &HeaderMap) -> Option<ForwardedBy> {
 
 /// The client's address. Behind a trusted proxy (`[api] trusted_proxies`: an ingress, a
 /// reverse proxy) it's the rightmost `X-Forwarded-For` entry that isn't itself a trusted
-/// proxy; entries further left are client-supplied and can be forged. Used for lockouts,
-/// break-glass networks, and audit entries.
+/// proxy; entries further left are client-supplied and can be forged. An entry that isn't a
+/// bare address stops the walk, and the client is then the peer. Used for sign-in lockouts,
+/// break-glass networks, display-token networks, audit entries, and the client address the
+/// MCP server passes on to its in-process requests (`OnBehalfOf`, which this returns first).
 pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> IpAddr {
     if let Some(o) = req_ext.get::<OnBehalfOf>() {
         return o.0;
@@ -203,17 +205,25 @@ pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &He
         }
         return peer;
     }
-    headers
-        .get_all("x-forwarded-for")
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .filter_map(|s| s.trim().parse::<IpAddr>().ok())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .find(|ip| !trusted(*ip))
-        .unwrap_or(peer)
+    // REQ: API-004 (ADR-034) — the raw entries from the right, all field lines in order, each
+    // line's bytes split per entry: a listed proxy's entry is skipped, and the first other bare
+    // address is the client. An entry that isn't a bare IPv4 or IPv6 address (a port, brackets,
+    // a zone id, a token, an empty entry, an entry that isn't text) ends the walk with the peer,
+    // as with no header: the entries to its left are the client's own. Bytes left of the entry
+    // that decides are never read.
+    for line in headers.get_all("x-forwarded-for").iter().rev() {
+        for entry in line.as_bytes().rsplit(|b| *b == b',') {
+            let ip = std::str::from_utf8(entry.trim_ascii())
+                .ok()
+                .and_then(|s| s.parse::<IpAddr>().ok());
+            match ip {
+                Some(ip) if trusted(ip) => {}
+                Some(ip) => return ip,
+                None => return peer,
+            }
+        }
+    }
+    peer
 }
 
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
