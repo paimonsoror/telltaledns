@@ -14,6 +14,8 @@ use std::time::Instant;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+use crate::log_line::OncePerMinute;
+
 /// The 12-byte signature that starts every v2 header.
 pub const SIGNATURE: [u8; 12] = [
     0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
@@ -68,10 +70,6 @@ impl NoAddress {
     }
 }
 
-/// How often the line about a header without an address from a loopback peer may be logged,
-/// per listener.
-const LINE_EVERY_MS: u64 = 60 * 1000;
-
 /// REQ: DNS-020 (ADR-039) — one listener's connections whose PROXY header named no client
 /// address, by kind (they keep the socket's peer, as before), and when the line about one from a
 /// loopback peer was last logged. Touched only on that path: a header with an address, and every
@@ -81,12 +79,11 @@ pub struct NoAddressStats {
     pub local: AtomicU64,
     pub unspec: AtomicU64,
     pub unix: AtomicU64,
-    /// The clock (milliseconds since `since`) of the last info line (`AF_UNSPEC`, `AF_UNIX`),
-    /// plus one: zero is "never".
-    last_line: AtomicU64,
-    /// The same for the debug line (`LOCAL`), kept apart so a balancer's health checks never
-    /// take the minute of an info line.
-    last_local_line: AtomicU64,
+    /// The info line's minute (`AF_UNSPEC`, `AF_UNIX`), on the clock below.
+    info_line: OncePerMinute,
+    /// The debug line's (`LOCAL`), kept apart so a balancer's health checks never take the
+    /// minute of an info line.
+    local_line: OncePerMinute,
     /// The clock's origin: monotonic, from when the listener was made.
     #[cfg_attr(test, allow(dead_code))]
     since: Instant,
@@ -102,8 +99,8 @@ impl Default for NoAddressStats {
             local: AtomicU64::new(0),
             unspec: AtomicU64::new(0),
             unix: AtomicU64::new(0),
-            last_line: AtomicU64::new(0),
-            last_local_line: AtomicU64::new(0),
+            info_line: OncePerMinute::default(),
+            local_line: OncePerMinute::default(),
             since: Instant::now(),
             #[cfg(test)]
             skew_ms: AtomicU64::new(0),
@@ -147,20 +144,15 @@ impl NoAddressStats {
     }
 
     /// Whether the line for `kind` is due at `now_ms`: the first time, then once a minute has
-    /// passed (`LOCAL`'s debug line on a clock of its own). Of any number of connections that
-    /// find it due together, exactly one is told so.
-    fn line_due(&self, kind: NoAddress, now_ms: u64) -> bool {
-        let slot = match kind {
-            NoAddress::Local => &self.last_local_line,
-            NoAddress::Unspec | NoAddress::Unix => &self.last_line,
-        };
-        let stamp = now_ms.saturating_add(1);
-        let last = slot.load(Ordering::Acquire);
-        if last != 0 && stamp.saturating_sub(last) < LINE_EVERY_MS {
-            return false;
+    /// passed (`LOCAL`'s debug line on a minute of its own). Of any number of connections that
+    /// find it due together, exactly one is told so. The gate is the listeners' one limiter
+    /// ([`crate::log_line::OncePerMinute`]).
+    pub(crate) fn line_due(&self, kind: NoAddress, now_ms: u64) -> bool {
+        match kind {
+            NoAddress::Local => &self.local_line,
+            NoAddress::Unspec | NoAddress::Unix => &self.info_line,
         }
-        slot.compare_exchange(last, stamp, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+        .due(now_ms)
     }
 
     /// The clock the line's interval is measured on.

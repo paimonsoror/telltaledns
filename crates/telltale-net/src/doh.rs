@@ -27,8 +27,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::warn;
 
-use crate::forwarded::{Network, OncePerMinute};
+use crate::forwarded::Network;
 use crate::handler::{ClientId, QueryHandler, RequestMeta, Response, Transport};
+use crate::log_line::OncePerMinute;
 use crate::proxy::{NoAddress, Source};
 use crate::tls::CertStore;
 
@@ -193,7 +194,7 @@ async fn accept_loop<H: QueryHandler>(
         if cfg.behind_listed_proxies() && !crate::forwarded::listed(&cfg.trusted_proxies, peer.ip())
         {
             stats.unlisted_peer.fetch_add(1, Ordering::Relaxed);
-            if stats.unlisted_peer_line.due(crate::forwarded::now_ms()) {
+            if stats.unlisted_peer_line.due(crate::log_line::now_ms()) {
                 warn!(
                     listener = %cfg.addr,
                     %peer,
@@ -368,7 +369,7 @@ fn refused_header(source: Source) -> &'static str {
 /// value, which its sender wrote.
 fn no_client_address(cfg: &DohConfig, stats: &DohStats, what: &str) {
     stats.no_client_address.fetch_add(1, Ordering::Relaxed);
-    if stats.no_client_address_line.due(crate::forwarded::now_ms()) {
+    if stats.no_client_address_line.due(crate::log_line::now_ms()) {
         warn!(
             listener = %cfg.addr,
             "doh: refused {what}; a listener with trusted_proxies or x_forwarded_for never answers without the client's address (logged at most once a minute)"
@@ -620,6 +621,46 @@ mod tests {
         assert!(
             base64url_decode("AA+/").is_none(),
             "standard alphabet is not base64url"
+        );
+    }
+
+    /// REQ: DNS-020, DNS-003 (ADR-039, ADR-194) — a DoH listener's four log lines (an unlisted
+    /// peer, a refusal for want of a client address, and a kept no-address header at info and at
+    /// debug) go through the one limiter, each on a minute of its own: none holds another back.
+    #[test]
+    fn dns_020_each_listener_line_has_its_own_minute() {
+        let s = DohStats::default();
+        let names = [
+            "unlisted peer",
+            "no client address",
+            "kept, info",
+            "kept, debug",
+        ];
+        let due = |line: usize, t: u64| match line {
+            0 => s.unlisted_peer_line.due(t),
+            1 => s.no_client_address_line.due(t),
+            2 => s.proxy_no_address.line_due(NoAddress::Unspec, t),
+            _ => s.proxy_no_address.line_due(NoAddress::Local, t),
+        };
+        for (line, what) in names.iter().enumerate() {
+            assert!(
+                due(line, 1_000),
+                "{what}: the first line, whatever the others did"
+            );
+        }
+        for (line, what) in names.iter().enumerate() {
+            assert!(
+                !due(line, 60_999),
+                "{what}: a millisecond short of a minute"
+            );
+            assert!(
+                due(line, 61_000),
+                "{what}: a minute later, on its own minute"
+            );
+        }
+        assert!(
+            !s.proxy_no_address.line_due(NoAddress::Unix, 61_001),
+            "AF_UNIX shares the info line's minute with AF_UNSPEC"
         );
     }
 }
