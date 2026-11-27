@@ -21,7 +21,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, ServerName};
 use telltale_net::forwarded::Network;
-use telltale_net::proxy::{SIGNATURE, encode, read_header};
+use telltale_net::proxy::{NoAddress, SIGNATURE, encode, read_header};
 use telltale_net::{CertStore, DohConfig, DohServer, DohStats, RequestMeta, Response};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpSocket, TcpStream};
@@ -285,6 +285,51 @@ async fn dns_020_local_refused_once_trusted_proxies_is_set() {
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(stats.proxy_rejected.load(Relaxed), 0, "well-formed headers");
     server.shutdown().await;
+}
+
+/// REQ: DNS-020 (ADR-194, ADR-039) — a header without an address that a listener behind listed
+/// proxies refuses is counted as a refusal only, never in the no-address counter, which counts
+/// the connections that keep the socket's address. Without the keys the same headers are
+/// counted there and answered, as before.
+#[tokio::test]
+async fn dns_020_refused_headers_are_counted_as_refusals_only() {
+    let (strict, seen, stats) = server(proxied("127.0.0.1/32"));
+    let addr = strict.local_addr();
+    for (n, (what, header)) in addressless().into_iter().enumerate() {
+        let mut s = tcp_from("127.0.0.1", addr).await;
+        s.write_all(&header).await.unwrap();
+        assert!(closes(&mut s).await, "{what}");
+        assert!(
+            until(|| stats.no_client_address.load(Relaxed) == n as u64 + 1).await,
+            "{what}"
+        );
+    }
+    for kind in NoAddress::ALL {
+        assert_eq!(
+            stats.proxy_no_address.counter(kind).load(Relaxed),
+            0,
+            "{kind:?}: refused, not kept"
+        );
+    }
+    assert!(seen.lock().unwrap().is_empty());
+    strict.shutdown().await;
+
+    let (plain, seen, stats) = server(|c| c.proxy_protocol = true);
+    let addr = plain.local_addr();
+    for (what, header) in addressless() {
+        let (mut c, _conn) = h2_from("127.0.0.1", addr, "dns.test", &header).await;
+        assert_eq!(send(&mut c, get("/dns-query", &[])).await.0, 200, "{what}");
+    }
+    for kind in NoAddress::ALL {
+        assert_eq!(
+            stats.proxy_no_address.counter(kind).load(Relaxed),
+            1,
+            "{kind:?}: kept and counted"
+        );
+    }
+    assert_eq!(stats.no_client_address.load(Relaxed), 0);
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    plain.shutdown().await;
 }
 
 /// REQ: DNS-020 (ADR-039, ADR-194 R18) — without the new keys nothing changes: `LOCAL` (a

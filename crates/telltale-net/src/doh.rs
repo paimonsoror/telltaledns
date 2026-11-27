@@ -624,6 +624,23 @@ mod tests {
         );
     }
 
+    /// REQ: DNS-020 (ADR-194) — a header that a listener behind listed proxies refuses is named
+    /// by its kind in the log line: fixed text, never the header's bytes.
+    #[test]
+    fn dns_020_a_refused_header_is_named_by_kind() {
+        let loopback: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        for (source, word) in [
+            (Source::NoAddress(NoAddress::Local), "LOCAL"),
+            (Source::NoAddress(NoAddress::Unspec), "AF_UNSPEC"),
+            (Source::NoAddress(NoAddress::Unix), "AF_UNIX"),
+            (Source::Client(loopback), "unspecified or loopback source"),
+        ] {
+            let text = refused_header(source);
+            assert!(text.contains(word), "{source:?}: {text}");
+            assert!(text.starts_with("a PROXY header"), "{text}");
+        }
+    }
+
     /// REQ: DNS-020, DNS-003 (ADR-039, ADR-194) — a DoH listener's four log lines (an unlisted
     /// peer, a refusal for want of a client address, and a kept no-address header at info and at
     /// debug) go through the one limiter, each on a minute of its own: none holds another back.
