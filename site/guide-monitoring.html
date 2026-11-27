@@ -309,7 +309,7 @@ ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity chec
 cert_warn_days = 14                     # a certificate expiring sooner degrades the health level
 targets = ["udp://192.168.5.112:53"]     # extra: by IP, e.g. a load balancer's address</code></pre>
   <ul>
-    <li>Targets take <code>udp://</code>, <code>tcp://</code>, <code>tls://</code>, <code>https://…/dns-query</code>, <code>h3://</code>, and <code>quic://</code> with an IP address. A listener with <code>proxy_protocol = true</code> is skipped.</li>
+    <li>Targets take <code>udp://</code>, <code>tcp://</code>, <code>tls://</code>, <code>https://…/dns-query</code>, <code>h3://</code>, and <code>quic://</code> with an IP address. A listener with <code>proxy_protocol = true</code> is skipped, and so is a <code>doh</code> listener with <code>x_forwarded_for = true</code> (probes send no client address): add the proxy's public URL as a target instead.</li>
     <li>Two failures in a row turn the health icon amber; an expired certificate turns it red. Alert on it with <code>probe_failing</code> and <code>cert_expiring</code> rules.</li>
     <li>Probe queries stay out of the query log, top lists, device analytics, and event sinks.</li>
   </ul>

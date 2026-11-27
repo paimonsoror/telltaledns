@@ -33,7 +33,7 @@ Chart: `deploy/helm/telltale`.
 Per-client analytics are worthless if every query appears to come from a node IP. The chart therefore:
 - Creates **one** `LoadBalancer` Service with both UDP and TCP port 53 (supported since k8s 1.26 for mixed protocols), with `externalTrafficPolicy: Local` **by default**, and annotations for MetalLB (`metallb.universe.tf/loadBalancerIPs`) or kube-vip.
 - Offers `hostNetwork: true` mode (DaemonSet/StatefulSet), with `dnsPolicy: ClusterFirstWithHostNet` and a port-conflict check documented for k3s (the k3s CoreDNS listens on cluster IPs only, so binding 53 on the host is fine; systemd-resolved stub conflicts are documented).
-- DoH/DoT via Ingress/Gateway: requires TLS **passthrough** with PROXY protocol v2 (Traefik `IngressRouteTCP` / Gateway API `TLSRoute`) so client IPs survive. Alternatively, expose DoT/DoQ through the same LoadBalancer.
+- DoH/DoT via Ingress/Gateway: requires TLS **passthrough** with PROXY protocol v2 (Traefik `IngressRouteTCP` / Gateway API `TLSRoute`) so client IPs survive. Alternatively, expose DoT/DoQ through the same LoadBalancer. A proxy or HTTP ingress that re-encrypts to a `doh` listener can name each client in `X-Forwarded-For` when the listener lists it (`x_forwarded_for` with `trusted_proxies`, ADR-194); an ingress controller's pod addresses change, so that needs a NetworkPolicy that lets only the ingress reach the listener. `trusted_proxies` also restricts a PROXY-protocol `doh` listener to its balancers.
 - **Validation:** `helm install` renders a `NOTES.txt` warning if `externalTrafficPolicy=Cluster`. At runtime, the resolver detects when > 90% of queries come from ≤ 3 IPs inside the pod/node CIDRs and raises a UI banner: "client IPs appear masked".
 
 ### 3.3 Config, secrets, probes

@@ -2272,6 +2272,83 @@ REQ: API-002, API-010, CLU-003, AGT-004.
 
 **Verification:** `ups_009_loop_tag_false_leaves_the_option_out` (a query and a health check carry no option; with an ECS subnet, only the subnet; an upstream at the default beside it keeps the tag); `ups_009_loop_tag_is_on_by_default` (from the configuration and built in code); `ups_009_default_query_bytes_are_unchanged` (golden bytes from the base, for `encode_query` and for the exchange, also with DO and CD and with an ECS subnet); `ups_009_loop_tag_default_is_not_shared` (the shared part, a replica's merge, and back); `ups_009_bootstrap_follows_the_upstreams_loop_tag` (the router gives the upstream's own bootstrap the switch, the system bootstrap keeps the tag, and what the lookups send); `ups_009_loop_tag_off_is_refused_toward_this_node` (each refused form in the URL and in `bootstrap`; a public address, a LAN address no listener uses, host names with public or system bootstrap servers, and loopback with the option on are accepted); `ups_009_loop_tag_off_is_refused_where_it_does_nothing` (`recursive://` and a stub zone refused; a DNS stamp and both plugin kinds accepted); unchanged and green: `obs_020_self_probes_carry_no_loop_tag`, `loop_tagged_queries_are_dropped`. No benchmark: the exchange reads one stored flag where it negated another.
 
+## ADR-194 — DoH behind a reverse proxy: the client's address only from listed proxies, plain HTTP only on loopback or a Unix socket, and no request answered without a client address (Proposed)
+**Context:** GitHub issue #91. cheebun runs Caddy in front of TelltaleDNS. Caddy terminates TLS for DoH and has to re-encrypt to a loopback `doh` listener, because a `doh` listener without `tls` is refused (`validate.rs`, `needs_tls`). He would prefer a Unix socket. He showed that Caddy sends a PROXY v2 header over a Unix socket as TCP4 or TCP6 with the client's address, source port 0 and an all-zero destination. gael1980 runs a proxy on other machines of a private network in front of a three-node cluster. Every request appears to come from the connector's address, so access lists, rate limits and device statistics see one client. He asks for trusted `X-Forwarded-For` (or `X-Real-IP`) from listed private-network proxies, and for client IDs in device analytics.
+
+The decisions this builds on:
+- ADR-039 reads PROXY v2 before TLS and keeps the socket's address for `LOCAL`, with no source allowlist. The parser also returns no address for AF_UNSPEC and AF_UNIX.
+- ADR-039's amendment of 2026-11-27: a header without an address keeps the socket address, and the settings for that address apply.
+- ADR-034 reads the API's client from the rightmost `X-Forwarded-For` entry that isn't a listed proxy, and never trusts loopback for that header by itself (amendment of 2026-11-18).
+- ADR-099 counts per-address connection limits on the client's address.
+- ADR-149 prefers no service to plain HTTP where TLS is expected.
+
+A plain listener behind a proxy would see only loopback, so a request without a client address must never be answered as the socket's peer. The design note is `docs/design/doh-behind-a-proxy.md`; the owner accepted its recommendations on 2026-11-27 (listed peers on other machines, the walk from the right, a forwarded loopback address refused; no `X-Real-IP`, no h2c).
+
+**Decision:**
+- **Two problems, decided separately.** (A) A `doh` listener may take the client's address from a proxy the operator lists, over TLS as today. (B) A `doh` listener may serve plain HTTP, only for a TLS-terminating proxy on the same host. Client IDs in device analytics are not part of this decision (an issue of its own).
+- **New keys on `[[listen]]`, `proto = "doh"` only, all node-local** (`listen` is never replicated). Each is written only when set (`skip_serializing_if`, the ADR-187 pattern), so the serialized form of every existing listener is unchanged.
+  - `trusted_proxies = [networks]`, default none. The only peers this listener accepts: a connection from any other address is closed at accept, before a byte is read. The same networks are the hops skipped in `X-Forwarded-For`. Valid only with `proxy_protocol` or `x_forwarded_for`. Required with `x_forwarded_for` on an address. A network of prefix length 0 is refused. A network wider than one host is a warning ("list only your proxies"), and so is a network a loopback listener can never see.
+  - `x_forwarded_for = true`, default false. The client is the rightmost `X-Forwarded-For` entry that isn't inside `trusted_proxies`.
+    - All field lines are joined in order, and at most 16 entries are read from the right.
+    - The selected entry must be a bare IPv4 or IPv6 literal of at most 45 bytes. If it isn't, the request is refused. The walk never skips it to an entry further left. An IPv4-mapped IPv6 literal is the IPv4 client.
+    - Exclusive with `proxy_protocol`. `Forwarded` and `X-Real-IP` are never read, and `X-Forwarded-For` is read nowhere else.
+    - `config check` warns when `max_connections_per_address` is left at its default.
+  - `plain_http = true`, default false. No TLS. Refused together with `tls`.
+    - Allowed only on a loopback address (`127.0.0.0/8`, `::1`) or a Unix socket.
+    - Requires `proxy_protocol = true` or `x_forwarded_for = true`.
+    - A `doh` listener with neither `tls` nor `plain_http` is still refused with today's message.
+  - `addr` also accepts `unix:/absolute/path` (a plain listener only). An `ip:port` keeps its form. `unix_mode` (default `"0660"`) is the socket file's mode, set after bind and before listen. An existing path is replaced only if it is a socket nothing answers on: a symlink, a file or a live socket is a bind error. The file is removed when the listener closes. A world-writable mode is a warning.
+- **No fallback to the socket's peer.** On a listener with any of these keys, these never reach the pipeline:
+  - a connection whose PROXY header is `LOCAL`, AF_UNSPEC or AF_UNIX, or names an unspecified address (`0.0.0.0`, `::`) or a loopback one (`127.0.0.0/8`, `::1`, their IPv4-mapped forms), is closed;
+  - a request without a usable `X-Forwarded-For` client (missing, unusable at the selected entry, only listed proxies, over 16 entries, an unspecified or loopback address) is answered 403 and its connection closed (`Connection: close` on HTTP/1.1, a graceful shutdown on HTTP/2).
+
+  Both are counted by reason (`telltale_doh_forwarded_refused_total{reason="unlisted_peer"|"no_client_address"}`), with at most one log line per listener and reason per minute, never with a header's value. TCP4 and TCP6 headers with source port 0 and an all-zero destination are accepted. Without the new keys, ADR-039's rules are unchanged (`LOCAL` keeps the socket's address).
+- **The forwarded client is the client** for `[access] allowed_networks`, the rate limit, identification, the query log, analytics and dnstap: the listener sets `RequestMeta.peer` to it (port 0 for an `X-Forwarded-For` client). The per-address connection limit counts the PROXY client after the header (ADR-099). With `x_forwarded_for` it counts the socket's peer, the proxy.
+- **Conflicting framing.** An HTTP/1.1 request that states its length with both `Content-Length` and `Transfer-Encoding` is framed by `Transfer-Encoding` and its connection is closed after the answer (RFC 9112 §6.3), so nothing behind it on the connection is read. hyper's HTTP/1 server does this itself (it removes `Content-Length` before the request reaches the listener), so the listener adds no check of its own; a test pins the behaviour. (The design note planned a 400 here; the effect sought, no second request read from such a connection, is the same.)
+- **A plain listener speaks HTTP/1.1 only** (no h2c, no upgrade). With PROXY v2 it serves one request per connection, so a pooled connection can't carry another client's request.
+- **Plain and `x_forwarded_for` listeners** send no `Alt-Svc`, take client IDs from the path only (the SNI there is the proxy's), and are skipped by the listener probes with a reason that points to `[probe] targets`. The plain listener has its own arm in `bind_stream`: it is HTTP, never the DNS-over-TCP catch-all.
+- **Declined:**
+  - plain HTTP on any address another machine can reach (LAN, Docker bridge, pod network, wildcard);
+  - believing a forwarded address from an unlisted peer;
+  - `X-Real-IP` and `Forwarded`.
+- **Order:** A first (`trusted_proxies`, then `x_forwarded_for`), then B (loopback and the Unix socket together). No new requirement ID: DNS-003, DNS-020 and DNS-014 cover it.
+
+**Implementation:** part A is built (T31.1, 2026-11-27): `trusted_proxies` and `x_forwarded_for` on TLS `doh` listeners, in `crates/telltale-net/src/forwarded.rs` and `doh.rs`. Part B (`plain_http`, `unix:` addresses, `unix_mode`, one request per connection under PROXY v2) is not built yet; until it is, a `doh` listener always needs `tls`.
+
+**Not done:**
+- h2c;
+- keep-alive on plain listeners with PROXY v2 (a later ADR, after a measurement);
+- `trusted_proxies` on `tcp` and `dot` listeners;
+- a per-listener access list (a public DoH endpoint behind a proxy needs `allowed_networks` widened for every listener);
+- client IDs from the `Host` header;
+- peer-credential checks on the Unix socket;
+- detecting a proxy that passes a client's `X-Forwarded-For` through unchanged;
+- device analytics keyed by client ID (its own issue);
+- a fuzz target for the PROXY header parser (`proxy_header`).
+
+**Consequences:**
+- A proxy on other machines gives each client its own address while the hop stays encrypted. A layer-4 balancer can be the only peer a listener accepts. With part B, a proxy on the same host needs no second TLS hop.
+- Once a listener sees real clients, `allowed_networks` and the rate limit apply to them: clients outside the allowed networks are refused (EDE 18), where before they shared the proxy's allowed address.
+- A client on the proxy's own host is refused through the proxy and uses the local listeners. A proxy health check that sends `LOCAL` or asks the DoH path is refused: a TCP check or the web UI's `/livez` is the documented alternative.
+- Everything on `trusted_proxies` is trusted to name any client: it can choose a client's policy, spend its rate budget on every transport, and write its address into the log. On a loopback plain listener that is every process on the host, which a Unix socket with mode `0660` narrows to the proxy's group.
+- Listener settings never leave a node, so mixed-version clusters are unaffected: the shared configuration is the same bytes with or without the keys. An older binary refuses its own file if it contains the new keys (at start it doesn't run; on a reload it keeps the running configuration), so they must be removed before a downgrade.
+- Per-query cost:
+  - existing DoH listeners: one predictable branch at accept and one per request;
+  - `x_forwarded_for` listeners: an allocation-free walk of at most 16 short entries per request;
+  - plain listeners with PROXY v2: one loopback or Unix connection per query instead of a TLS session.
+
+  UDP, TCP, DoT, DoQ, DoH3 and the pipeline are unchanged.
+- Updated: `docs/running.md` ("Behind a reverse proxy", under Encrypted DNS for your devices), `docs/configuration.md`, `site/guide-encrypted.html`, `site/guide-monitoring.html`, `docs/config-schema.json`, `spec/08` (DoH through an ingress), the support package's classification table (`listen[].trusted_proxies[]`; `listen[].unix_mode` with part B). No API operation, MCP tool or UI change.
+
+**Verification (part A):**
+- Configuration: `dns_003_x_forwarded_for_needs_trusted_proxies`, `dns_003_proxy_protocol_and_x_forwarded_for_are_exclusive`, `dns_003_trusted_proxies_only_with_a_forwarded_source`, `dns_003_trusted_proxies_refuses_everyone_and_warns_on_networks`, `dns_003_forwarding_keys_keep_the_tls_requirement`, `dns_003_new_listener_keys_not_written_at_default`, `clu_003_listener_keys_never_shared`, `ops_011_support_package_classifies_the_new_listener_fields`.
+- The walk: `dns_003_xff_rightmost_untrusted_entry`, `dns_003_xff_unparsable_entry_is_not_skipped`, `dns_003_xff_walk_is_bounded`, `dns_020_forwarded_unspecified_or_loopback_is_not_a_client`, `dns_003_trusted_networks_match_by_prefix`, `dns_003_refusal_lines_at_most_once_a_minute`, `dns_003_xff_selector_allocates_nothing`; the nightly fuzz target `forwarded_for`.
+- Listener: `dns_003_xff_only_from_listed_peers`, `dns_020_proxy_v2_only_from_listed_peers`, `dns_020_local_refused_once_trusted_proxies_is_set`, `dns_020_local_keeps_socket_address_without_new_keys`, `dns_020_forwarded_unspecified_or_loopback_refused`, `dns_020_proxy_v2_port_zero_and_empty_destination_accepted`, `dns_003_xff_missing_or_unusable_refused`, `dns_003_xff_ignored_without_the_key`, `dns_003_forwarded_listener_closes_after_a_refused_request`, `dns_003_xff_listener_closes_after_conflicting_framing`, `dns_003_plain_and_xff_listeners_send_no_alt_svc`, `dns_003_xff_listener_ignores_sni_client_ids`, `dns_003_client_id_from_path_survives_forwarding`, `dns_003_per_address_limit_counts_the_proxy_with_xff`.
+- Server and pipeline: `dns_014_rate_limit_counts_the_forwarded_client`, `dns_014_access_list_applies_to_the_forwarded_client`, `obs_001_query_log_records_the_forwarded_client`, `obs_020_probes_skip_listeners_that_need_a_forwarded_address`.
+- Kept unchanged: `dns_003_doh_get_post_client_ids_and_errors`, `dns_003_doh_http1_and_proxy_protocol`, `dns_004_doh_advertises_http3`, `dns_020_parses_v4_v6_and_local`, `dns_020_rejects_bad_headers`.
+- Part B, when built: `dns_003_plain_doh_needs_opt_in`, `dns_003_plain_doh_loopback_or_unix_only`, `dns_003_plain_doh_requires_a_client_address_source`, `dns_003_plain_doh_not_with_tls`, `dns_003_plain_doh_http1_only`, `dns_020_plain_doh_local_or_unix_family_refused`, `dns_020_plain_doh_proxy_v2_one_request_per_connection`, `dns_003_plain_doh_listener_speaks_http`, `dns_003_unix_socket_mode_set_before_listen`, `dns_003_unix_socket_never_replaces_a_file_or_a_live_socket`, `dns_003_unix_socket_removed_on_close`, `dns_020_proxy_v2_over_unix_socket_tcp4_family_accepted`.
+- Benchmarks: `make bench-smoke` and the DoH row of `make bench-transports` against a same-binary control on the benchmark machine (not run for part A; see the design note, §11).
+
 ## ADR-172 — A cluster support package: each node redacts its own part under one key, with labels every node agrees on (Accepted)
 **Context:** GitHub issue #55 (the later phase of #50, ADR-156): in a cluster the problem is often on another node, and a package of the node that answered covers only that one. ADR-156 settled the direction (each node redacts before its data leaves it, the asking node's key travels over the mutually authenticated stream) and left three points: how the key reaches the others, what an older peer does, and the size cap across nodes. One more came up in building it: ADR-156 numbers a name by when it is first met (`device-3`), so two nodes would give one device two labels, and the issue asks that a device have one name on every node.
 **Decision:**
