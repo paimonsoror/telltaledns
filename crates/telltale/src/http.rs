@@ -2016,6 +2016,22 @@ fn write_doh_metrics(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
+    // REQ: DNS-003, DNS-020 (ADR-194) — `doh` listeners behind listed proxies.
+    let name = "telltale_doh_forwarded_refused_total";
+    w.family(
+        name,
+        "counter",
+        "Refusals by doh listeners with trusted_proxies or x_forwarded_for, by reason: unlisted_peer (a connection from an address trusted_proxies doesn't list, closed at accept), no_client_address (a PROXY header or an X-Forwarded-For that names no usable client).",
+    );
+    for (reason, v) in [
+        ("unlisted_peer", dsum(|s| s.unlisted_peer.load(Relaxed))),
+        (
+            "no_client_address",
+            dsum(|s| s.no_client_address.load(Relaxed)),
+        ),
+    ] {
+        w.sample(name, &[("reason", reason)], v);
+    }
 }
 
 #[cfg(test)]

@@ -1338,6 +1338,7 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 "only valid for tcp, dot, and doh listeners",
             );
         }
+        behind_proxies(l, &p, r);
         if l.proto == crate::ListenProto::Udp {
             if l.max_connections.is_some() {
                 r.err(
@@ -1354,6 +1355,69 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
         }
         if l.max_connections == Some(0) {
             r.err(format!("{p}.max_connections"), "must be at least 1");
+        }
+    }
+}
+
+/// REQ: DNS-003, DNS-020 (ADR-194) — a `doh` listener behind proxies the operator lists:
+/// `trusted_proxies` goes with one source of client addresses (`proxy_protocol` or
+/// `x_forwarded_for`), `x_forwarded_for` needs the list, and the list names proxies, not
+/// everyone.
+fn behind_proxies(l: &crate::schema::Listener, p: &str, r: &mut Report<'_>) {
+    let doh = l.proto == crate::ListenProto::Doh;
+    if l.x_forwarded_for {
+        if !doh {
+            r.err(
+                format!("{p}.x_forwarded_for"),
+                "only valid for doh listeners",
+            );
+        } else if l.proxy_protocol {
+            r.err(
+                format!("{p}.x_forwarded_for"),
+                "set `proxy_protocol` or `x_forwarded_for`, not both",
+            );
+        } else if l.trusted_proxies.is_empty() {
+            r.err(
+                format!("{p}.trusted_proxies"),
+                "required with `x_forwarded_for`: list your proxies' addresses, e.g. [\"10.0.5.20/32\"]",
+            );
+        } else if l.max_connections_per_address.is_none() {
+            r.warn(format!(
+                "{p}.max_connections_per_address: with `x_forwarded_for` every connection is the proxy's; the default 32 may refuse it: raise it or set 0"
+            ));
+        }
+    }
+    if l.trusted_proxies.is_empty() {
+        return;
+    }
+    if !doh || !(l.proxy_protocol || l.x_forwarded_for) {
+        r.err(
+            format!("{p}.trusted_proxies"),
+            "only valid on a doh listener with `proxy_protocol` or `x_forwarded_for`",
+        );
+    }
+    let loopback = |ip: std::net::IpAddr| ip.to_canonical().is_loopback();
+    for (j, n) in l.trusted_proxies.iter().enumerate() {
+        let host = if n.addr.is_ipv4() { 32 } else { 128 };
+        if n.prefix == 0 {
+            r.err(
+                format!("{p}.trusted_proxies[{j}]"),
+                format!("`{n}` trusts every address: list only your proxies"),
+            );
+            continue;
+        }
+        if n.prefix < host {
+            r.warn(format!(
+                "{p}.trusted_proxies[{j}]: `{n}` is a network, not one proxy: every machine in it can name any client; list only your proxies"
+            ));
+        }
+        let sees_this_host = loopback(n.addr)
+            || n.contains(std::net::Ipv4Addr::LOCALHOST.into())
+            || n.contains(std::net::Ipv6Addr::LOCALHOST.into());
+        if loopback(l.addr.ip()) && !sees_this_host {
+            r.warn(format!(
+                "{p}.trusted_proxies[{j}]: a loopback listener only sees this host; `{n}` never connects"
+            ));
         }
     }
 }

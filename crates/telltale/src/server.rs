@@ -812,8 +812,29 @@ impl Listeners {
                 if let Some(n) = l.max_connections_per_address {
                     cfg.max_connections_per_address = n as usize;
                 }
+                // REQ: DNS-003, DNS-020 (ADR-194)
+                cfg.trusted_proxies = l
+                    .trusted_proxies
+                    .iter()
+                    .map(|n| telltale_net::forwarded::Network {
+                        addr: n.addr,
+                        prefix: n.prefix,
+                    })
+                    .collect();
+                cfg.x_forwarded_for = l.x_forwarded_for;
+                let behind = cfg.behind_listed_proxies();
                 let s = DohServer::bind(cfg, handler)?;
-                info!(addr = %s.local_addr(), proxy_protocol = l.proxy_protocol, "listening (doh)");
+                if behind {
+                    info!(
+                        addr = %s.local_addr(),
+                        proxy_protocol = l.proxy_protocol,
+                        x_forwarded_for = l.x_forwarded_for,
+                        trusted_proxies = l.trusted_proxies.len(),
+                        "listening (doh)"
+                    );
+                } else {
+                    info!(addr = %s.local_addr(), proxy_protocol = l.proxy_protocol, "listening (doh)");
+                }
                 Ok(Stream::Doh(s, watch_cert(store)))
             }
             (ListenProto::Doh3, Some(store)) => {
@@ -2325,6 +2346,8 @@ mod tests {
             path: None,
             tls: None,
             proxy_protocol: false,
+            trusted_proxies: Vec::new(),
+            x_forwarded_for: false,
             max_connections: None,
             max_connections_per_address: None,
         }
@@ -2621,3 +2644,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "server_doh_tests.rs"]
+mod doh_tests;

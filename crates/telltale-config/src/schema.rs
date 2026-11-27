@@ -424,6 +424,22 @@ pub struct Listener {
     /// Accept PROXY protocol v2 (TCP-based listeners only).
     #[serde(default)]
     pub proxy_protocol: bool,
+    /// REQ: DNS-003, DNS-020 (ADR-194) — `doh` only, with `proxy_protocol` or `x_forwarded_for`:
+    /// the proxies in front of this listener (e.g. `["10.0.5.20/32"]`). Only they may connect;
+    /// any other address is closed at once. A connection or request that then names no usable
+    /// client (a PROXY `LOCAL` or address-less header, a missing or unreadable `X-Forwarded-For`,
+    /// an unspecified or loopback address) is refused, never answered as the proxy. With
+    /// `x_forwarded_for`, these are also the hops skipped. List only your proxies, never a whole
+    /// network: each address listed can name any client. Default: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<Cidr>,
+    /// REQ: DNS-003 (ADR-194) — `doh` only, with `trusted_proxies`, not with `proxy_protocol`: the
+    /// client's address is the rightmost `X-Forwarded-For` entry that isn't in `trusted_proxies`
+    /// (as for `[api] trusted_proxies`). `X-Real-IP` and `Forwarded` are never read. Such a
+    /// listener sends no `Alt-Svc` and takes client IDs from the URL path only (the SNI is the
+    /// proxy's). Default: false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub x_forwarded_for: bool,
     /// Connections open at once on this listener (default 1,024); more are refused. Not for
     /// `udp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -444,6 +460,8 @@ impl Listener {
             path: None,
             tls: None,
             proxy_protocol: false,
+            trusted_proxies: Vec::new(),
+            x_forwarded_for: false,
             max_connections: None,
             max_connections_per_address: None,
         }

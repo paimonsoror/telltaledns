@@ -2467,6 +2467,18 @@
               "type": "null"
             }
           ]
+        },
+        "trusted_proxies": {
+          "description": "REQ: DNS-003, DNS-020 (ADR-194) — `doh` only, with `proxy_protocol` or `x_forwarded_for`:\nthe proxies in front of this listener (e.g. `[\"10.0.5.20/32\"]`). Only they may connect;\nany other address is closed at once. A connection or request that then names no usable\nclient (a PROXY `LOCAL` or address-less header, a missing or unreadable `X-Forwarded-For`,\nan unspecified or loopback address) is refused, never answered as the proxy. With\n`x_forwarded_for`, these are also the hops skipped. List only your proxies, never a whole\nnetwork: each address listed can name any client. Default: none.",
+          "type": "array",
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        },
+        "x_forwarded_for": {
+          "description": "REQ: DNS-003 (ADR-194) — `doh` only, with `trusted_proxies`, not with `proxy_protocol`: the\nclient's address is the rightmost `X-Forwarded-For` entry that isn't in `trusted_proxies`\n(as for `[api] trusted_proxies`). `X-Real-IP` and `Forwarded` are never read. Such a\nlistener sends no `Alt-Svc` and takes client IDs from the URL path only (the SNI is the\nproxy's). Default: false.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,

@@ -1748,3 +1748,261 @@ fn dns_019_resolver_arpa_default_on_and_not_written() {
     assert_eq!(errs.len(), 1, "{errs:?}");
     assert!(load_str("[special]\nresolver_arpa = \"no\"\n").is_err());
 }
+
+/// A TLS `doh` listener on all addresses, for the ADR-194 tests to add keys to.
+const DOH_TLS: &str = "[[listen]]\nproto = \"doh\"\naddr = \"0.0.0.0:443\"\ntls = { cert = \"/etc/telltale/tls.crt\", key = \"/etc/telltale/tls.key\" }\n";
+
+/// The errors at `path`, as text.
+fn errors_at(errs: &[ConfigError], path: &str) -> Vec<String> {
+    errs.iter()
+        .filter(|e| e.path == path)
+        .map(|e| e.message.clone())
+        .collect()
+}
+
+/// The warnings about listeners (a configuration without upstreams also warns about those).
+fn listen_warnings(l: &telltale_config::Loaded) -> Vec<&str> {
+    l.warnings
+        .iter()
+        .map(String::as_str)
+        .filter(|w| w.starts_with("listen["))
+        .collect()
+}
+
+/// REQ: DNS-003 (ADR-194) — `x_forwarded_for` is for `doh` listeners only, and needs the list
+/// of the proxies it believes; with them it loads and is read back.
+#[test]
+fn dns_003_x_forwarded_for_needs_trusted_proxies() {
+    let ok = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\", \"10.0.5.21\"]\nmax_connections_per_address = 0\n"
+    ))
+    .unwrap();
+    assert!(listen_warnings(&ok).is_empty(), "{:?}", ok.warnings);
+    let written = serde_json::to_value(&ok.config.listen[0]).unwrap();
+    assert_eq!(written["x_forwarded_for"], true);
+    assert_eq!(
+        written["trusted_proxies"],
+        serde_json::json!(["10.0.5.20/32", "10.0.5.21/32"])
+    );
+
+    let errs = load_str(&format!("{DOH_TLS}x_forwarded_for = true\n")).unwrap_err();
+    assert_eq!(paths(&errs), ["listen[0].trusted_proxies"], "{errs:?}");
+    assert!(
+        errs[0]
+            .message
+            .contains("required with `x_forwarded_for`: list your proxies' addresses"),
+        "{errs:?}"
+    );
+
+    for (proto, tls) in [
+        ("tcp", ""),
+        ("udp", ""),
+        ("dot", "tls = { cert = \"/c\", key = \"/k\" }\n"),
+        ("doh3", "tls = { cert = \"/c\", key = \"/k\" }\n"),
+        ("doq", "tls = { cert = \"/c\", key = \"/k\" }\n"),
+    ] {
+        let errs = load_str(&format!(
+            "[[listen]]\nproto = \"{proto}\"\naddr = \"0.0.0.0:853\"\n{tls}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+        ))
+        .unwrap_err();
+        assert_eq!(
+            errors_at(&errs, "listen[0].x_forwarded_for"),
+            ["only valid for doh listeners"],
+            "{proto}: {errs:?}"
+        );
+    }
+}
+
+/// REQ: DNS-003, DNS-020 (ADR-194) — one source of client addresses per listener.
+#[test]
+fn dns_003_proxy_protocol_and_x_forwarded_for_are_exclusive() {
+    let errs = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\nx_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+    ))
+    .unwrap_err();
+    assert_eq!(
+        errors_at(&errs, "listen[0].x_forwarded_for"),
+        ["set `proxy_protocol` or `x_forwarded_for`, not both"],
+        "{errs:?}"
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}
+
+/// REQ: DNS-003, DNS-020 (ADR-194) — `trusted_proxies` is for a `doh` listener that takes the
+/// client's address from them (PROXY protocol or `X-Forwarded-For`).
+#[test]
+fn dns_003_trusted_proxies_only_with_a_forwarded_source() {
+    let why = "only valid on a doh listener with `proxy_protocol` or `x_forwarded_for`";
+    for toml in [
+        format!("{DOH_TLS}trusted_proxies = [\"10.0.5.20/32\"]\n"),
+        "[[listen]]\nproto = \"tcp\"\naddr = \"0.0.0.0:53\"\nproxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n".to_owned(),
+        "[[listen]]\nproto = \"dot\"\naddr = \"0.0.0.0:853\"\ntls = { cert = \"/c\", key = \"/k\" }\nproxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n".to_owned(),
+    ] {
+        let errs = load_str(&toml).unwrap_err();
+        assert_eq!(
+            errors_at(&errs, "listen[0].trusted_proxies"),
+            [why],
+            "{toml}: {errs:?}"
+        );
+    }
+    let ok = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+    ))
+    .unwrap();
+    assert!(listen_warnings(&ok).is_empty(), "{:?}", ok.warnings);
+    assert!(ok.config.listen[0].proxy_protocol);
+}
+
+/// REQ: DNS-003 (ADR-194) — a prefix of 0 trusts everyone and is refused; a network wider than
+/// one host, a proxy a loopback listener can never see, and the per-address limit left at its
+/// default behind `X-Forwarded-For` are warnings.
+#[test]
+fn dns_003_trusted_proxies_refuses_everyone_and_warns_on_networks() {
+    let errs = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"0.0.0.0/0\", \"10.0.5.20/32\", \"::/0\"]\n"
+    ))
+    .unwrap_err();
+    assert_eq!(
+        errors_at(&errs, "listen[0].trusted_proxies[0]"),
+        ["`0.0.0.0/0` trusts every address: list only your proxies"],
+        "{errs:?}"
+    );
+    assert_eq!(
+        errors_at(&errs, "listen[0].trusted_proxies[2]"),
+        ["`::/0` trusts every address: list only your proxies"],
+        "{errs:?}"
+    );
+    assert_eq!(errs.len(), 2, "{errs:?}");
+
+    let wide = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"10.0.0.0/24\", \"10.0.5.20/32\", \"2001:db8::/64\", \"2001:db8::5\"]\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        listen_warnings(&wide),
+        [
+            "listen[0].trusted_proxies[0]: `10.0.0.0/24` is a network, not one proxy: every machine in it can name any client; list only your proxies",
+            "listen[0].trusted_proxies[2]: `2001:db8::/64` is a network, not one proxy: every machine in it can name any client; list only your proxies",
+        ],
+    );
+
+    let local = load_str(
+        "[[listen]]\nproto = \"doh\"\naddr = \"127.0.0.1:9443\"\ntls = { cert = \"/c\", key = \"/k\" }\nproxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\", \"127.0.0.1/32\", \"127.0.0.2\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        listen_warnings(&local),
+        [
+            "listen[0].trusted_proxies[0]: a loopback listener only sees this host; `10.0.5.20/32` never connects"
+        ],
+    );
+
+    let limit = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        listen_warnings(&limit),
+        [
+            "listen[0].max_connections_per_address: with `x_forwarded_for` every connection is the proxy's; the default 32 may refuse it: raise it or set 0"
+        ],
+    );
+    let raised = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\nmax_connections_per_address = 256\n"
+    ))
+    .unwrap();
+    assert!(listen_warnings(&raised).is_empty(), "{:?}", raised.warnings);
+}
+
+/// REQ: DNS-003 (ADR-194) — neither key lifts the certificate a `doh` listener needs: without
+/// `tls` it is refused with the same message as before.
+#[test]
+fn dns_003_forwarding_keys_keep_the_tls_requirement() {
+    let errs = load_str(
+        "[[listen]]\nproto = \"doh\"\naddr = \"127.0.0.1:8053\"\nx_forwarded_for = true\ntrusted_proxies = [\"127.0.0.1/32\"]\nmax_connections_per_address = 0\n",
+    )
+    .unwrap_err();
+    assert_eq!(
+        errors_at(&errs, "listen[0].tls"),
+        ["required for dot, doh, doh3, and doq listeners"],
+        "{errs:?}"
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}
+
+/// REQ: DNS-003, CLU-010 (ADR-194, ADR-187) — the new keys are written only when set: every
+/// listener without them serializes as before (the defaults, and a `doh` listener that sets
+/// them to their defaults), and set ones read back.
+#[test]
+fn dns_003_new_listener_keys_not_written_at_default() {
+    // Sorted, whatever order the map keeps.
+    let keys = |v: &serde_json::Value| -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    for l in serde_json::to_value(Config::default()).unwrap()["listen"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(keys(l), ["addr", "proto", "proxy_protocol"], "{l}");
+    }
+    let plain = load_str(DOH_TLS).unwrap().config;
+    let written = serde_json::to_value(&plain.listen[0]).unwrap();
+    assert_eq!(
+        keys(&written),
+        ["addr", "proto", "proxy_protocol", "tls"],
+        "{written}"
+    );
+    let defaults = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = false\ntrusted_proxies = []\n"
+    ))
+    .unwrap()
+    .config;
+    assert_eq!(serde_json::to_value(&defaults.listen[0]).unwrap(), written);
+    assert_eq!(defaults, plain);
+
+    let set = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\nmax_connections_per_address = 0\n"
+    ))
+    .unwrap()
+    .config;
+    let text = serde_json::to_value(&set.listen[0]).unwrap();
+    assert_eq!(
+        keys(&text),
+        [
+            "addr",
+            "max_connections_per_address",
+            "proto",
+            "proxy_protocol",
+            "tls",
+            "trusted_proxies",
+            "x_forwarded_for"
+        ]
+    );
+    let back: telltale_config::Listener = serde_json::from_value(text).unwrap();
+    assert_eq!(back, set.listen[0]);
+}
+
+/// REQ: CLU-003, CLU-006 (ADR-194) — listener settings never leave a node: the shared part of a
+/// configuration with the new keys is the same bytes as without them.
+#[test]
+fn clu_003_listener_keys_never_shared() {
+    let with = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\nmax_connections_per_address = 0\n"
+    ))
+    .unwrap()
+    .config;
+    let without = load_str(DOH_TLS).unwrap().config;
+    let shared = telltale_config::shared::shared_part(&with);
+    assert!(shared.get("listen").is_none(), "{shared}");
+    let text = serde_json::to_string(&shared).unwrap();
+    assert!(
+        !text.contains("x_forwarded_for") && !text.contains("trusted_proxies"),
+        "{text}"
+    );
+    assert_eq!(
+        text,
+        serde_json::to_string(&telltale_config::shared::shared_part(&without)).unwrap()
+    );
+}
