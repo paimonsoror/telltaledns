@@ -2290,9 +2290,9 @@ A plain listener behind a proxy would see only loopback, so a request without a 
   - `trusted_proxies = [networks]`, default none. The only peers this listener accepts: a connection from any other address is closed at accept, before a byte is read. The same networks are the hops skipped in `X-Forwarded-For`. Valid only with `proxy_protocol` or `x_forwarded_for`. Required with `x_forwarded_for` on an address. A network of prefix length 0 is refused. A network wider than one host is a warning ("list only your proxies"), and so is a network a loopback listener can never see.
   - `x_forwarded_for = true`, default false. The client is the rightmost `X-Forwarded-For` entry that isn't inside `trusted_proxies`.
     - All field lines are joined in order, and at most 16 entries are read from the right.
-    - The selected entry must be a bare IPv4 or IPv6 literal of at most 45 bytes. If it isn't, the request is refused. The walk never skips it to an entry further left. An IPv4-mapped IPv6 literal is the IPv4 client.
+    - The selected entry must be a bare IPv4 or IPv6 literal of at most 45 bytes. If it isn't, the request is refused. The walk never skips it to an entry further left. An IPv4-mapped IPv6 literal is the IPv4 client: only the form of `RequestMeta.peer` changes, since the rate limiter, the access list and client matching already map such addresses.
     - Entries are read as the API's walk reads them (ADR-034, amendment of 2026-11-27): per entry, trimmed of ASCII whitespace; a port, brackets, a zone id, a token, an empty entry or an entry that isn't text is unusable, and bytes left of the entry that decides never matter. The outcome differs by design: the API answers the connection's peer, a `doh` listener refuses; and the DoH walk also refuses only listed proxies, more than 16 entries, and an unspecified or loopback client.
-    - Exclusive with `proxy_protocol`. `Forwarded` and `X-Real-IP` are never read, and `X-Forwarded-For` is read nowhere else.
+    - Exclusive with `proxy_protocol`. `Forwarded` and `X-Real-IP` are never read, and no other DNS listener reads `X-Forwarded-For`.
     - `config check` warns when `max_connections_per_address` is left at its default.
   - `plain_http = true`, default false. No TLS. Refused together with `tls`.
     - Allowed only on a loopback address (`127.0.0.0/8`, `::1`) or a Unix socket.
@@ -2329,7 +2329,7 @@ A plain listener behind a proxy would see only loopback, so a request without a 
 
 **Consequences:**
 - A proxy on other machines gives each client its own address while the hop stays encrypted. A layer-4 balancer can be the only peer a listener accepts. With part B, a proxy on the same host needs no second TLS hop.
-- Once a listener sees real clients, `allowed_networks` and the rate limit apply to them: clients outside the allowed networks are refused (EDE 18), where before they shared the proxy's allowed address.
+- Once a listener sees real clients, `allowed_networks` and the rate limit apply to them: clients outside your allowed networks are refused (EDE 18), where before they shared the proxy's address.
 - A client on the proxy's own host is refused through the proxy and uses the local listeners. A proxy health check that sends `LOCAL` or asks the DoH path is refused: a TCP check or the web UI's `/livez` is the documented alternative.
 - Everything on `trusted_proxies` is trusted to name any client: it can choose a client's policy, spend its rate budget on every transport, and write its address into the log. On a loopback plain listener that is every process on the host, which a Unix socket with mode `0660` narrows to the proxy's group.
 - Listener settings never leave a node, so mixed-version clusters are unaffected: the shared configuration is the same bytes with or without the keys. An older binary refuses its own file if it contains the new keys (at start it doesn't run; on a reload it keeps the running configuration), so they must be removed before a downgrade.

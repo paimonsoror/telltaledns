@@ -30,7 +30,7 @@ Opinionated by design: *decision* means build it this way, and amend ADR-194 if 
 | Client IDs from the URL path in the query log and device analytics | gael1980 | **C**, its own issue (§5.6) |
 
 **Stays declined:**
-- Plaintext DoH on any address another machine can reach: a LAN address, a Docker bridge, a pod IP or a wildcard. Anyone on that segment could read and forge answers for clients who believe they have authenticated DoH.
+- Plaintext DoH on any address another machine can reach: a LAN address, a Docker bridge, a pod IP or a wildcard. Anyone on that segment could read and change the answers of clients that expect authenticated DoH.
 - Believing `X-Forwarded-For` or a PROXY header from an address the operator didn't list. Without a list there is no header trust; with a list, only the listed peers connect.
 
 ## 2. What the code does today
@@ -52,9 +52,9 @@ Opinionated by design: *decision* means build it this way, and amend ADR-194 if 
 
 ## 3. Threat analysis
 ### 3.1 Who can do what
-- **A hostile client through a correct proxy** controls the request: path, query, body and every header, including its own `X-Forwarded-For` entries. It doesn't control the TCP connection the proxy opens or the PROXY header the proxy writes.
-- **A hostile client that reaches the listener directly** controls everything on its own connection, including a PROXY header and `X-Forwarded-For`.
-- **A hostile local process** on the host of a loopback listener can connect to `127.0.0.1` like the proxy. A Unix socket admits only users the file's mode lets in.
+- **A client through a correct proxy** controls the request: path, query, body and every header, including its own `X-Forwarded-For` entries. It doesn't control the TCP connection the proxy opens or the PROXY header the proxy writes.
+- **A client that reaches the listener directly** controls everything on its own connection, including a PROXY header and `X-Forwarded-For`.
+- **Another local process** on the host of a loopback listener can connect to `127.0.0.1` like the proxy. A Unix socket admits only users the file's mode lets in.
 - **A listed proxy** is in the trust base by definition. It names every client.
 - **A misconfigured operator** may list too much, point the wrong proxy setting at the wrong listener, or make the proxy pass a client's header through unchanged.
 
@@ -69,9 +69,9 @@ Opinionated by design: *decision* means build it this way, and amend ADR-194 if 
 ### 3.3 No fallback to the socket's address
 On a plain listener the socket peer is always loopback, or has no address at all on a Unix socket, so it never stands for a client behind the proxy. **Decision (R5):** on any listener with a new key, nothing falls back. A LOCAL command, an AF_UNSPEC or AF_UNIX family, a missing header and an unspecified source (`0.0.0.0`, `::`) are refused. So is a loopback source (`127.0.0.0/8`, `::1`, and their IPv4-mapped forms). A forwarded loopback address means the proxy's own host is the client, or that the proxy passed a client's header through; either way it stands for this host, not for a client behind the proxy. A program on that host can use the local listeners directly (open Q4). Without the new keys a listener behaves as ADR-039 and its amendment say (such a connection keeps the socket address, and the settings for that address apply), and adding `trusted_proxies` is the opt-in that makes it strict.
 
-### 3.4 X-Forwarded-For: spoofing, chains and which entry is trusted
-- **Spoofing.** A client can send `X-Forwarded-For: 192.168.1.20` to look like another device. A proxy that appends its peer's address (Caddy replaces the header for untrusted clients by default, inferred; nginx with `$proxy_add_x_forwarded_for` appends, inferred) leaves the real client as the **rightmost** entry, which is the only one read (decision, ADR-034's rule).
-- **Chains.** Proxies in front of proxies append their own peers. From the right, entries inside `trusted_proxies` are skipped and the first other entry is the client. One list serves both purposes: who may connect (R4) and which hops are skipped. Every address on it is trusted to name clients, so the docs and a warning say "list only your proxies, never your LAN" (as `docs/running.md:3733` says for the API). An address range that also holds ordinary machines lets each of them send `X-Forwarded-For: <victim>` through the proxy and be the victim: the proxy appends the machine's address, which is skipped as a "proxy".
+### 3.4 X-Forwarded-For: a client's own entries, chains and which entry is trusted
+- **A client's own entries.** A client can send `X-Forwarded-For: 192.168.1.20`, another device's address. A proxy that appends its peer's address (Caddy replaces the header for untrusted clients by default, inferred; nginx with `$proxy_add_x_forwarded_for` appends, inferred) leaves the real client as the **rightmost** entry, which is the only one read (decision, ADR-034's rule).
+- **Chains.** Proxies in front of proxies append their own peers. From the right, entries inside `trusted_proxies` are skipped and the first other entry is the client. One list serves both purposes: who may connect (R4) and which hops are skipped. Every address on it is trusted to name clients, so the docs and a warning say "list only your proxies, never your LAN" (as `docs/running.md:3733` says for the API). An address range that also holds ordinary machines lets each of them send `X-Forwarded-For: <another device>` through the proxy and be taken for that device: the proxy appends the machine's address, which is skipped as a "proxy".
 - **Which entry, exactly (decision, R7):**
   - All `X-Forwarded-For` field lines are taken in order, as one comma-separated list (RFC 9110 §5.3; HAProxy adds a line of its own, inferred).
   - Entries are read from the right, at most 16.
@@ -99,12 +99,12 @@ On a plain listener the socket peer is always loopback, or has no address at all
 - **Who may connect:** the mode decides. Group access is the shape for a proxy in the same group (systemd `SupplementaryGroups=`, or a shared group in Compose). `0666` lets every local user connect and name any client: a warning.
 - **Not done:** peer credentials (`SO_PEERCRED`) as a second check. Logging them at debug is cheap and can come later.
 
-### 3.8 HTTP/1.1, h2c and request smuggling
+### 3.8 HTTP/1.1, h2c and framing disagreements
 - **Decision (R11):** a plain listener speaks HTTP/1.1 only, without an upgrade. An HTTP/2 prior-knowledge preface isn't served as HTTP/2 (inferred: hyper's HTTP/1 server rejects it; the test settles it). h2c can come later if a measurement asks for it (open Q7).
-- **Smuggling.** A client that makes the proxy and this listener disagree about where a request ends can slip in a second request carrying its own `X-Forwarded-For`, which then appears to come from the listed proxy. This matters for `x_forwarded_for` over HTTP/1.1, plain or TLS.
+- **Framing disagreements.** If the proxy and this listener disagree about where a request ends, a second request carrying the client's own `X-Forwarded-For` could follow inside the first and appear to come from the listed proxy. This matters for `x_forwarded_for` over HTTP/1.1, plain or TLS.
 - **Defences (R13):**
-  - on an `x_forwarded_for` listener, a request carrying both `Content-Length` and `Transfer-Encoding` is answered 400 and its connection closed;
-  - after any refusal for a missing address the connection is closed, so the rest of a desynchronised stream is never read;
+  - on an `x_forwarded_for` listener, a request carrying both `Content-Length` and `Transfer-Encoding` is answered 400 and its connection closed (as built: framed by `Transfer-Encoding` and closed by hyper, no 400; see §11);
+  - after any refusal for a missing address the connection is closed, so the rest of a desynchronised stream is never read (as built: on HTTP/1.1 only, see §11);
   - PROXY v2 (one request per connection on a plain listener) is the recommended source on the same host;
   - an HTTP/2 hop (TLS listener, ALPN `h2`) has no such ambiguity.
 - **Could not verify:** hyper's own handling of conflicting framing (needs a test). The rule above doesn't depend on it.
@@ -114,8 +114,8 @@ On a plain listener the socket peer is always loopback, or has no address at all
 |---|---|
 | PROXY: no signature, version 1, unknown command or family, short block, over 1,024 bytes, truncated, timeout | connection closed, counted (as today: `proxy.rs:30-75`, `doh.rs:203-206`) |
 | PROXY on a listener with new keys: LOCAL, UNSPEC, UNIX, unspecified or loopback source | connection closed before HTTP, counted `no_client_address` |
-| `X-Forwarded-For` missing, empty, unparsable at the selected entry, all entries listed proxies, more than 16 entries walked | 403, `Connection: close`, the pipeline never called, counted `no_client_address` |
-| Conflicting framing on an `x_forwarded_for` listener | 400, connection closed |
+| `X-Forwarded-For` missing, empty, unparsable at the selected entry, all entries listed proxies, more than 16 entries walked | 403, `Connection: close` (as built: the close on HTTP/1.1 only, see §11), the pipeline never called, counted `no_client_address` |
+| Conflicting framing on an `x_forwarded_for` listener | 400, connection closed (as built: no 400, see §11) |
 | Bad HTTP | hyper's 4xx or close (as today) |
 
 **Log lines** for refusals: at most one per listener and reason per minute, never with a header's value (the sender wrote it), as the API's proxy hint does (verified: `routes.rs:177-187`).
@@ -142,7 +142,7 @@ On a plain listener the socket peer is always loopback, or has no address at all
 | R2 | `plain_http` only on `127.0.0.0/8`, `::1`, or a `unix:` path. | `dns_003_plain_doh_loopback_or_unix_only` |
 | R3 | `plain_http` needs `proxy_protocol` or `x_forwarded_for`, not both. | `dns_003_plain_doh_requires_a_client_address_source` |
 | R4 | With `trusted_proxies`, an unlisted peer is closed at accept, before any byte is read. It is required with `x_forwarded_for` on an address listener. | `dns_003_xff_only_from_listed_peers`, `dns_020_proxy_v2_only_from_listed_peers` |
-| R5 | On a listener with any new key, no fallback to the socket peer. LOCAL, UNSPEC, UNIX, an unspecified or a loopback source closes the connection. A request without a usable `X-Forwarded-For` client gets 403 and its connection is closed. | `dns_020_plain_doh_local_or_unix_family_refused`, `dns_020_local_refused_once_trusted_proxies_is_set`, `dns_020_forwarded_unspecified_or_loopback_refused`, `dns_003_xff_missing_or_unusable_refused` |
+| R5 | On a listener with any new key, no fallback to the socket peer. LOCAL, UNSPEC, UNIX, an unspecified or a loopback source closes the connection. A request without a usable `X-Forwarded-For` client gets 403 and its connection is closed (as built: on HTTP/1.1, see §11). | `dns_020_plain_doh_local_or_unix_family_refused`, `dns_020_local_refused_once_trusted_proxies_is_set`, `dns_020_forwarded_unspecified_or_loopback_refused`, `dns_003_xff_missing_or_unusable_refused` |
 | R6 | TCP4 or TCP6 with source port 0 and a zero destination is accepted. | `dns_020_proxy_v2_port_zero_and_empty_destination_accepted` |
 | R7 | `X-Forwarded-For`: lines joined in order; walk from the right skipping listed proxies; the first other entry must be a bare IP literal, else refuse (never skip left); at most 16 entries. | `dns_003_xff_rightmost_untrusted_entry`, `dns_003_xff_unparsable_entry_is_not_skipped`, `dns_003_xff_walk_is_bounded` |
 | R8 | Only `X-Forwarded-For`, only where enabled. `Forwarded` and `X-Real-IP` are never read. | `dns_003_xff_ignored_without_the_key` |
@@ -150,7 +150,7 @@ On a plain listener the socket peer is always loopback, or has no address at all
 | R10 | The per-address limit counts the PROXY client, or the proxy with `x_forwarded_for`. | `dns_003_per_address_limit_counts_the_proxy_with_xff` |
 | R11 | Plain listener: HTTP/1.1 only, no h2c, no upgrade. | `dns_003_plain_doh_http1_only` |
 | R12 | Plain listener with PROXY v2: one request per connection. | `dns_020_plain_doh_proxy_v2_one_request_per_connection` |
-| R13 | `x_forwarded_for`: conflicting framing gives 400 and a close; any address refusal closes. | `dns_003_xff_listener_refuses_conflicting_framing`, `dns_003_forwarded_listener_closes_after_a_refused_request` |
+| R13 | `x_forwarded_for`: conflicting framing gives 400 and a close; any address refusal closes (as built: no 400, and the close on HTTP/1.1 only; see §11). | `dns_003_xff_listener_closes_after_conflicting_framing` (planned as `dns_003_xff_listener_refuses_conflicting_framing`), `dns_003_forwarded_listener_closes_after_a_refused_request` |
 | R14 | No `Alt-Svc` on plain or `x_forwarded_for` listeners. | `dns_003_plain_and_xff_listeners_send_no_alt_svc` |
 | R15 | Client IDs from the path only on plain and `x_forwarded_for` listeners: the SNI there is the proxy's, and a wildcard certificate would give every client the proxy's label. | `dns_003_xff_listener_ignores_sni_client_ids`, `dns_003_client_id_from_path_survives_forwarding` |
 | R16 | Probes skip plain and `x_forwarded_for` listeners with a reason. | `obs_020_probes_skip_listeners_that_need_a_forwarded_address` |
@@ -313,7 +313,7 @@ All are deterministic: in-process servers on loopback, no wall-clock races. Clie
   - two field lines give the last line's entry.
 - `dns_003_xff_unparsable_entry_is_not_skipped`: `10.0.0.1, 203.0.113.9:4711`, `[2001:db8::1]`, `unknown`, an empty value and a 46-byte entry are all refused, and never resolved to `10.0.0.1`.
 - `dns_003_xff_missing_or_unusable_refused`; `dns_003_xff_walk_is_bounded` (17 listed entries refused); `dns_003_xff_ignored_without_the_key`.
-- `dns_003_forwarded_listener_closes_after_a_refused_request`; `dns_003_xff_listener_refuses_conflicting_framing`.
+- `dns_003_forwarded_listener_closes_after_a_refused_request`; `dns_003_xff_listener_closes_after_conflicting_framing` (planned as `dns_003_xff_listener_refuses_conflicting_framing`; as built, see §11).
 - `dns_003_plain_doh_http1_only`: an HTTP/2 preface is not served as HTTP/2, and the handler is not called.
 - `dns_020_plain_doh_proxy_v2_one_request_per_connection`: two pipelined requests get one answer and then EOF.
 - `dns_003_plain_and_xff_listeners_send_no_alt_svc` (with `alt_svc` set in the config).
@@ -359,21 +359,21 @@ All are deterministic: in-process servers on loopback, no wall-clock races. Clie
 - **Release fit:** a later minor, not 0.9.0. It is a new listener mode and a new trust.
 
 ## 8. Trying to break it
-**A hostile client:**
-- It forges `X-Forwarded-For` through a correct proxy: only the rightmost entry counts, which the proxy wrote (R7).
+**A client:**
+- It writes its own `X-Forwarded-For` entries through a correct proxy: only the rightmost entry counts, which the proxy wrote (R7).
 - It puts a port or junk in its header so that the proxy's entry is the only clean one: the proxy's entry is the rightmost and selected. If the proxy itself writes a port, the request is refused rather than skipped to the client's entry (R7).
 - It connects straight to an `x_forwarded_for` or listed TLS listener: closed at accept (R4). A plain listener is reachable only from the host (R2).
 - It sends a PROXY header with no address, or claims loopback: refused (R5).
-- It smuggles a second request on a shared HTTP/1.1 connection: framing conflicts close the connection (R13). With PROXY on a plain listener there is only one request per connection (R12).
+- It hides a second request inside the first on a shared HTTP/1.1 connection: a framing conflict closes the connection after the first answer (R13, as built by hyper). With PROXY on a plain listener there is only one request per connection (R12).
 - It floods: its own address is now rate-limited, where before it shared the proxy's (an improvement, R9).
 - It picks another device's client ID in the path: possible, as today (FLT-006). Unchanged and documented.
 
-**A hostile listed proxy:**
-- It can be any client: any group or policy, another device's rate budget (the bucket is shared across transports, so it can make a LAN device's UDP queries refused for a window), and any address in the log. It can rotate addresses to evade the limit.
+**A listed proxy that names clients wrongly:**
+- It can be any client: any group or policy, another device's rate budget (the bucket is shared across transports, so it can make a LAN device's UDP queries refused for a window), and any address in the log. It can name new addresses to stay under the limit.
 - It can't name loopback (R5). It can't reach the API, configuration or other nodes through this. It is bounded by `max_connections` and, with `x_forwarded_for`, by the per-address limit on itself.
 - This is the trust the operator grants, and the docs say so.
 
-**A hostile local process (B on loopback):** it can connect like the proxy and name any client, with the same reach as a listed proxy. It can also hold connection slots. The Unix socket with mode `0660` closes this (B2). The docs say plainly: on loopback, every process on the host is trusted.
+**Another local process (B on loopback):** it can connect like the proxy and name any client, with the same reach as a listed proxy. It can also hold connection slots. The Unix socket with mode `0660` closes this (B2). The docs say plainly: on loopback, every process on the host is trusted.
 
 **A misconfigured operator:**
 - Forgets `tls`: an error (R1).
@@ -411,10 +411,10 @@ All are deterministic: in-process servers on loopback, no wall-clock races. Clie
 **Could not verify:** Caddy v2.11.9 itself, as opposed to its current source; what Caddy sends when it can't parse a client address; HAProxy's and Traefik's connection reuse with PROXY headers; Pangolin's and Newt's exact header behaviour; hyper's handling of conflicting framing and its default header limits; what the UI shows for a log row with a `ClientRef` but a proxy's address. All of these need execution or the other projects' own documentation.
 
 ## 11. Building part A: what it settled (T31.1, 2026-11-27)
-- **Where the rules live.** `crates/telltale-net/src/forwarded.rs` holds the networks, the walk (`client`), what counts as a client (`is_client`) and the once-a-minute log gate; `doh.rs` applies them: the peer check at accept, the PROXY header's strict outcomes, and the per-request walk on `x_forwarded_for` listeners (before the path, so the pipeline is never asked for a refused request). `DohConfig::behind_listed_proxies()` is true with either key; with `x_forwarded_for` and an empty list (which validation refuses) nobody connects.
-- **Conflicting framing (R13).** hyper 1.11's HTTP/1 server already does what R13 asks for in effect: a request with both `Content-Length` and `Transfer-Encoding` is framed by `Transfer-Encoding` (the `Content-Length` header is removed before the service sees it) and its connection is closed after the answer (RFC 9112 §6.3). A listener check for both headers could never fire, so there is none: the request is answered, and nothing behind it on the connection is read. `dns_003_xff_listener_closes_after_conflicting_framing` pins this with a request counted inside the body behind it, in both header orders. HTTP/2 has no such framing.
-- **A refused request ends an HTTP/1.1 connection only.** HTTP/1.1: the 403 carries `Connection: close` and hyper closes after it, so a request pipelined behind it is never read; on HTTP/1.1 the connection is closed. HTTP/2 frames each request on its own, so a close would protect nothing, and every HTTP/2 connection here is a listed proxy's, carrying its other clients: the refusal is answered and the connection stays (`dns_003_forwarded_listener_closes_after_a_refused_request`). This narrows R13 as planned in §3.8, whose reason (a desynchronised stream) applies to HTTP/1.1 only.
-- **IPv4-mapped entries.** An `X-Forwarded-For` entry such as `::ffff:192.0.2.7` (a dual-stack proxy may write one) is the IPv4 client `192.0.2.7`, so the query log and the rate limit see one client whichever form the proxy writes. The PROXY header's source is kept as it comes, as before.
+- **Where the rules live.** `crates/telltale-net/src/forwarded.rs` holds the networks, the walk (`client`) and what counts as a client (`is_client`); the once-a-minute helper for the log lines is in `crates/telltale-net/src/log_line.rs`; `doh.rs` applies them: the peer check at accept, the PROXY header's strict outcomes, and the per-request walk on `x_forwarded_for` listeners (before the path, so the pipeline is never asked for a refused request). `DohConfig::behind_listed_proxies()` is true with either key; with `x_forwarded_for` and an empty list (which validation refuses) nobody connects.
+- **Conflicting framing (R13).** hyper's HTTP/1 server (1.12.0, the version in `Cargo.lock`) already does what R13 asks for in effect: a request with both `Content-Length` and `Transfer-Encoding` is framed by `Transfer-Encoding` (the `Content-Length` header is removed before the service sees it) and its connection is closed after the answer (RFC 9112 §6.3). A listener check for both headers could never fire, so there is none: the request is answered, and nothing behind it on the connection is read. `dns_003_xff_listener_closes_after_conflicting_framing` pins this with a request counted inside the body behind it, in both header orders. HTTP/2 has no such framing.
+- **A refused request ends an HTTP/1.1 connection only.** HTTP/1.1: the 403 carries `Connection: close` and hyper closes after it, so a request pipelined behind it is never read; on HTTP/1.1 the connection is closed. HTTP/2 frames each request on its own, so a close would protect nothing, and every HTTP/2 connection here is a listed proxy's, carrying its other clients: the refusal is answered and the connection stays (`dns_003_forwarded_listener_closes_after_a_refused_request`). This narrows R13 (§3.8), whose reason, a desynchronised stream, applies to HTTP/1.1 only.
+- **IPv4-mapped entries.** An `X-Forwarded-For` entry such as `::ffff:192.0.2.7` (a dual-stack proxy may write one) is the IPv4 client `192.0.2.7`, so `RequestMeta.peer` has one form whichever form the proxy writes. (The rate limiter, the access list and client matching already map such addresses; only the form of the peer changes.) The PROXY header's source is kept as it comes, as before.
 - **R6 and R5 together.** The R6 test's loopback example (`127.0.0.1:0 → 0.0.0.0:0`) parses as planned, but a listener with `trusted_proxies` refuses a loopback source (R5), so the listener part of the test uses `192.0.2.7:0` and `[2001:db8::7]:0`.
 - **Metric.** `telltale_doh_forwarded_refused_total{reason="unlisted_peer"|"no_client_address"}`; a 403 also counts in `telltale_doh_bad_requests_total` (every 4xx does). The log lines name the listener and, for an unlisted peer, its address; never a header's value.
 - **Beside the PROXY no-address counter (ADR-039's amendment of 2026-11-27).** The listener reads the header with `read_source()`, so a refusal's log line names the header's kind. A header a listener with `trusted_proxies` refuses counts as a refusal only (`no_client_address`), never in `telltale_proxy_protocol_no_address_total`, which counts the connections that keep the socket's address. Both features' log lines use one limiter (`log_line::OncePerMinute`), each line on its own minute. The API's walk (ADR-034's amendment of the same day) and this one read entries alike; `dns_003_xff_reads_entries_as_the_api_does` runs the API tests' cases through this walk.
