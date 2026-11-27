@@ -2,10 +2,11 @@
 //! (`trusted_proxies`, `x_forwarded_for`): which peers may connect, which `X-Forwarded-For` entry
 //! names the client, and which addresses never stand for a client.
 //!
-//! `X-Forwarded-For` is read the way the API reads it (ADR-034): from the right, skipping the
-//! listed proxies, the first other entry is the client. Unlike a filter that drops what it
-//! can't parse, the walk stops at the first entry that isn't a bare IP literal and refuses the
-//! request: the entries further left were written by the client. Nothing here allocates.
+//! `X-Forwarded-For` is read the way the API reads it (ADR-034, `remote()` in `telltale-api`):
+//! per entry from the right, skipping the listed proxies; the first other entry decides. If it
+//! isn't a bare IP literal, the walk stops there: the API then answers the connection's peer,
+//! and a DoH listener refuses the request. The entries further left were written by the client
+//! and are never read. Nothing here allocates.
 
 use std::net::IpAddr;
 
@@ -312,5 +313,84 @@ mod tests {
             ip("127.0.0.1")
         ));
         assert!(!listed(&[], ip("127.0.0.1")));
+    }
+
+    /// REQ: DNS-003, API-004 (ADR-194, ADR-034) — this walk and the API's (`remote()` in
+    /// `telltale-api`'s `auth/routes.rs`) read entries the same way: per entry, from the right,
+    /// a port, brackets, a zone id, a token, an empty entry or one that isn't text is unusable,
+    /// and bytes left of the entry that decides never matter. The cases are those of the API's
+    /// `api_004_xff_unparsable_entry_is_not_skipped`, `api_004_xff_well_formed_headers_keep_their_answers`
+    /// and `api_004_xff_bytes_left_of_the_deciding_entry_never_matter`, with its proxies. Where
+    /// the API answers the connection's peer this walk has no client (the listener refuses the
+    /// request); where the API names a client this walk names the same one.
+    #[test]
+    fn dns_003_xff_reads_entries_as_the_api_does() {
+        let proxies = [
+            net("10.0.0.1/32"),
+            net("10.0.0.2/32"),
+            net("2001:db8:ffff::/48"),
+        ];
+        let walk = |lines: &[&[u8]]| client(lines.iter().copied(), &proxies);
+        // The API answers the connection's peer for these; this walk has no client.
+        for lines in [
+            &[&b"192.168.1.5, 203.0.113.9:4711"[..]][..],
+            &[&b"192.168.1.5, [2001:db8::1]"[..]][..],
+            &[&b"192.168.1.5, [2001:db8::1]:443"[..]][..],
+            &[&b"192.168.1.5, unknown"[..]][..],
+            &[&b"192.168.1.5, 203.0.113.9:4711, 10.0.0.2"[..]][..],
+            &[&b"192.168.1.5, , 10.0.0.2"[..]][..],
+            &[&b"192.168.1.5,"[..]][..],
+            &[&b"192.168.1.5"[..], &b"203.0.113.9:4711"[..]][..],
+            &[&b"192.168.1.5"[..], &b"\xfe"[..]][..],
+            &[&b"192.168.1.5, \xfe, 10.0.0.2"[..]][..],
+            &[&b"192.168.1.5, 10.0.0.2:80"[..]][..],
+            &[&b"192.168.1.5, fe80::1%eth0"[..]][..],
+            &[&b"192.168.1.5, 010.0.0.2"[..]][..],
+            &[&b""[..]][..],
+            &[&b"\xfe, 10.0.0.2"[..]][..],
+        ] {
+            assert_eq!(walk(lines), Err(NoClient::Unusable), "{lines:?}");
+        }
+        // The API names these clients; so does this walk.
+        for (lines, want) in [
+            (&[&b"192.168.1.5"[..]][..], "192.168.1.5"),
+            (&[&b"192.168.1.5, 10.0.0.2"[..]][..], "192.168.1.5"),
+            (
+                &[&b"127.0.0.1, 192.168.1.5, 10.0.0.2, 10.0.0.1"[..]][..],
+                "192.168.1.5",
+            ),
+            (&[&b"2001:db8::5"[..]][..], "2001:db8::5"),
+            (&[&b"2001:db8::5, 2001:db8:ffff::9"[..]][..], "2001:db8::5"),
+            (&[&b"  192.168.1.5  ,\t10.0.0.2 "[..]][..], "192.168.1.5"),
+            (&[&b"192.168.1.5"[..], &b"10.0.0.2"[..]][..], "192.168.1.5"),
+            (
+                &[&b"127.0.0.1"[..], &b"192.168.1.5, 10.0.0.2"[..]][..],
+                "192.168.1.5",
+            ),
+            (&[&b"192.168.1.5, ::ffff:10.0.0.2"[..]][..], "192.168.1.5"),
+            (
+                &[&b"unknown, 203.0.113.9:1, 192.168.1.5"[..]][..],
+                "192.168.1.5",
+            ),
+            (&[&b"\xfe, 203.0.113.9"[..]][..], "203.0.113.9"),
+            (
+                &[&b"\xfe\xff, 192.168.1.5, 10.0.0.2"[..]][..],
+                "192.168.1.5",
+            ),
+            (&[&b"caf\xc3\xa9, 203.0.113.9"[..]][..], "203.0.113.9"),
+            (&[&b"\xfe"[..], &b"203.0.113.9"[..]][..], "203.0.113.9"),
+        ] {
+            assert_eq!(walk(lines), Ok(ip(want)), "{lines:?}");
+        }
+        // Where the outcomes differ by design (ADR-194): the API answers the peer, or a
+        // loopback client, or walks on; this walk refuses.
+        assert_eq!(
+            walk(&[&b"10.0.0.2, 10.0.0.1"[..]]),
+            Err(NoClient::OnlyProxies)
+        );
+        assert_eq!(walk(&[]), Err(NoClient::Missing));
+        assert_eq!(walk(&[&b"127.0.0.1"[..]]), Err(NoClient::NotAClient));
+        let header = format!("192.168.1.5, {}", ["10.0.0.2"; MAX_ENTRIES + 1].join(", "));
+        assert_eq!(walk(&[header.as_bytes()]), Err(NoClient::TooManyEntries));
     }
 }
