@@ -293,6 +293,39 @@ fn dns_020_proxy_headers_without_an_address_are_exported_by_kind() {
     );
 }
 
+/// REQ: DNS-003, OBS-005 (ADR-194) — the refusals of `doh` listeners behind listed proxies are one
+/// counter with a `reason` label, summed over the DoH listeners; with none, both reasons are
+/// there, at 0. A refusal is never counted as a kept no-address connection.
+#[test]
+fn dns_003_forwarded_refusals_are_exported_by_reason() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let src = sources();
+    let text = render(&src);
+    assert!(
+        text.contains("# TYPE telltale_doh_forwarded_refused_total counter\n"),
+        "{text}"
+    );
+    for reason in ["unlisted_peer", "no_client_address"] {
+        let series = format!("telltale_doh_forwarded_refused_total{{reason=\"{reason}\"}}");
+        assert_eq!(sample_value(&text, &series), Some(0), "{series}");
+    }
+    let (a, b) = (Arc::new(DohStats::default()), Arc::new(DohStats::default()));
+    a.unlisted_peer.fetch_add(2, Relaxed);
+    a.no_client_address.fetch_add(1, Relaxed);
+    b.unlisted_peer.fetch_add(5, Relaxed);
+    b.no_client_address.fetch_add(3, Relaxed);
+    src.doh.store(Arc::new(vec![a, b]));
+    let text = render(&src);
+    for (reason, want) in [("unlisted_peer", 7), ("no_client_address", 4)] {
+        let series = format!("telltale_doh_forwarded_refused_total{{reason=\"{reason}\"}}");
+        assert_eq!(sample_value(&text, &series), Some(want), "{series}");
+    }
+    for kind in ["local", "unspec", "unix"] {
+        let series = format!("telltale_proxy_protocol_no_address_total{{kind=\"{kind}\"}}");
+        assert_eq!(sample_value(&text, &series), Some(0), "{series}");
+    }
+}
+
 /// REQ: FLT-003, OBS-011 (review 02-09) — the active filter's lookup mode is a gauge: none
 /// without a filter, `walk` for a matcher without the index (as before the index is built, or
 /// when the snapshot has too many list combinations for it).
