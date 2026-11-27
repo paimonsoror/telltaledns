@@ -1453,6 +1453,7 @@ dependencies = [
  "telltale-cache",
  "telltale-config",
  "telltale-filter",
+ "telltale-net",
  "telltale-proto",
  "telltale-store",
  "telltale-support",
