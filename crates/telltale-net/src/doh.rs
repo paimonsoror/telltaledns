@@ -307,6 +307,7 @@ async fn serve_conn<H: QueryHandler>(
         peer,
         sni_id,
         stats,
+        h2,
         closing: Notify::new(),
     });
     let held = Arc::clone(&ctx);
@@ -327,11 +328,6 @@ async fn serve_conn<H: QueryHandler>(
                 conn.as_mut().graceful_shutdown();
                 let _ = conn.await;
             }
-            // REQ: DNS-003 (ADR-194) — a refused request ends its connection.
-            () = held.closing.notified(), if cfg.x_forwarded_for => {
-                conn.as_mut().graceful_shutdown();
-                let _ = conn.await;
-            }
         }
     } else {
         let conn = hyper::server::conn::http1::Builder::new()
@@ -345,6 +341,8 @@ async fn serve_conn<H: QueryHandler>(
                 conn.as_mut().graceful_shutdown();
                 let _ = conn.await;
             }
+            // REQ: DNS-003 (ADR-194) — a refused request ends an HTTP/1.1 connection, so nothing
+            // more of a stream the proxy and this listener might frame differently is read.
             () = held.closing.notified(), if cfg.x_forwarded_for => {
                 conn.as_mut().graceful_shutdown();
                 let _ = conn.await;
@@ -384,8 +382,11 @@ struct Ctx<H> {
     peer: SocketAddr,
     sni_id: Option<ClientId>,
     stats: Arc<DohStats>,
-    /// REQ: DNS-003 (ADR-194) — set by a refused request on an `x_forwarded_for` listener: the
-    /// connection is shut down after the answer, so nothing more of its stream is read.
+    /// The connection speaks HTTP/2 (ALPN `h2`).
+    h2: bool,
+    /// REQ: DNS-003 (ADR-194) — set by a refused request on an `x_forwarded_for` listener over
+    /// HTTP/1.1: the connection is shut down after the answer, so nothing more of its stream is
+    /// read. HTTP/2 frames each request on its own, and its connection stays.
     closing: Notify,
 }
 
@@ -477,10 +478,10 @@ impl<H: QueryHandler> Ctx<H> {
 
     /// REQ: DNS-003 (ADR-194) — the client a listed proxy names in `X-Forwarded-For` (as the
     /// peer, with port 0), or `None` (counted and logged) when there is none: the caller answers
-    /// 403 without asking the pipeline, and the connection ends after it. (A request that states
-    /// its length both ways never reaches here with both: hyper frames it by
-    /// `Transfer-Encoding`, drops `Content-Length`, and closes the connection after the answer,
-    /// RFC 9112 §6.3, so nothing behind it on the connection is read.)
+    /// 403 without asking the pipeline, and on HTTP/1.1 the connection ends after it. (A
+    /// request that states its length both ways never reaches here with both: hyper frames it
+    /// by `Transfer-Encoding`, drops `Content-Length`, and closes the connection after the
+    /// answer, RFC 9112 §6.3, so nothing behind it on the connection is read.)
     fn forwarded_client(&self, req: &Request<Incoming>) -> Option<SocketAddr> {
         let lines = req
             .headers()
@@ -498,13 +499,17 @@ impl<H: QueryHandler> Ctx<H> {
         client.map(|ip| SocketAddr::new(ip, 0))
     }
 
-    /// A refusal after which the connection closes: `Connection: close` on HTTP/1.1, and the
-    /// connection is shut down once the answer is sent.
+    /// A refusal. On HTTP/1.1 the connection closes after it (`Connection: close`, then a
+    /// shutdown once the answer is sent), so nothing more of the stream is read. On HTTP/2 each
+    /// request is framed on its own, and the connection, which carries the proxy's other
+    /// clients, stays.
     fn ending(&self, code: StatusCode) -> HttpResponse {
-        self.closing.notify_one();
         let mut r = status(code);
-        r.headers_mut()
-            .insert(CONNECTION, HeaderValue::from_static("close"));
+        if !self.h2 {
+            self.closing.notify_one();
+            r.headers_mut()
+                .insert(CONNECTION, HeaderValue::from_static("close"));
+        }
         r
     }
 }

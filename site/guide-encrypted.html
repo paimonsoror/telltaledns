@@ -251,7 +251,7 @@ trusted_proxies = ["127.0.0.1/32"]</code></pre>
   </div>
   <ul>
     <li><b>Only the listed proxies connect.</b> Any other address is closed at once.</li>
-    <li><b>Nothing is answered without a client's address:</b> a PROXY header that is <code>LOCAL</code> or has no address, a missing or unreadable <code>X-Forwarded-For</code>, and a loopback or unspecified client are refused (a request gets <code>403</code>, and its connection is closed). A device on the proxy's own host uses the local listeners instead, and a proxy's health check goes to a TCP connect or the web UI's <code>/livez</code>.</li>
+    <li><b>Nothing is answered without a client's address:</b> a PROXY header that is <code>LOCAL</code> or has no address, a missing or unreadable <code>X-Forwarded-For</code>, and a loopback or unspecified client are refused (a request gets <code>403</code>; on HTTP/1.1 its connection is closed). A device on the proxy's own host uses the local listeners instead, and a proxy's health check goes to a TCP connect or the web UI's <code>/livez</code>.</li>
     <li><b>The real client is the client everywhere:</b> allowed networks, the rate limit, groups and devices, the query log. Clients outside your allowed networks are refused.</li>
     <li><b>List only your proxies</b>, never a whole network: each listed address can name any client. <code>config check</code> refuses <code>0.0.0.0/0</code> and warns about wider networks.</li>
     <li>Behind <code>x_forwarded_for</code>, client IDs come from the URL path (<code>/dns-query/kids-tablet</code>), not the certificate name, and the listener isn't probed: add the proxy's public URL to <code>[probe] targets</code>.</li>

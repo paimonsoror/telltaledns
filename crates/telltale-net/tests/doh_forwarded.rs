@@ -488,9 +488,10 @@ async fn read_to_close<S: AsyncRead + Unpin>(s: &mut S) -> Option<String> {
     Some(String::from_utf8_lossy(&all).into_owned())
 }
 
-/// REQ: DNS-003 (ADR-194, R13) — a refused request ends its connection: on HTTP/1.1 the 403 says
-/// `Connection: close` and a request pipelined behind it is never read; on HTTP/2 the connection
-/// is shut down after the answer.
+/// REQ: DNS-003 (ADR-194, R13) — a refused request ends an HTTP/1.1 connection: the 403 says
+/// `Connection: close` and a request pipelined behind it is never read. HTTP/2 frames each
+/// request on its own, so there the refusal is answered and the connection, which carries the
+/// proxy's other clients, stays: the next request on it is answered as its own client.
 #[tokio::test]
 async fn dns_003_forwarded_listener_closes_after_a_refused_request() {
     let (server, seen, _) = server(xff);
@@ -511,13 +512,27 @@ async fn dns_003_forwarded_listener_closes_after_a_refused_request() {
         "the second request is never read"
     );
 
-    let (mut c, conn) = h2_from("127.0.0.2", addr, "dns.test", b"").await;
+    let (mut c, mut conn) = h2_from("127.0.0.2", addr, "dns.test", b"").await;
     assert_eq!(send(&mut c, get("/dns-query", &[])).await.0, 403);
+    // A shutdown would end the connection well within this bound; the answer below doesn't
+    // depend on it.
     assert!(
-        timeout(SOON, conn).await.is_ok(),
-        "the HTTP/2 connection ends after the refusal"
+        timeout(Duration::from_millis(500), &mut conn)
+            .await
+            .is_err(),
+        "the HTTP/2 connection stays open after the refusal"
     );
-    assert!(seen.lock().unwrap().is_empty());
+    let (st, _) = send(
+        &mut c,
+        get("/dns-query", &[("x-forwarded-for", "192.0.2.7")]),
+    )
+    .await;
+    assert_eq!(st, 200, "the next request on it is answered");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(at("192.0.2.7:0"), None::<String>)],
+        "as its own client"
+    );
     server.shutdown().await;
 }
 
