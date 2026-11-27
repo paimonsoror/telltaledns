@@ -39,6 +39,9 @@
   import KeepInGit from './KeepInGit.svelte';
   import HelpButton from './HelpButton.svelte';
   import SimulationCard from './SimulationCard.svelte';
+  import { tk, tr, type Msg } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t, m } = tr('configEditor');
 
   let {
     kind,
@@ -87,7 +90,7 @@
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
     if (!formAction || !editing) return;
-    formOut = { ok: true, text: 'Testing…' };
+    formOut = { ok: true, text: t('Testing…') };
     try {
       formOut = await formAction.run(body());
     } catch (err) {
@@ -97,7 +100,7 @@
   let actionOut = $state<{ name: string; ok: boolean; text: string } | null>(null);
   async function runAction(name: string) {
     if (!rowAction) return;
-    actionOut = { name, ok: true, text: 'Sending…' };
+    actionOut = { name, ok: true, text: t('Sending…') };
     try {
       actionOut = { name, ...(await rowAction.run(name)) };
     } catch (err) {
@@ -131,12 +134,15 @@
     void load();
   });
 
-  const badge: Record<string, [string, string]> = {
-    file: ['config file', ''],
-    added: ['added here', 'ok'],
-    override: ['overrides the file', 'warn'],
-    hidden: ['hidden', 'bad'],
+  const badge: Record<string, [Msg, string]> = {
+    file: [m('config file'), ''],
+    added: [m('added here'), 'ok'],
+    override: [m('overrides the file'), 'warn'],
+    hidden: [m('hidden'), 'bad'],
   };
+  /** REQ: API-012 — an entry's source badge: the words and the class; a source the UI doesn't know
+   * as it is (the source comes from the server: read with `Object.hasOwn`). */
+  const badgeOf = (source: string): [string, string] => (Object.hasOwn(badge, source) ? [tk(badge[source][0]), badge[source][1]] : [source, '']);
 
   function open(e?: S['ConfigEntry']) {
     preview = null;
@@ -222,31 +228,31 @@
 <section class="card" data-testid={`editor-${kind}`}>
   <div class="head">
     <h2>{title}{#if help}<HelpButton id={help} />{:else}<HelpButton id="config-sources" />{/if}</h2>
-    {#if writable && !singleton}<button onclick={() => open()}>Add {noun}</button>{/if}
+    {#if writable && !singleton}<button onclick={() => open()}>{t('Add {noun}', { noun })}</button>{/if}
   </div>
   <ErrorNote {error} />
   {#if entries.length === 0}
-    <p class="empty">None yet.</p>
+    <p class="empty">{t('None yet.')}</p>
   {:else}
     <div class="table-wrap">
       <table class="compact">
         <tbody>
           {#each entries as e (e.name)}
-            {@const [label, cls] = badge[e.source] ?? [e.source, '']}
+            {@const [label, cls] = badgeOf(e.source)}
             {@const st = status?.(e)}
             <tr data-testid="entry-row">
-              <td><strong>{e.name}</strong><span class="badge {cls}">{label}</span>{#if st}<span class="badge {st.cls}" data-testid="entry-status">{st.text}</span>{/if}</td>
-              <td class="small muted">{e.definition ? summary(e.definition as Record<string, unknown>) : 'left out of the configuration'}</td>
+              <td><strong translate="no">{e.name}</strong><span class="badge {cls}">{label}</span>{#if st}<span class="badge {st.cls}" data-testid="entry-status">{st.text}</span>{/if}</td>
+              <td class="small muted">{e.definition ? summary(e.definition as Record<string, unknown>) : t('left out of the configuration')}</td>
               {#if writable}
                 <td class="actions">
                   {#if rowAction && e.source !== 'hidden'}
                     <button class="link small" onclick={() => runAction(e.name)}>{rowAction.label}</button>
                   {/if}
-                  {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>Edit</button>{/if}
+                  {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>{t('Edit')}</button>{/if}
                   {#if e.source === 'override' || e.source === 'hidden'}
-                    <button class="link small" disabled={busy} onclick={() => remove(e)}>Revert to the file</button>
+                    <button class="link small" disabled={busy} onclick={() => remove(e)}>{t('Revert to the file')}</button>
                   {:else if !singleton}
-                    <button class="link small danger" disabled={busy} onclick={() => remove(e)}>Remove</button>
+                    <button class="link small danger" disabled={busy} onclick={() => remove(e)}>{t('Remove')}</button>
                   {/if}
                 </td>
               {/if}
@@ -258,31 +264,31 @@
   {/if}
   {#if actionOut}
     <p class="notice small {actionOut.ok ? 'ok' : 'bad'}" role="status" data-testid="row-action-result">
-      <strong>{actionOut.name}</strong>: {actionOut.text}
+      <strong translate="no">{actionOut.name}</strong>: {actionOut.text}
     </p>
   {/if}
 </section>
 
 {#if editing}
-  <Drawer title={editing.isNew ? `Add ${noun}` : `${noun}: ${editing.name}`} onclose={() => (editing = null)}>
+  <Drawer title={editing.isNew ? t('Add {noun}', { noun }) : `${noun}: ${editing.name}`} onclose={() => (editing = null)}>
     {#if result?.keepInGit}
-      <p class="notice ok small">{result.applied ? 'Saved.' : ''}</p>
+      <p class="notice ok small">{result.applied ? t('Saved.') : ''}</p>
       <KeepInGit toml={result.keepInGit} />
-      <button onclick={() => (editing = null)}>Done</button>
+      <button onclick={() => (editing = null)}>{t('Done')}</button>
     {:else}
       <form class="form" onsubmit={check}>
         {#if notice}<p class="notice warn small" role="note" data-testid="editor-notice">{notice}</p>{/if}
         <label>
-          Name
-          <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label="Name" />
+          {t('Name')}
+          <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label={t('Name')} />
         </label>
         {#each shown as f (f.key)}
           <label>
             {f.label}
             {#if f.type === 'select'}
               <select bind:value={editing.values[f.key]} aria-label={f.label}>
-                <option value={undefined}>(default)</option>
-                {#each f.options ?? [] as o (o)}<option value={o}>{f.optionLabels?.[o] ?? o}</option>{/each}
+                <option value={undefined}>{t('(default)')}</option>
+                {#each f.options ?? [] as o (o)}<option value={o} translate="no">{f.optionLabels?.[o] ?? o}</option>{/each}
               </select>
             {:else if f.type === 'multi'}
               <!-- Values chosen earlier that aren't offered now (a node gone) stay visible. -->
@@ -349,17 +355,21 @@
         <ErrorNote error={formError} />
         {#if preview}
           <div class="preview" data-testid="entry-preview">
-            <p><b>What this will do:</b> {preview.impact || 'Changes the configuration as shown.'}</p>
-            {#each preview.warnings as w (w)}<p class="small warn-text">{w}</p>{/each}
+            <p>
+              <T ctx="configEditor" msg={'<b>What this will do:</b> {impact}'} params={{ impact: preview.impact || t('Changes the configuration as shown.') }}
+                >{#snippet b(text: string)}<b>{text}</b>{/snippet}</T
+              >
+            </p>
+            {#each preview.warnings as w, i (i)}<p class="small warn-text">{w}</p>{/each}
             {#if replayable}<SimulationCard run={simulateDraft} />{/if}
           </div>
           <div class="row">
-            <button type="button" class="primary" disabled={busy} onclick={apply}>Apply</button>
-            <button type="button" onclick={() => (preview = null)}>Change it</button>
+            <button type="button" class="primary" disabled={busy} onclick={apply}>{t('Apply')}</button>
+            <button type="button" onclick={() => (preview = null)}>{t('Change it')}</button>
           </div>
         {:else}
           <div class="row">
-            <button class="primary" disabled={busy || !editing.name.trim()}>Check</button>
+            <button class="primary" disabled={busy || !editing.name.trim()}>{t('Check')}</button>
             {#if formAction}<button type="button" onclick={runFormAction}>{formAction.label}</button>{/if}
           </div>
         {/if}

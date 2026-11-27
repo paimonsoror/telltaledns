@@ -8,6 +8,7 @@
     "types": ["svelte", "vite/client"],
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,

@@ -4,31 +4,45 @@
   // DNS servers. The path in `highlight` is drawn bold; the rest stays faint. Inline SVG (no
   // library, CSP-safe), with a text equivalent for screen readers and small screens.
   import type { FlowPath } from '../help';
+  import { tr } from '../i18n';
+  const { t } = tr('flowDiagram');
 
   let {
     highlight,
-    device = 'A device',
-    name = 'a name',
+    device = t('A device'),
+    name = t('a name'),
     detail = '',
   }: { highlight: FlowPath; device?: string; name?: string; detail?: string } = $props();
 
   const outs: { id: FlowPath; label: string; sub: string }[] = [
-    { id: 'cache', label: 'From memory', sub: 'cache' },
-    { id: 'local', label: 'Your names', sub: 'local records' },
-    { id: 'blocked', label: 'Blocked', sub: 'filter lists' },
-    { id: 'route', label: 'Another server', sub: 'routes' },
-    { id: 'upstream', label: 'Public DNS', sub: 'upstreams' },
+    { id: 'cache', label: t('From memory'), sub: t('cache') },
+    { id: 'local', label: t('Your names'), sub: t('local records') },
+    { id: 'blocked', label: t('Blocked'), sub: t('filter lists') },
+    { id: 'route', label: t('Another server'), sub: t('routes') },
+    { id: 'upstream', label: t('Public DNS'), sub: t('upstreams') },
   ];
 
-  const sentence: Record<FlowPath, string> = {
-    cache: 'answers from memory, because it was asked recently',
-    local: 'answers with one of your own names',
-    blocked: 'blocks it, so it never loads',
-    route: 'asks the server you chose for that domain',
-    upstream: 'asks a public DNS server and remembers the answer',
-    refused: 'refuses, because the device may not use this server',
-  };
-  const text = $derived(`${device} asks for ${name}; TelltaleDNS ${sentence[highlight]}${detail ? ` (${detail})` : ''}.`);
+  /** REQ: API-012 — the sentence of each path, whole, with and without the caller's detail. */
+  function say(h: FlowPath, p: { device: string; name: string; detail: string }): string {
+    const d = !!p.detail;
+    if (h === 'cache')
+      return d
+        ? t('{device} asks for {name}; TelltaleDNS answers from memory, because it was asked recently ({detail}).', p)
+        : t('{device} asks for {name}; TelltaleDNS answers from memory, because it was asked recently.', p);
+    if (h === 'local')
+      return d ? t('{device} asks for {name}; TelltaleDNS answers with one of your own names ({detail}).', p) : t('{device} asks for {name}; TelltaleDNS answers with one of your own names.', p);
+    if (h === 'blocked') return d ? t('{device} asks for {name}; TelltaleDNS blocks it, so it never loads ({detail}).', p) : t('{device} asks for {name}; TelltaleDNS blocks it, so it never loads.', p);
+    if (h === 'route')
+      return d ? t('{device} asks for {name}; TelltaleDNS asks the server you chose for that domain ({detail}).', p) : t('{device} asks for {name}; TelltaleDNS asks the server you chose for that domain.', p);
+    if (h === 'upstream')
+      return d
+        ? t('{device} asks for {name}; TelltaleDNS asks a public DNS server and remembers the answer ({detail}).', p)
+        : t('{device} asks for {name}; TelltaleDNS asks a public DNS server and remembers the answer.', p);
+    return d
+      ? t('{device} asks for {name}; TelltaleDNS refuses, because the device may not use this server ({detail}).', p)
+      : t('{device} asks for {name}; TelltaleDNS refuses, because the device may not use this server.', p);
+  }
+  const text = $derived(say(highlight, { device, name, detail }));
   const y = (i: number) => 20 + i * 40;
 </script>
 
@@ -41,11 +55,11 @@
     </defs>
     <rect x="8" y="84" width="130" height="52" rx="10" class="flow-box" class:flow-refused={highlight === 'refused'} />
     <text x="73" y="106" text-anchor="middle" class="flow-text">{device.length > 18 ? device.slice(0, 17) + '…' : device}</text>
-    <text x="73" y="124" text-anchor="middle" class="flow-sub">asks for a name</text>
+    <text x="73" y="124" text-anchor="middle" class="flow-sub">{t('asks for a name')}</text>
     <path d="M138 110 H226" class="flow-line" class:flow-on={highlight !== 'refused'} marker-end="url(#flow-arrow)" />
     <rect x="228" y="80" width="150" height="60" rx="12" class="flow-core" />
-    <text x="303" y="107" text-anchor="middle" class="flow-core-text">TelltaleDNS</text>
-    <text x="303" y="125" text-anchor="middle" class="flow-core-sub">{highlight === 'refused' ? 'refused' : 'decides'}</text>
+    <text x="303" y="107" text-anchor="middle" class="flow-core-text" translate="no">TelltaleDNS</text>
+    <text x="303" y="125" text-anchor="middle" class="flow-core-sub">{highlight === 'refused' ? t('refused') : t('decides')}</text>
     {#each outs as o, i (o.id)}
       <path
         d={`M378 110 C420 110 420 ${y(i) + 18} 462 ${y(i) + 18}`}

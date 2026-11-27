@@ -1,0 +1,18 @@
+{
+  "intl": {
+    "lib/labels.ts": 0,
+    "pages/Cache.svelte": 0,
+    "pages/Old.svelte": 1
+  },
+  "literal": {
+    "lib/labels.ts": 0,
+    "pages/Cache.svelte": 0,
+    "pages/Old.svelte": 2
+  },
+  "physical": {
+    "app.css": 0,
+    "lib/labels.ts": 0,
+    "pages/Cache.svelte": 0,
+    "pages/Old.svelte": 1
+  }
+}

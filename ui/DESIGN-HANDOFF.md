@@ -39,7 +39,7 @@ The UI is served by the DNS server itself, often from a Raspberry Pi.
 | # | Rule | Why / what enforces it |
 |---|---|---|
 | 1 | **Stack: Svelte 5 (runes), Vite, TypeScript, uPlot.** No UI framework, no CSS framework (no Tailwind, Bootstrap, component libraries), no CSS-in-JS runtime. | `spec/07` §3, ADR-009. Owner decision. |
-| 2 | **Bundle ≤ 400 KiB gzipped in total** (JS + CSS + HTML + assets). | `npm run build` fails above it (`scripts/postbuild.mjs`). Currently ~60 KiB: keep plenty of headroom. Any new dependency needs a one-line justification in the commit. |
+| 2 | **Three size budgets, gzipped** (ADR-189): the UI with English ≤ 400 KiB (JS + CSS + HTML + assets: everything outside `assets/locales/`), each further language ≤ 80 KiB and all of them together ≤ 400 KiB (data files under `assets/locales/`, fetched only when chosen). | `npm run build` prints the three figures and fails above any of them (`scripts/postbuild.mjs`). The UI with English is about 297 KiB: keep headroom. Any new dependency needs a one-line justification in the commit. |
 | 3 | **Strict CSP.** The server sends `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`. So: **no inline `<script>`, no `style="..."` attributes (static or dynamic), no `{@html}`, no external fonts/CDNs/images, no `eval`**. Dynamic styles **must** use Svelte's `style:prop={value}` directive (applied via CSSOM, which CSP allows). Scoped `<style>` blocks in `.svelte` files are fine (Vite emits them to a CSS file). | `crates/telltale-api/src/ui.rs`. The e2e suite fails on any console error, so CSP violations fail CI. Fonts must be system fonts or self-hosted files in `public/` (count them in the budget). |
 | 4 | **The UI uses only the public REST API** (`/api/v1/*`) through `src/lib/api.ts`. No new server endpoints are created for the UI alone. | The API is the product's contract for scripts and AI agents too (AGT-001..005). If you need data the API doesn't have, write it down as a request (§10); don't fake it. |
 | 5 | **`src/lib/api-types.ts` is generated, never hand-edited.** Run `npm run types` (from `../docs/api/openapi.json`). | CI fails if it's stale. |
@@ -95,7 +95,7 @@ Use the screenshots to review your work visually in both themes before finishing
 ui/
   index.html                 # shell: no inline script/style (CSP)
   vite.config.ts             # dev proxy, build to dist/, assetsInlineLimit 0
-  scripts/postbuild.mjs      # gzip + 400 KiB budget gate
+  scripts/postbuild.mjs      # gzip + the three budgets (UI with English, each language, all)
   public/favicon.svg
   src/
     main.ts                  # mounts App, imports app.css

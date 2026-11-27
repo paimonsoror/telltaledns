@@ -31,7 +31,7 @@ PAGES = ["index.html", "start.html", "faq.html", "kubernetes.html","install.html
          "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html",
          # The Developers section (Reference menu): how to work on and extend TelltaleDNS.
          "developers.html", "dev-gates.html", "dev-budgets.html", "dev-api.html", "dev-cluster.html", "dev-icons.html",
-         "dev-ui-tests.html", "dev-svelte.html"]
+         "dev-ui-tests.html", "dev-svelte.html", "dev-languages.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 

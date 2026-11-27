@@ -15,15 +15,24 @@
   import { can } from '../lib/session.svelte';
   import { mayBeAt } from '../lib/deviceKeys';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
+  import { tr } from '../lib/i18n';
+  import T from '../lib/i18n/T.svelte';
+  const { t } = tr('queries');
 
+  // The statuses are the server's words: the chips show them as the log's own badges do, and the
+  // value that goes in the URL is the same word.
   const STATUSES = ['blocked', 'cached', 'refreshed', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
-    { v: '-15m', l: '15 min' },
-    { v: '-1h', l: '1 h' },
-    { v: '-24h', l: '24 h' },
-    { v: '-168h', l: '7 days' },
-    { v: '', l: 'All' },
+    { v: '-15m', l: t('15 min') },
+    { v: '-1h', l: t('1 h') },
+    { v: '-24h', l: t('24 h') },
+    { v: '-168h', l: t('7 days') },
+    { v: '', l: t('All') },
   ];
+  // The live badge's words and the two constant texts of every row, read once for the page's life.
+  const liveText = { open: t('streaming'), connecting: t('connecting'), retrying: t('retrying') };
+  const nodeTip = t('The cluster node that answered');
+  const whyText = t('Why?');
   const PAGE = 100;
 
   // The form mirrors the URL; "Search" writes it, and the URL drives loading.
@@ -285,89 +294,91 @@
   const maxMs = $derived(Math.max(1, ...rows.map((r) => r.totalMs)));
 </script>
 
+{#snippet strong(x: string)}<strong translate="no">{x}</strong>{/snippet}
+
 <div class="page">
   <div class="page-head">
-    <h1>Query log<HelpButton id="query-log" /></h1>
+    <h1>{t('Query log')}<HelpButton id="query-log" /></h1>
     <span class="switch-track live-toggle">
-      <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />Live</label>
+      <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />{t('Live')}</label>
       <HelpButton id="live-view" />
-      {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveState === 'open' ? 'streaming' : liveState}</span>{/if}
+      {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveText[liveState]}</span>{/if}
     </span>
   </div>
   {#if liveIgnores}
-    <div class="notice warn small">The live view ignores the Rcode, Since, and Group filters; it shows new queries as they happen.</div>
+    <div class="notice warn small">{t('The live view ignores the Rcode, Since, and Group filters; it shows new queries as they happen.')}</div>
   {/if}
   {#if route.params.get('trace') && !live}
     <!-- REQ: OBS-017 — from a latency exemplar (Grafana) or an exported trace. -->
     <div class="notice small" data-testid="trace-filter">
-      The query with trace ID <code>{route.params.get('trace')}</code><HelpButton id="exemplars" />
-      <button type="button" class="link" onclick={clear}>Show all queries</button>
+      {t('The query with trace ID')} <code translate="no">{route.params.get('trace')}</code><HelpButton id="exemplars" />
+      <button type="button" class="link" onclick={clear}>{t('Show all queries')}</button>
     </div>
   {/if}
 
   <form class="card filters" onsubmit={search}>
     <div class="fields">
-      <label class="field grow">Name
-        <input name="name" placeholder="ads.example.com" bind:value={name} />
+      <label class="field grow">{t('Name')}
+        <input name="name" placeholder={t('ads.example.com')} bind:value={name} />
       </label>
-      <label class="field">Match
+      <label class="field">{t('Match')}
         <select name="match" bind:value={match}>
-          <option value="substring">contains</option>
-          <option value="exact">exactly</option>
-          <option value="suffix">and subdomains</option>
-          <option value="glob">wildcard (*)</option>
-          <option value="regex">regex</option>
+          <option value="substring">{t('contains')}</option>
+          <option value="exact">{t('exactly')}</option>
+          <option value="suffix">{t('and subdomains')}</option>
+          <option value="glob">{t('wildcard (*)')}</option>
+          <option value="regex">{t('regex')}</option>
           <!-- REQ: OBS-003 (ADR-171) — the same five, negated: every query whose name does not match. -->
-          <option value="!substring">does not contain</option>
-          <option value="!exact">is not</option>
-          <option value="!suffix">is not, or under</option>
-          <option value="!glob">does not match wildcard</option>
-          <option value="!regex">does not match regex</option>
+          <option value="!substring">{t('does not contain')}</option>
+          <option value="!exact">{t('is not')}</option>
+          <option value="!suffix">{t('is not, or under')}</option>
+          <option value="!glob">{t('does not match wildcard')}</option>
+          <option value="!regex">{t('does not match regex')}</option>
         </select>
       </label>
       <div class="pair">
-        <label class="field">Client
+        <label class="field">{t('Client')}
           <input name="client" placeholder="192.168.1.20" bind:value={client} />
         </label>
-        <label class="not" title="Every client except this one"><input type="checkbox" name="clientNot" bind:checked={clientNot} />not</label>
+        <label class="not" title={t('Every client except this one')}><input type="checkbox" name="clientNot" bind:checked={clientNot} />{t('not')}</label>
       </div>
       <div class="pair narrow">
-        <label class="field">Type
-          <input name="qtype" placeholder="A,AAAA" bind:value={qtype} />
+        <label class="field">{t('Type')}
+          <input name="qtype" placeholder={t('A,AAAA')} bind:value={qtype} />
         </label>
-        <label class="not" title="Every type except these"><input type="checkbox" name="qtypeNot" bind:checked={qtypeNot} />not</label>
+        <label class="not" title={t('Every type except these')}><input type="checkbox" name="qtypeNot" bind:checked={qtypeNot} />{t('not')}</label>
       </div>
       <div class="pair narrow">
-        <label class="field">Rcode
-          <input name="rcode" placeholder="NXDOMAIN" bind:value={rcode} />
+        <label class="field">{t('Rcode')}
+          <input name="rcode" placeholder={t('NXDOMAIN')} bind:value={rcode} />
         </label>
-        <label class="not" title="Every response code except these"><input type="checkbox" name="rcodeNot" bind:checked={rcodeNot} />not</label>
+        <label class="not" title={t('Every response code except these')}><input type="checkbox" name="rcodeNot" bind:checked={rcodeNot} />{t('not')}</label>
       </div>
-      <label class="field narrow">Slower than (ms)
+      <label class="field narrow">{t('Slower than (ms)')}
         <input name="minLatency" type="number" min="0" bind:value={minLatency} />
       </label>
       {#if groups.length > 1}
-        <label class="field">Group
+        <label class="field">{t('Group')}
           <select name="group" bind:value={group} onchange={() => search()}>
-            <option value="">any</option>
-            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
+            <option value="">{t('any')}</option>
+            {#each groups as g (g.name)}<option value={g.name} translate="no">{g.name}</option>{/each}
           </select>
         </label>
       {/if}
-      <label class="field">Since
+      <label class="field">{t('Since')}
         <select name="from" bind:value={from} onchange={() => search()}>
           {#each RANGES as r (r.v)}<option value={r.v}>{r.l}</option>{/each}
         </select>
       </label>
     </div>
     <div class="row">
-      <button type="button" class="chip" data-testid="status-not" aria-pressed={statusNot} title="Every status except the ones chosen" onclick={() => { statusNot = !statusNot; if (statuses.size) search(); }}>not</button>
+      <button type="button" class="chip" data-testid="status-not" aria-pressed={statusNot} title={t('Every status except the ones chosen')} onclick={() => { statusNot = !statusNot; if (statuses.size) search(); }}>{t('not')}</button>
       {#each STATUSES as s (s)}
-        <button type="button" class="chip" aria-pressed={statuses.has(s)} onclick={() => toggleStatus(s)}>{s}</button>
+        <button type="button" class="chip" translate="no" aria-pressed={statuses.has(s)} onclick={() => toggleStatus(s)}>{s}</button>
       {/each}
       <span class="spacer"></span>
-      <button type="button" onclick={clear}>Clear</button>
-      <button type="submit" class="primary">Search</button>
+      <button type="button" onclick={clear}>{t('Clear')}</button>
+      <button type="submit" class="primary">{t('Search')}</button>
     </div>
   </form>
 
@@ -375,14 +386,14 @@
 
   <section class="card">
     {#if rows.length === 0 && !loading}
-      <p class="empty">No queries match.</p>
+      <p class="empty">{t('No queries match.')}</p>
     {:else}
       <div class="table-wrap">
         <table class="log">
           <thead>
             <tr>
-              <th>Time</th><th>Client</th><th>Name</th><th>Type</th><th>Status</th><th>Rule</th>
-              <th class="num">Time taken</th><th></th>
+              <th>{t('Time')}</th><th>{t('Client')}</th><th>{t('Name')}</th><th>{t('Type')}</th><th>{t('Status')}</th><th>{t('Rule')}</th>
+              <th class="num">{t('Time taken')}</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -390,27 +401,27 @@
               <tr>
                 <td class="nowrap" title={logDate(r.time)}>
                   {logTime(r.time)}
-                  {#if r.node}<div class="muted small" title="The cluster node that answered">{r.node}</div>{/if}
+                  {#if r.node}<div class="muted small" title={nodeTip}><span translate="no">{r.node}</span></div>{/if}
                 </td>
                 <td class="nowrap">
                   <ClientChip ip={r.client} name={r.clientName} onchanged={(n) => renamed(r.client, n)} />
-                  {#if r.group}<div class="group-chip small" style:--gc={groupColor(r.group)}>{r.group}</div>{/if}
+                  {#if r.group}<div class="group-chip small" style:--gc={groupColor(r.group)} translate="no">{r.group}</div>{/if}
                 </td>
                 <td class="name mono"><span class="nmi"><DomainIcon name={r.name} quiet={r.status === 'blocked'} /><span>{r.name}</span></span></td>
-                <td>{r.qtype}</td>
-                <td>
+                <td translate="no">{r.qtype}</td>
+                <td translate="no">
                   <StatusBadge value={r.status} />
                   {#if r.rcode && r.rcode !== 'NOERROR'}<div><StatusBadge value={r.rcode} /></div>{/if}
                 </td>
-                <td class="small">{#if r.list}{r.list}<div class="muted">{r.rule}</div>{:else}<span class="muted">–</span>{/if}</td>
+                <td class="small" translate="no">{#if r.list}{r.list}<div class="muted">{r.rule}</div>{:else}<span class="muted">–</span>{/if}</td>
                 <td class="num">
                   {ms(r.totalMs)}
-                  <div class="timing" title={`upstream ${ms(r.upstreamMs)} of ${ms(r.totalMs)}`}>
+                  <div class="timing" title={t('upstream {upstream} of {total}', { upstream: ms(r.upstreamMs), total: ms(r.totalMs) })}>
                     <span class="own" style:width={`${((r.totalMs - r.upstreamMs) / maxMs) * 100}%`}></span>
                     <span class="up" style:width={`${(r.upstreamMs / maxMs) * 100}%`}></span>
                   </div>
                 </td>
-                <td><button class="link" onclick={() => explain(r)}>Why?</button></td>
+                <td><button class="link" onclick={() => explain(r)}>{whyText}</button></td>
               </tr>
             {/each}
           </tbody>
@@ -420,32 +431,35 @@
     <div class="row foot">
       <span class="muted small">
         {#if live}
-          {`${num(rows.length)} live rows (newest ${MAX_LIVE} kept)`}{#if skipped}{` · ${num(skipped)} matching queries skipped to keep up`}{/if}
+          {t('{n} live rows (newest {max} kept)', { n: num(rows.length), max: MAX_LIVE })}{#if skipped}{` ${t('· {n} matching queries skipped to keep up', { n: num(skipped) })}`}{/if}
         {:else}
-          {num(rows.length)} rows{#if missing.length}{` · not reached: ${missing.join(', ')}`}{/if}{#if scanned}{` · searched ${num(scanned.blocksRead)} of ${num(scanned.blocksTotal)} blocks in ${num(scanned.segments)} hourly files`}{/if}
+          {t('{n} rows', { n: num(rows.length) })}{#if missing.length}{` ${t('· not reached: {nodes}', { nodes: missing.join(', ') })}`}{/if}{#if scanned}{` ${t('· searched {read} of {total} blocks in {segments} hourly files', { read: num(scanned.blocksRead), total: num(scanned.blocksTotal), segments: num(scanned.segments) })}`}{/if}
         {/if}
       </span>
       <span class="spacer"></span>
       {#if cursor && !live}
-        <button onclick={() => load(true)} disabled={loading}>{loading ? 'Loading…' : 'Older'}</button>
+        <button onclick={() => load(true)} disabled={loading}>{loading ? t('Loading…') : t('Older')}</button>
       {/if}
     </div>
   </section>
 </div>
 
 {#if why}
-  <Drawer title={`Why: ${why.name}`} onclose={() => (why = null)}>
+  <Drawer title={t('Why: {name}', { name: why.name })} onclose={() => (why = null)}>
     <ErrorNote error={whyError} />
     {#if explained}
       <p class="muted small">
-        Explains how this query would be handled now; lists or settings may have changed since {logTime(why.time)}.
-        Logged as <strong>{why.status}</strong>{why.list ? ` by ${why.list}` : ''}.
+        {#if why.list}
+          <T ctx="queries" msg={'Explains how this query would be handled now; lists or settings may have changed since {time}. Logged as <strong>{status}</strong> by {list}.'} params={{ time: logTime(why.time), status: why.status, list: why.list }} {strong} />
+        {:else}
+          <T ctx="queries" msg={'Explains how this query would be handled now; lists or settings may have changed since {time}. Logged as <strong>{status}</strong>.'} params={{ time: logTime(why.time), status: why.status }} {strong} />
+        {/if}
       </p>
       <ExplainView x={explained} />
       {#if can('operator')}
         <!-- REQ: FLT-005 (T6.12) — act on it: a quick rule for this device or its group. -->
         <section class="card quick-card">
-          <h2>Make a quick rule<HelpButton id="quick-rules" /></h2>
+          <h2>{t('Make a quick rule')}<HelpButton id="quick-rules" /></h2>
           {#if configured}
             {@const pre = prefillOf(why, explained, configured)}
             <!-- REQ: FLT-005, FLT-017 (issue #73) — what a rule can name; see prefillOf. -->
@@ -460,14 +474,14 @@
               known={configured}
             />
           {:else}
-            <p class="muted small" role="status">Loading devices…</p>
+            <p class="muted small" role="status">{t('Loading devices…')}</p>
           {/if}
         </section>
       {/if}
       <!-- REQ: DNS-006 (T6.13) — what the cache holds for this name, and flushing it. -->
       <div class="quick-card"><CacheCard name={why.name} compact /></div>
     {:else if !whyError}
-      <p class="muted">Loading…</p>
+      <p class="muted">{t('Loading…')}</p>
     {/if}
   </Drawer>
 {/if}

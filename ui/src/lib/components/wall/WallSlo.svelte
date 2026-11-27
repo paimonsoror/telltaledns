@@ -5,6 +5,9 @@
   import { api, type S } from '../../api';
   import { poll } from '../../poll';
   import { num } from '../../format';
+  import { tr } from '../../i18n';
+  import { objectiveTitle } from '../../objectives';
+  const { t } = tr('wallSlo');
 
   let slo = $state<S['SloStatus'] | null>(null);
   let spent = $state<S['AttributionRow'][]>([]);
@@ -38,23 +41,23 @@
         {@const left = o.budgetRemainingPercent}
         {@const r = burn(o)}
         <figure class="ring {tone(left)}" data-testid="wall-ring">
-          <svg viewBox="0 0 100 100" style:width="{ring}px" style:height="{ring}px" aria-label="{o.name}: {left == null ? 'no data' : `${Math.round(left)} % of the budget left`}">
+          <svg viewBox="0 0 100 100" style:width="{ring}px" style:height="{ring}px" aria-label={t('{name}: {state}', { name: o.name, state: left == null ? t('no data') : t('{n} % of the budget left', { n: Math.round(left) }) })}>
             <circle cx="50" cy="50" r={R} class="track" />
             <circle cx="50" cy="50" r={R} class="left" stroke-dasharray="{(Math.max(0, Math.min(100, left ?? 0)) / 100) * C} {C}" transform="rotate(-90 50 50)" />
             <text x="50" y="62" text-anchor="middle" class="big">{left == null ? '–' : `${Math.round(left)}%`}</text>
           </svg>
-          <figcaption>{o.name === 'availability' ? 'Answers that work' : o.name === 'latency' ? 'Answers that are quick' : o.name}<br /><span class="muted"><span class="burn {burnTone(r)}" data-testid="wall-burn">burn {r == null ? '–' : r.toFixed(1)}×</span> · {o.sliPercent == null ? '–' : `${o.sliPercent.toFixed(2)} %`}</span></figcaption>
+          <figcaption>{objectiveTitle(o.name)}<br /><span class="muted"><span class="burn {burnTone(r)}" data-testid="wall-burn">{t('burn {n}×', { n: r == null ? '–' : r.toFixed(1) })}</span> {t('· {value}', { value: o.sliPercent == null ? '–' : `${o.sliPercent.toFixed(2)} %` })}</span></figcaption>
         </figure>
       {/each}
     </div>
     {#if spent.length}
       <div class="spent">
-        <span class="muted">Who spent it</span>
-        {#each spent as s (s.key)}<span class="who">{s.name ?? s.key} <b>{num(s.bad)}</b></span>{/each}
+        <span class="muted">{t('Who spent it')}</span>
+        {#each spent as s (s.key)}<span class="who" translate="no">{s.name ?? s.key} <b>{num(s.bad)}</b></span>{/each}
       </div>
     {/if}
   {:else if slo}
-    <p class="muted big-text">Service-level objectives are off.</p>
+    <p class="muted big-text">{t('Service-level objectives are off.')}</p>
   {/if}
 </div>
 

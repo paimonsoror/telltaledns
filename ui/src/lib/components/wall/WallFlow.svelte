@@ -6,6 +6,8 @@
   import { poll } from '../../poll';
   import { fold, layout, type FlowLink, type FlowNode } from '../../sankey';
   import { Particles, frameHub } from '../../wall';
+  import { tr } from '../../i18n';
+  const { t } = tr('wallFlow');
 
   let { motion }: { motion: boolean } = $props();
   let data = $state<S['QueryFlow'] | null>(null);
@@ -69,14 +71,14 @@
 
 <div class="flow" bind:clientWidth={w} bind:clientHeight={h} data-testid="wall-flow">
   {#if placed}
-    <svg bind:this={svg} width={w} height={h} viewBox="0 0 {w} {h}" aria-label="Where queries went in the last hour">
+    <svg bind:this={svg} width={w} height={h} viewBox="0 0 {w} {h}" aria-label={t('Where queries went in the last hour')}>
       {#each placed.links as l (l.source + l.target)}
         <path class="band" class:bad={l.failure} d={l.d} stroke-width={Math.max(1, l.width)} />
       {/each}
       {#each placed.nodes as n (n.id)}
         <rect x={n.x} y={n.y} width={n.w} height={Math.max(1, n.h)} class="node" />
         {#if n.h > 14 && w >= 600}
-          <text x={n.col < 2 ? n.x + n.w + 6 : n.x - 6} y={n.y + n.h / 2} text-anchor={n.col < 2 ? 'start' : 'end'}>{n.name}</text>
+          <text x={n.col < 2 ? n.x + n.w + 6 : n.x - 6} y={n.y + n.h / 2} text-anchor={n.col < 2 ? 'start' : 'end'} translate="no">{n.name}</text>
         {/if}
       {/each}
       {#each dots as d, i (i)}
