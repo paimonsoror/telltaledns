@@ -1237,7 +1237,8 @@ const fn default_zone_negative_ttl() -> u32 {
 pub struct RouterConfig {
     /// Unique name (logs, the leases' source).
     pub name: SafeString,
-    /// `unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`.
+    /// `unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`
+    /// (in the configuration file only).
     #[serde(rename = "type")]
     pub kind: RouterKind,
     /// The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`

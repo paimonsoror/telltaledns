@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQ: T8.2, T8.3, FLT-006 (ADR-183) — router integrations against fake UniFi OS and OPNsense APIs, and mDNS: a UniFi login
+# REQ: T8.2, T8.3, FLT-006 (ADR-183, ADR-189) — router integrations against fake UniFi OS, OPNsense and FRITZ!Box (TR-064) APIs, and mDNS: a UniFi login
 # (cookie) and its client list (connected, then the offline clients it knows), OPNsense leases with an
 # API key, the leases in the API, a device named from the router in the query log, and a device named by the
 # MAC its router reports: a rule for it blocks at the address the router gives it, and the explanation, the
@@ -81,6 +81,32 @@ class OPN(UniFi):
         if self.path == "/api/kea/leases4/search":
             return self.reply(200, {"rows": [{"address": "192.168.1.40", "hwaddr": "02:00:00:00:00:03", "hostname": "printer"}]})
         self.reply(404, {})
+class Fritz(http.server.BaseHTTPRequestHandler):
+    HOSTS = "urn:dslforum-org:service:Hosts:1"
+    def xml(self, code, text):
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("content-type", "text/xml")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def envelope(self, name, inner):
+        return ('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+                f'<u:{name}Response xmlns:u="{self.HOSTS}">{inner}</u:{name}Response></s:Body></s:Envelope>')
+    def do_GET(self):
+        self.xml(200, f"<root><service><serviceType>{self.HOSTS}</serviceType><controlURL>/upnp/control/hosts</controlURL></service></root>")
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", 0))).decode()
+        if "GetHostNumberOfEntries" in self.headers["soapaction"]:
+            # One more than it has: the last index faults 713, which ends the list.
+            return self.xml(200, self.envelope("GetHostNumberOfEntries", "<NewHostNumberOfEntries>2</NewHostNumberOfEntries>"))
+        if "<NewIndex>0</NewIndex>" in body:
+            return self.xml(200, self.envelope("GetGenericHostEntry", "<NewIPAddress>192.168.60.7</NewIPAddress><NewMACAddress>02:00:00:00:00:08</NewMACAddress><NewHostName>fritz-tablet</NewHostName><NewActive>1</NewActive>"))
+        self.xml(500, '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><detail><UPnPError xmlns="urn:dslforum-org:control-1-0"><errorCode>713</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>')
+    def log_message(self, *a):
+        pass
+s3 = http.server.ThreadingHTTPServer(("127.0.0.1", 26983), Fritz)
+threading.Thread(target=s3.serve_forever, daemon=True).start()
 s1 = http.server.ThreadingHTTPServer(("127.0.0.1", 26981), UniFi)
 s2 = http.server.ThreadingHTTPServer(("127.0.0.1", 26982), OPN)
 threading.Thread(target=s1.serve_forever, daemon=True).start()
@@ -127,14 +153,19 @@ type = "opnsense"
 url = "http://127.0.0.1:26982"
 api_key_file = "$E/opn-key"
 api_secret_file = "$E/opn-secret"
+[[router]]
+name = "fritz"
+type = "fritzbox"
+url = "http://127.0.0.1:26983"
+client_subnets = ["192.168.60.0/24"]
 [clients]
 mdns = true
 mdns_port = 25353
 EOF
 "$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
-for _ in $(seq 50); do [ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 2 ] && break; sleep 0.2; done
-[ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 2 ] || fail "both routers weren't read"
+for _ in $(seq 50); do [ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 3 ] && break; sleep 0.2; done
+[ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 3 ] || fail "the three routers weren't read"
 
 ST=$(cat "$E/data/setup-token")
 CSRF=$(curl -sf -c "$E/jar" -H 'content-type: application/json' \
@@ -149,6 +180,7 @@ assert items["192.168.1.50"]["hostname"] == "Old iPad", "offline clients from th
 assert items["192.168.1.51"]["hostname"] == "Garage camera", "known clients from rest/user"
 assert "192.168.1.52" not in items, "a client last seen 90 days ago is outside offline_days (30)"
 assert items["192.168.1.40"]["hostname"] == "printer", "Kea leases from OPNsense"
+assert items["192.168.60.7"]["hostname"] == "fritz-tablet", "TR-064 hosts from the FRITZ!Box"
 print(f"leases: {len(items)} from the routers")
 ' || fail "leases API"
 # REQ: T8.2 (ADR-166) — the console is asked only for the window (30 days = 720 hours).

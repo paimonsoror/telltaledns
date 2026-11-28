@@ -11,7 +11,14 @@ use super::{Device, Polled};
 
 const HOSTS: &str = "urn:dslforum-org:service:Hosts:1";
 const SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+/// A box that claims more fails the poll: nothing of a partial list is used.
 const MAX_HOSTS: usize = 2_048;
+/// Hosts are read one request each (a few ms to a few hundred over a VPN), so the budget is
+/// per request, not per poll.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// ponytail: a ceiling on the whole read, so a crawling box can't hold up the other routers;
+/// read in parallel or use `X_AVM-DE_GetHostListPath` (needs sign-in) if boxes ever reach it.
+const POLL_CEILING: Duration = Duration::from_secs(120);
 
 fn field<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
     node.children()
@@ -46,22 +53,49 @@ fn host(row: Node<'_, '_>, networks: &[Cidr]) -> Option<Device> {
     Some((mac, ip, name))
 }
 
-async fn request(client: &Client, request: http::Request<Vec<u8>>) -> Result<String, String> {
-    let response = client
-        .request(request, 256 * 1024)
+/// One exchange within [`REQUEST_TIMEOUT`]; the status and the body (a SOAP fault comes as
+/// HTTP 500 with a body).
+async fn request(
+    client: &Client,
+    request: http::Request<Vec<u8>>,
+) -> Result<(http::StatusCode, String), String> {
+    let response = tokio::time::timeout(REQUEST_TIMEOUT, client.request(request, 256 * 1024))
         .await
+        .map_err(|_| "TR-064 request timed out")?
         .map_err(|e| e.message)?;
-    if !response.status().is_success() {
-        return Err(format!("TR-064 HTTP {}", response.status()));
+    let status = response.status();
+    let body =
+        String::from_utf8(response.into_body()).map_err(|_| "TR-064 returned non-UTF-8 XML")?;
+    Ok((status, body))
+}
+
+fn ok((status, body): (http::StatusCode, String)) -> Result<String, String> {
+    if status.is_success() {
+        Ok(body)
+    } else {
+        Err(format!("TR-064 HTTP {status}"))
     }
-    String::from_utf8(response.into_body()).map_err(|_| "TR-064 returned non-UTF-8 XML".into())
+}
+
+/// `UPnP` error 713, `SpecifiedArrayIndexInvalid`: the list ended (a host left since the count).
+fn past_the_end((status, body): &(http::StatusCode, String)) -> bool {
+    *status == http::StatusCode::INTERNAL_SERVER_ERROR
+        && Document::parse(body).is_ok_and(|doc| {
+            doc.descendants()
+                .any(|n| n.has_tag_name("errorCode") && n.text() == Some("713"))
+        })
 }
 
 fn xml(body: &str) -> Result<Document<'_>, String> {
     Document::parse(body).map_err(|_| "TR-064 returned invalid XML".into())
 }
 
-async fn action(client: &Client, uri: &str, name: &str, args: &str) -> Result<String, String> {
+async fn action(
+    client: &Client,
+    uri: &str,
+    name: &str,
+    args: &str,
+) -> Result<(http::StatusCode, String), String> {
     let body = format!(
         "<s:Envelope xmlns:s=\"{SOAP}\"><s:Body><u:{name} xmlns:u=\"{HOSTS}\">{args}</u:{name}></s:Body></s:Envelope>"
     );
@@ -90,19 +124,14 @@ async fn hosts(client: &Client, router: &RouterConfig) -> Result<Polled, String>
         .iter()
         .map(|subnet| Cidr::parse(subnet.as_str()))
         .collect::<Result<Vec<_>, _>>()?;
-    let endpoint: http::Uri = router.url.parse().map_err(|_| "invalid FRITZ!Box URL")?;
-    let authority = endpoint.authority().ok_or("FRITZ!Box URL needs a host")?;
-    if authority.as_str().contains('@') || endpoint.path() != "/" || endpoint.query().is_some() {
-        return Err("FRITZ!Box URL must be an origin without credentials, path or query".into());
-    }
     let base = router.url.trim_end_matches('/');
     let desc = http::Request::get(format!("{base}/tr64desc.xml"))
         .body(Vec::new())
         .map_err(|_| "invalid FRITZ!Box URL")?;
-    let desc = request(client, desc).await?;
+    let desc = ok(request(client, desc).await?)?;
     let doc = xml(&desc)?;
     let uri = format!("{base}{}", control_path(&doc)?);
-    let count = action(client, &uri, "GetHostNumberOfEntries", "").await?;
+    let count = ok(action(client, &uri, "GetHostNumberOfEntries", "").await?)?;
     let doc = xml(&count)?;
     let count = field(
         response(&doc, "GetHostNumberOfEntriesResponse")?,
@@ -114,7 +143,11 @@ async fn hosts(client: &Client, router: &RouterConfig) -> Result<Polled, String>
     let mut seen = Vec::with_capacity(count);
     for index in 0..count {
         let args = format!("<NewIndex>{index}</NewIndex>");
-        let body = action(client, &uri, "GetGenericHostEntry", &args).await?;
+        let answer = action(client, &uri, "GetGenericHostEntry", &args).await?;
+        if past_the_end(&answer) {
+            break;
+        }
+        let body = ok(answer)?;
         let doc = xml(&body)?;
         seen.extend(host(
             response(&doc, "GetGenericHostEntryResponse")?,
@@ -125,7 +158,7 @@ async fn hosts(client: &Client, router: &RouterConfig) -> Result<Polled, String>
 }
 
 pub(super) async fn poll(client: &Client, router: &RouterConfig) -> Result<Polled, String> {
-    tokio::time::timeout(Duration::from_secs(15), hosts(client, router))
+    tokio::time::timeout(POLL_CEILING, hosts(client, router))
         .await
         .map_err(|_| "TR-064 host poll timed out".to_owned())?
 }
@@ -134,11 +167,11 @@ pub(super) async fn poll(client: &Client, router: &RouterConfig) -> Result<Polle
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn flt_006_fritzbox_polls_the_advertised_hosts_service() {
+    /// Polls a fake box that reports `count` hosts and answers entry `i` with `entry(i)`.
+    async fn poll_fake(count: usize, entry: fn(usize) -> (u16, String)) -> Result<Polled, String> {
         use axum::{
             Router,
-            http::HeaderMap,
+            http::{HeaderMap, StatusCode},
             routing::{get, post},
         };
         use std::sync::Arc;
@@ -148,16 +181,24 @@ mod tests {
             .route("/tr64desc.xml", get(|| async {
                 format!("<root><device><serviceList><service><serviceType>{HOSTS}</serviceType><controlURL>/hosts</controlURL></service></serviceList></device></root>")
             }))
-            .route("/hosts", post(|headers: HeaderMap, body: String| async move {
+            .route("/hosts", post(move |headers: HeaderMap, body: String| async move {
                 let action = headers["soapaction"].to_str().unwrap();
-                let (name, output) = if action == format!("\"{HOSTS}#GetHostNumberOfEntries\"") {
-                    ("GetHostNumberOfEntries", "<NewHostNumberOfEntries>1</NewHostNumberOfEntries>")
-                } else {
-                    assert_eq!(action, format!("\"{HOSTS}#GetGenericHostEntry\""));
-                    assert!(body.contains("<NewIndex>0</NewIndex>"));
-                    ("GetGenericHostEntry", "<NewIPAddress>192.168.40.2</NewIPAddress><NewActive>1</NewActive><NewHostName>Tablet</NewHostName><NewMACAddress>02:AA:BB:CC:DD:EE</NewMACAddress>")
+                let envelope = |name: &str, output: &str| {
+                    format!("<s:Envelope xmlns:s=\"{SOAP}\"><s:Body><u:{name}Response xmlns:u=\"{HOSTS}\">{output}</u:{name}Response></s:Body></s:Envelope>")
                 };
-                format!("<s:Envelope xmlns:s=\"{SOAP}\"><s:Body><u:{name}Response xmlns:u=\"{HOSTS}\">{output}</u:{name}Response></s:Body></s:Envelope>")
+                if action == format!("\"{HOSTS}#GetHostNumberOfEntries\"") {
+                    let output = format!("<NewHostNumberOfEntries>{count}</NewHostNumberOfEntries>");
+                    return (StatusCode::OK, envelope("GetHostNumberOfEntries", &output));
+                }
+                assert_eq!(action, format!("\"{HOSTS}#GetGenericHostEntry\""));
+                let index = body.split("<NewIndex>").nth(1).and_then(|s| s.split('<').next());
+                let (status, output) = entry(index.unwrap().parse().unwrap());
+                let body = if status == 200 {
+                    envelope("GetGenericHostEntry", &output)
+                } else {
+                    format!("<s:Envelope xmlns:s=\"{SOAP}\"><s:Body><s:Fault><detail><UPnPError xmlns=\"urn:dslforum-org:control-1-0\"><errorCode>{output}</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>")
+                };
+                (StatusCode::from_u16(status).unwrap(), body)
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let router: RouterConfig = serde_json::from_value(serde_json::json!({
@@ -169,7 +210,18 @@ mod tests {
         .unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let client = Client::new(Arc::new(SystemResolver), &[]).unwrap();
-        let result = poll(&client, &router).await.unwrap();
+        let result = poll(&client, &router).await;
+        server.abort();
+        result
+    }
+
+    fn tablet(_: usize) -> (u16, String) {
+        (200, "<NewIPAddress>192.168.40.2</NewIPAddress><NewActive>1</NewActive><NewHostName>Tablet</NewHostName><NewMACAddress>02:AA:BB:CC:DD:EE</NewMACAddress>".into())
+    }
+
+    #[tokio::test]
+    async fn flt_006_fritzbox_polls_the_advertised_hosts_service() {
+        let result = poll_fake(1, tablet).await.unwrap();
         assert_eq!(
             result.now,
             [(
@@ -178,7 +230,32 @@ mod tests {
                 Some("Tablet".into())
             )]
         );
-        server.abort();
+    }
+
+    #[tokio::test]
+    async fn flt_006_fritzbox_ends_the_list_at_a_713_fault_and_fails_on_others() {
+        let shrunk = |i| {
+            if i < 2 {
+                tablet(i)
+            } else {
+                (500, "713".into())
+            }
+        };
+        assert_eq!(poll_fake(5, shrunk).await.unwrap().now.len(), 2);
+        let broken = |i| {
+            if i < 2 {
+                tablet(i)
+            } else {
+                (500, "501".into())
+            }
+        };
+        assert!(poll_fake(5, broken).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn flt_006_fritzbox_over_the_host_cap_fails_closed() {
+        let never = |_| panic!("no entry is read");
+        assert!(poll_fake(MAX_HOSTS + 1, never).await.is_err());
     }
 
     #[test]

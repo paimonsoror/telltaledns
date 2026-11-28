@@ -1332,7 +1332,6 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 ### Names from your router (UniFi, OPNsense)
 TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and TelltaleDNS can read its client list, so devices show up by name.
 
-
 **FRITZ!Box via TR-064 (configuration file):**
 
 ```toml
@@ -1345,7 +1344,9 @@ client_subnets = ["192.168.40.0/24"]
 
 Add a separate entry for each router, with distinct client subnets. Enable LAN access for applications (TR-064) on the FRITZ!Box. From the TelltaleDNS host, verify that `<url>/tr64desc.xml` is reachable over the LAN or private VPN. The host count and per-host read actions require no extra TR-064 rights. This source supports endpoints that allow those reads without credentials. Keep the API on the private network. For HTTPS, configure certificate trust as for other router sources.
 
-Only active IPv4 entries in the listed networks are used. In a Mesh, configure the Mesh Master for clients it reports. Enable the existing `[clients] router_macs` option when using these records for MAC-based policy matching. For a fleet, upgrade all members before adding this router type to shared configuration.
+Only active IPv4 entries in the listed networks are used. In a Mesh, configure the Mesh Master for clients it reports. Enable the existing `[clients] router_macs` option when using these records for MAC-based policy matching. For a fleet, upgrade all members before adding this router type to shared configuration. The URL is the scheme, host and port only. The type is configuration-file only: the router API and the UI refuse it. Only full cluster members read a FRITZ!Box (not resolver pods); the other nodes hear what it says from them.
+
+Each host is one request (5 seconds each, 2 minutes for the whole list, at most 2,048 hosts; more fails the read and keeps the last list). A plain `http://` URL isn't authenticated: while its list identifies devices by MAC, the node logs a warning, so keep the route to the box private (LAN or VPN).
 
 Advertise TelltaleDNS as the client DNS server (FRITZ!Box **Local DNS server** in the LAN DHCP settings where supported), or set DNS directly on clients. Check the query log for their original LAN IPs. When the router forwards queries under its own IP, those queries have a router-level identity and policy.
 

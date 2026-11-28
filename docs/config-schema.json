@@ -3258,7 +3258,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`.",
+          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`\n(in the configuration file only).",
           "$ref": "#/$defs/RouterKind"
         },
         "url": {

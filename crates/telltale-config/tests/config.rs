@@ -1626,3 +1626,26 @@ fn t8_2_fritzbox_requires_distinct_ipv4_client_networks() {
         assert!(paths(&load_str(&config).unwrap_err()).contains(&"router[1].client_subnets"));
     }
 }
+
+#[test]
+fn t8_2_fritzbox_url_is_an_origin_and_subnets_are_fritzbox_only() {
+    let source = |url: &str| {
+        format!(
+            "[[router]]\nname = \"box\"\ntype = \"fritzbox\"\nurl = \"{url}\"\nclient_subnets = [\"192.168.40.0/24\"]\n"
+        )
+    };
+    for url in ["http://192.168.40.1:49000", "http://[fd00::1]:49000/"] {
+        assert!(load_str(&source(url)).is_ok(), "{url}");
+    }
+    for url in [
+        "http://192.168.40.1:49000/tr064",
+        "http://admin:pw@192.168.40.1:49000",
+        "http://192.168.40.1:49000?a=1",
+        "http://",
+    ] {
+        let errs = load_str(&source(url)).unwrap_err();
+        assert!(paths(&errs).contains(&"router[0].url"), "{url}: {errs:?}");
+    }
+    let unifi = "[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"https://192.168.1.1\"\napi_key_file = \"/run/secrets/k\"\nclient_subnets = [\"192.168.40.0/24\"]\n";
+    assert!(paths(&load_str(unifi).unwrap_err()).contains(&"router[0].client_subnets"));
+}

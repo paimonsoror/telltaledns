@@ -268,6 +268,9 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                 fritzbox(x, i, &p, &mut fritz_networks, r);
             }
         }
+        if x.kind != crate::RouterKind::Fritzbox && !x.client_subnets.is_empty() {
+            r.err(format!("{p}.client_subnets"), "only for type fritzbox");
+        }
         if x.interval_secs < 30 {
             r.err(format!("{p}.interval_secs"), "at least 30 seconds");
         }
@@ -315,6 +318,16 @@ fn fritzbox(
     networks: &mut Vec<(usize, crate::Cidr)>,
     report: &mut Report<'_>,
 ) {
+    // The TR-064 paths are appended to the URL, so it is an origin and nothing else.
+    if let Some((_, rest)) = router.url.split_once("://") {
+        let authority = rest.strip_suffix('/').unwrap_or(rest);
+        if authority.is_empty() || authority.contains(['/', '?', '#', '@']) {
+            report.err(
+                format!("{path}.url"),
+                "scheme, host and port only, e.g. http://192.168.178.1:49000 (no path, query or user)",
+            );
+        }
+    }
     let subnets = format!("{path}.client_subnets");
     if router.client_subnets.is_empty() {
         report.err(subnets.clone(), "one or more IPv4 client networks");

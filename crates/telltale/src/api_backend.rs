@@ -5246,6 +5246,20 @@ fn plan_override(
     // REQ: API-002, T8.2 (ADR-181) — routers are an administrator's (checked again here, where
     // every write is planned; `do_write_managed` checks before a body's keys are looked at).
     router_guard(w)?;
+    // REQ: T8.2, API-002 (ADR-189) — the API doesn't take FRITZ!Box routers yet.
+    if w.kind == ManagedKind::Router
+        && w.body
+            .as_ref()
+            .and_then(|b| b.get("type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("fritzbox")
+    {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            "`type`: a FRITZ!Box router is defined in the config file",
+        )
+        .hint("Add it as a `[[router]]` entry in the configuration file."));
+    }
     // REQ: OBS-010, API-002 (ADR-179) — before anything else about the body is checked, so
     // whoever is refused learns nothing more.
     if w.kind == ManagedKind::AlertDestination {
