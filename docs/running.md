@@ -1346,7 +1346,7 @@ Add a separate entry for each router, with distinct client subnets. Enable LAN a
 
 Only active IPv4 entries in the listed networks are used. In a Mesh, configure the Mesh Master for clients it reports. Enable the existing `[clients] router_macs` option when using these records for MAC-based policy matching. For a fleet, upgrade all members before adding this router type to shared configuration. The URL is the scheme, host and port only. The type is configuration-file only: the router API and the UI refuse it. Only full cluster members read a FRITZ!Box (not resolver pods); the other nodes hear what it says from them.
 
-Each host is one request (5 seconds each, 2 minutes for the whole list, at most 2,048 hosts; more fails the read and keeps the last list). A plain `http://` URL isn't authenticated: while its list identifies devices by MAC, the node logs a warning, so keep the route to the box private (LAN or VPN).
+Each host is one request (5 seconds each, 2 minutes for the whole list, at most 1,024 hosts; more fails the read and keeps the last list). A plain `http://` URL isn't authenticated: the configuration check warns, and while its list identifies devices by MAC the node logs a warning too, so keep the route to the box private (LAN or VPN).
 
 Advertise TelltaleDNS as the client DNS server (FRITZ!Box **Local DNS server** in the LAN DHCP settings where supported), or set DNS directly on clients. Check the query log for their original LAN IPs. When the router forwards queries under its own IP, those queries have a router-level identity and policy.
 

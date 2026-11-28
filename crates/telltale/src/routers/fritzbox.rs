@@ -12,7 +12,8 @@ use super::{Device, Polled};
 const HOSTS: &str = "urn:dslforum-org:service:Hosts:1";
 const SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 /// A box that claims more fails the poll: nothing of a partial list is used.
-const MAX_HOSTS: usize = 2_048;
+/// 1,024 at about 70 ms a request (a VPN) fits [`POLL_CEILING`].
+const MAX_HOSTS: usize = 1_024;
 /// Hosts are read one request each (a few ms to a few hundred over a VPN), so the budget is
 /// per request, not per poll.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);

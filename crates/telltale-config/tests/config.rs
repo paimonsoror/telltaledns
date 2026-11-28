@@ -1620,7 +1620,16 @@ fn t8_2_fritzbox_requires_distinct_ipv4_client_networks() {
     };
     let first = source("site-a", r#"["192.168.40.0/24"]"#);
     let valid = first.clone() + &source("site-b", r#"["192.168.50.0/24"]"#);
-    assert_eq!(load_str(&valid).unwrap().config.router.len(), 2);
+    let loaded = load_str(&valid).unwrap();
+    assert_eq!(loaded.config.router.len(), 2);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("router[1].url: plain http://")),
+        "{:?}",
+        loaded.warnings
+    );
     for subnets in ["[]", r#"["192.168.40.128/25"]"#, r#"["fd00::/64"]"#] {
         let config = first.clone() + &source("site-b", subnets);
         assert!(paths(&load_str(&config).unwrap_err()).contains(&"router[1].client_subnets"));
