@@ -1957,8 +1957,12 @@ fn dns_003_a_loopback_listener_warns_about_the_other_family() {
             "listen[0].trusted_proxies[0]: a loopback listener only sees this host; `127.0.0.1/32` never connects"
         ]
     );
-    assert!(warns("127.0.0.1:9443", "\"127.0.0.2\"").is_empty());
-    assert!(warns("[::1]:9443", "\"::1\"").is_empty());
+    for (addr, list) in [
+        ("127.0.0.1:9443", "\"127.0.0.2\""),
+        ("[::1]:9443", "\"::1\""),
+    ] {
+        assert_eq!(warns(addr, list), Vec::<String>::new(), "{addr} {list}");
+    }
 }
 
 /// REQ: DNS-003 (ADR-194) — `trusted_proxies` takes networks or addresses only: a host name is
