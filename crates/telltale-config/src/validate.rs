@@ -328,7 +328,7 @@ fn fritzbox(
         if authority.is_empty() || authority.contains(['/', '?', '#', '@']) {
             report.err(
                 format!("{path}.url"),
-                "scheme, host and port only, e.g. http://192.168.178.1:49000 (no path, query or user)",
+                "scheme, host and port only, e.g. https://192.168.178.1:49443 (no path, query or user)",
             );
         }
     }
@@ -354,14 +354,17 @@ fn fritzbox(
         }
         networks.push((index, net));
     }
-    if router.username.is_some()
-        || router.password_file.is_some()
-        || router.api_key_file.is_some()
-        || router.api_secret_file.is_some()
-    {
+    // REQ: T8.2 (ADR-190) — a user and its password (the whole list, signed in), or neither.
+    if router.api_key_file.is_some() || router.api_secret_file.is_some() {
         report.err(
             path.to_owned(),
-            "FRITZ!Box Hosts polling does not use credentials",
+            "FRITZ!Box signs in with username and password_file, not an API key",
+        );
+    }
+    if router.username.is_some() != router.password_file.is_some() {
+        report.err(
+            path.to_owned(),
+            "FRITZ!Box needs username and password_file together (neither: read without sign-in)",
         );
     }
 }

@@ -1007,7 +1007,7 @@ pub(crate) async fn put_schedule(
 /// The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi
 /// console: `{"type": "unifi", "url": "https://192.168.1.1", "api_key": "…",
 /// "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
-/// UniFi password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
+/// UniFi or FRITZ!Box password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
 /// each to a new file only it can read under `<data_dir>/secrets/` on this node and stores that
 /// file's path. The value itself is never stored, logged, or returned; with an `Idempotency-Key`,
 /// the record kept for a retry holds only a keyed hash of it, for a day (ADR-181). A pasted key goes only
@@ -1020,7 +1020,9 @@ pub(crate) async fn put_schedule(
 /// only: an administrator's own sign-in or an admin API token; agent tokens can't. The routers
 /// are read again within 5 seconds after the reads in progress end; a router the config files
 /// define is overridden until this one is deleted. A key left out with none of its own is
-/// refused (422) by the name to paste (`api_key`, `api_secret`, `password`).
+/// refused (422) by the name to paste (`api_key`, `api_secret`, `password`). A FRITZ!Box
+/// (`"type": "fritzbox"`, with `client_subnets`) signs in here: a `username` and its `password`;
+/// one read without a sign-in is a `[[router]]` entry in the config file (422).
 #[utoipa::path(put, path = "/api/v1/routers/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,

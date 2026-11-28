@@ -7,8 +7,9 @@
 //!   An API key (`X-API-KEY`), or a local username and password.
 //! - **OPNsense**: the DHCP leases (Dnsmasq, Kea, or ISC, whichever the box runs), with an
 //!   API key and secret.
-//! - **FRITZ!Box** (config file only): the TR-064 Hosts entries in `client_subnets`; read by
-//!   full cluster members, not resolver pods.
+//! - **FRITZ!Box**: the TR-064 Hosts entries in `client_subnets`. Signed in (a user and its
+//!   password, HTTP Digest; ADR-190), the whole host list at once; without a sign-in (config
+//!   file only), one request a host. Read by full cluster members, not resolver pods.
 //!
 //! Polled every `interval_secs`; the result replaces that router's part of the lease view
 //! the naming falls back to (after configured device names and TelltaleDNS's own DHCP).

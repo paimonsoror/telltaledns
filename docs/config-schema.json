@@ -3258,16 +3258,16 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`\n(in the configuration file only).",
+          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`\n(TR-064; one read without a sign-in is in the configuration file only).",
           "$ref": "#/$defs/RouterKind"
         },
         "url": {
-          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`.",
+          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`, `https://192.168.178.1:49443` (a\nFRITZ!Box signed in; `http://192.168.178.1:49000` without a sign-in).",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "username": {
-          "description": "UniFi without an API key: a local (read-only is enough) user and a file holding its\npassword.",
+          "description": "UniFi without an API key: a local (read-only is enough) user and a file holding its\npassword. FRITZ!Box: a FRITZ!Box user and its password, to read the whole host list\nat once (HTTP Digest); without them, one request a host.",
           "type": [
             "string",
             "null"

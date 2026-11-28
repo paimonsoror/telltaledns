@@ -482,6 +482,7 @@ Beaconing detection shipped in T3.13 (the anomaly engine). io_uring was measured
 
 - [x] **T8.2 Router integrations.** *(API-010 naming sources)* `[[router]]`: UniFi (API key or local user) and OPNsense (API key and secret) DHCP clients name devices. Also set from the UI (Clients → Discovered → Routers, `PUT /api/v1/routers/{name}`), with pasted keys saved as private files and no restart (ADR-181, Proposed).
   - [x] **FRITZ!Box Hosts via TR-064** (API-010, FLT-006; ADR-189; issue #109). Configured per IPv4 client network. Reuses the router MAC freshness and conflict rules.
+  - [x] **FRITZ!Box signed in** (T8.2, API-002; ADR-190). HTTP Digest with a user and its password reads the whole host list at once; the router API and the UI take a signed-in box.
   - *AC:* a UniFi OS login (cookie) or API key reads the client list (alias over host name); OPNsense's leases from whichever DHCP server it runs; unnamed devices take those names (the query log, the API); the leases API shows them with `source = router`; a router that's down keeps its last list and is retried; config errors for missing credentials.
   - *Done 2026-10-06:* `crates/telltale/src/routers.rs` (ADR-080, Proposed), `Client::insecure` and `Client::with_ca_file` in the fetch client, the router lease view and naming fallback, `source` on leases; config and validation; unit tests; `deploy/routers-e2e.sh` in CI (fake UniFi OS and OPNsense APIs); docs.
 

@@ -60,20 +60,22 @@
     return { text: 'key saved', cls: 'ok' };
   };
   const routerFields: Field[] = [
-    { key: 'type', label: 'Type', type: 'select', options: ['unifi', 'opnsense'], initial: 'unifi' },
+    { key: 'type', label: 'Type', type: 'select', options: ['unifi', 'opnsense', 'fritzbox'], optionLabels: { unifi: 'UniFi', opnsense: 'OPNsense', fritzbox: 'FRITZ!Box' }, initial: 'unifi' },
     { key: 'url', label: 'Address', type: 'text', placeholder: 'https://192.168.1.1',
-      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. A pasted key is sent only over https://. Changing the address (or the type, site or TLS settings) needs the key pasted again.' },
+      help: 'UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. FRITZ!Box: https://192.168.178.1:49443, with a username and password under Advanced. A pasted key is sent only over https://. Changing the address (or the type, site or TLS settings) needs the key pasted again.' },
     { key: 'api_key', label: 'API key', type: 'secret', placeholderFor: kept('api_key', 'API key'),
       help: 'UniFi Network 9+: Settings → Control Plane → Integrations. OPNsense: System → Access → Users → API keys. It is saved on the node that takes configuration changes, and not in backups.' },
     { key: 'api_secret', label: 'API secret (OPNsense)', type: 'secret', placeholderFor: kept('api_secret', 'API secret') },
-    { key: 'username', label: 'Username (UniFi, instead of an API key)', type: 'text', placeholder: 'telltale', advanced: true,
-      help: 'A local UniFi user; read-only is enough.' },
-    { key: 'password', label: 'Password (UniFi)', type: 'secret', placeholderFor: kept('password', 'password'), advanced: true },
+    { key: 'username', label: 'Username (FRITZ!Box; UniFi instead of an API key)', type: 'text', placeholder: 'telltale', advanced: true,
+      help: 'A local UniFi user; read-only is enough. FRITZ!Box: a user of the box (System → FRITZ!Box Users), with access to its settings.' },
+    { key: 'password', label: 'Password (UniFi, FRITZ!Box)', type: 'secret', placeholderFor: kept('password', 'password'), advanced: true },
+    { key: 'client_subnets', label: 'Client networks (FRITZ!Box, one per line)', type: 'lines', placeholder: '192.168.178.0/24',
+      help: "The box's IPv4 networks whose hosts it may name: required for a FRITZ!Box, and not overlapping another box's." },
     { key: 'site', label: 'Site (UniFi)', type: 'text', placeholder: 'default', advanced: true },
     { key: 'tls_ca', label: 'Console certificate', type: 'text', placeholder: '/etc/telltale/udm.pem',
       help: 'A self-signed console: a file with its certificate, so it is verified.' },
     { key: 'tls_server_name', label: 'Name in the certificate', type: 'text', placeholder: 'unifi.local',
-      help: 'UniFi consoles name themselves unifi.local.' },
+      help: 'UniFi consoles name themselves unifi.local; a FRITZ!Box, fritz.box.' },
     { key: 'tls_insecure_skip_verify', label: "Don't check the certificate", type: 'bool',
       help: 'Works with any console, but anything on your network could pose as it and receive the key. With a pasted key, give the address as a number (https://192.168.1.1).' },
     { key: 'interval_secs', label: 'Read every (seconds)', type: 'number', placeholder: '300', advanced: true },
@@ -313,7 +315,7 @@
     <section class="card" data-testid="discovered">
       <h2>Discovered on your network</h2>
       <p class="muted small">
-        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
+        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense, FRITZ!Box), or that devices announced
         themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
         one, change it, or put the device in a group.
       </p>

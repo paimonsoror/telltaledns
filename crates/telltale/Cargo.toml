@@ -21,6 +21,9 @@ socket2 = { version = "0.6.5", features = ["all"] }
 http = "1.5.0"
 # T8.2: parse namespaced TR-064 XML with DTDs disabled.
 roxmltree = "0.21.1"
+# REQ: T8.2 (ADR-190) — TR-064 signs in with HTTP Digest (RFC 7616), which FRITZ!OS offers
+# with MD5 only; its digest crate is already in the tree.
+md-5 = "0.11.0"
 base64 = "0.23.1"
 telltale-git = { version = "0.9.0", path = "../telltale-git" }
 blake3 = "1.8.7"

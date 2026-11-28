@@ -1658,3 +1658,28 @@ fn t8_2_fritzbox_url_is_an_origin_and_subnets_are_fritzbox_only() {
     let unifi = "[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"https://192.168.1.1\"\napi_key_file = \"/run/secrets/k\"\nclient_subnets = [\"192.168.40.0/24\"]\n";
     assert!(paths(&load_str(unifi).unwrap_err()).contains(&"router[0].client_subnets"));
 }
+
+/// REQ: T8.2 (ADR-190) — a FRITZ!Box signs in with a user and its password, or not at all.
+#[test]
+fn t8_2_fritzbox_signs_in_with_a_user_and_its_password_or_not_at_all() {
+    let source = |extra: &str| {
+        format!(
+            "[[router]]\nname = \"box\"\ntype = \"fritzbox\"\nurl = \"https://192.168.40.1:49443\"\nclient_subnets = [\"192.168.40.0/24\"]\n{extra}"
+        )
+    };
+    for ok in [
+        "",
+        "username = \"telltale\"\npassword_file = \"/etc/telltale-secrets/box/password\"\n",
+    ] {
+        assert!(load_str(&source(ok)).is_ok(), "{ok}");
+    }
+    for bad in [
+        "username = \"telltale\"\n",
+        "password_file = \"/etc/telltale-secrets/box/password\"\n",
+        "api_key_file = \"/etc/telltale-secrets/box/key\"\n",
+        "api_secret_file = \"/etc/telltale-secrets/box/secret\"\n",
+    ] {
+        let errs = load_str(&source(bad)).unwrap_err();
+        assert!(paths(&errs).contains(&"router[0]"), "{bad}: {errs:?}");
+    }
+}
