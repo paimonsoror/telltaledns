@@ -89,6 +89,10 @@
   let explained = $state<S['Explanation'] | null>(null);
   // The configured devices, for the quick rule form's pre-fill: null until they have arrived.
   let configured = $state<S['ClientInfo'][] | null>(null);
+  // REQ: FLT-005, FLT-006 (ADR-183, GitHub issue #95) — how the row's address is recognized now, as the
+  // naming dialog reads it: the MAC a device there could be named by, where it comes from, and whether
+  // several addresses share it, for the form's hint. Null when the read fails or leaves it out.
+  let recognition = $state<S['DeviceRecognition'] | null>(null);
   let whySeq = 0;
   let whyError = $state<unknown>(null);
 
@@ -235,15 +239,24 @@
     why = r;
     explained = null;
     configured = null;
+    recognition = null;
     whyError = null;
     // The configured devices are for the quick rule form, which only someone who makes rules sees:
     // asked beside the explanation (a read from every node that must not hold it up), and not at all
-    // for anyone else.
+    // for anyone else. So is the address's identity, for its recognition: in a cluster that read asks
+    // every node too, and only the recognition in it is this node's own. The form waits for both, so
+    // its hint doesn't appear after the form does.
     const devices = can('operator')
-      ? api
-          .clients()
-          .then((c) => c.items)
-          .catch(() => [] as S['ClientInfo'][])
+      ? Promise.all([
+          api
+            .clients()
+            .then((c) => c.items)
+            .catch(() => [] as S['ClientInfo'][]),
+          api
+            .identity(r.client)
+            .then((id) => id.recognition ?? null)
+            .catch(() => null),
+        ])
       : null;
     try {
       const x = await api.explain({ name: r.name, client: r.client, qtype: r.qtype });
@@ -252,7 +265,12 @@
       if (mine === whySeq) whyError = e;
       return;
     }
-    if (devices) void devices.then((items) => mine === whySeq && (configured = items));
+    if (devices)
+      void devices.then(([items, rec]) => {
+        if (mine !== whySeq) return;
+        recognition = rec;
+        configured = items;
+      });
   }
 
   /**
@@ -471,6 +489,9 @@
               workload={pre.workload}
               workloadFrom={pre.workloadFrom}
               group={pre.group}
+              mac={recognition?.mac ?? ''}
+              macFrom={recognition?.macFrom ?? ''}
+              macShared={recognition?.macShared ?? false}
               known={configured}
             />
           {:else}
