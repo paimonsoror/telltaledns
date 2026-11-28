@@ -184,7 +184,7 @@ pub(crate) fn paste_wording(errs: Vec<String>) -> Vec<String> {
         .map(|e| {
             e.replace(
                 "UniFi needs api_key_file, or username and password_file",
-                "UniFi needs a key: paste the API key (`api_key`), or, under Advanced, a username and a password (`password`)",
+                "UniFi needs a key: paste the API key (`api_key`), or a username and a password (`password`)",
             )
             .replace(
                 "OPNsense needs api_key_file and api_secret_file",
