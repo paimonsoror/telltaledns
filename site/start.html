@@ -142,7 +142,7 @@ dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works
         <li><b>Create the admin account.</b> Print the one-time setup token and open the UI at <code>http://&lt;address&gt;:8053/</code>:
 <pre><code>docker compose exec telltale telltale auth setup-token</code></pre></li>
       </ol>
-      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>docker compose kill -s HUP</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
+      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' $(docker compose ps -q telltale))"</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
 
       <h4>docker run</h4>
 <pre><code>docker run -d --name telltale --read-only --cap-drop ALL \

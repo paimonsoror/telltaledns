@@ -1,7 +1,7 @@
 # TelltaleDNS starter config (REQ: OPS-004) — the same file the Compose bundle and install.sh use.
 # Every key is optional; see docs/configuration.md. Check edits with:
 #   telltale config check /etc/telltale/telltale.toml
-# Changes apply on reload (SIGHUP / `docker compose kill -s HUP`) without dropping queries.
+# Changes apply on reload (SIGHUP / with Docker see "Reload in Docker" in docs/running.md) without dropping queries.
 config_version = 1
 
 # DNS listens on UDP and TCP port 53 on every address (IPv4 and IPv6) unless [[listen]] is
