@@ -705,10 +705,8 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.router, &e.routers);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
     apply_one_of(&mut cfg, e);
-    for c in &e.clients {
-        if !cfg.client.iter().any(|f| f.name == c.name) {
-            cfg.client.push(c.clone());
-        }
+    for c in added_clients(file, e) {
+        cfg.client.push(c.clone());
     }
     // A rule ID the files use wins (ADR-067).
     for r in &e.rules {
@@ -776,6 +774,69 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let (_, report) = telltale_policy::LocalData::from_config(&cfg);
     errs.extend(report.errors);
     if errs.is_empty() { Ok(cfg) } else { Err(errs) }
+}
+
+/// The devices made through the API that [`merge`] adds after `file`'s own, in the store's order:
+/// each one whose name no device before it has (a device of the files with that name wins).
+fn added_clients<'e>(file: &Config, e: &'e Entries) -> Vec<&'e ClientConfig> {
+    let mut taken: Vec<&str> = file.client.iter().map(|c| c.name.as_str()).collect();
+    let mut added = Vec::new();
+    for c in &e.clients {
+        if !taken.contains(&c.name.as_str()) {
+            taken.push(c.name.as_str());
+            added.push(c);
+        }
+    }
+    added
+}
+
+/// REQ: API-010, CLU-003 (ADR-191; GitHub issue #113) — the devices made through the API that
+/// `errs`, the reasons a [`merge`] of `e` onto `file` gave, name by their place in its list of
+/// devices (`client[3]`): the stored rows to change or delete, which the API's lists don't show
+/// while they aren't in effect. The merge lists `file`'s devices first, so a place after them is a
+/// stored device ([`added_clients`]). In the order the reasons name them, each once.
+pub(crate) fn stored_devices_named(file: &Config, e: &Entries, errs: &[String]) -> Vec<String> {
+    let added = added_clients(file, e);
+    let mut named: Vec<String> = Vec::new();
+    for at in errs.iter().flat_map(|r| client_places(r)) {
+        if let Some(c) = at.checked_sub(file.client.len()).and_then(|i| added.get(i))
+            && !named.iter().any(|n| n == c.name.as_str())
+        {
+            named.push(c.name.to_string());
+        }
+    }
+    named
+}
+
+/// The places `client[N]` a reason names (as `validate_config` writes them).
+fn client_places(reason: &str) -> Vec<usize> {
+    const AT: &str = "client[";
+    reason
+        .match_indices(AT)
+        .filter(|(i, _)| {
+            !reason[..*i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .filter_map(|(i, _)| {
+            let tail = &reason[i + AT.len()..];
+            let digits = tail.find(|c: char| !c.is_ascii_digit())?;
+            if digits == 0 || !tail[digits..].starts_with(']') {
+                return None;
+            }
+            tail[..digits].parse().ok()
+        })
+        .collect()
+}
+
+/// `` `a`, `b` ``, for a message.
+pub(crate) fn quoted(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Adds the upstreams a forwarded domain becomes to `cfg` and returns their names: one per
@@ -877,12 +938,27 @@ pub(crate) fn effective(file: &Config) -> Config {
             for e in &errs {
                 error!("config made in the UI/API: {e}");
             }
-            error!(
-                "ignoring config made in the UI until this is fixed; using the config files only"
-            );
+            error!("{}", fallback_line(file, &stored, &errs));
             file.clone()
         }
     }
+}
+
+/// REQ: API-010, CLU-003 (ADR-191; GitHub issue #113) — the line [`effective`] logs when the
+/// merge of `e` onto `file` fails with `errs` and the node uses `file` alone. It names the stored
+/// devices the reasons give only by their place in a list, by their names, with the request that
+/// removes one: the way back names itself.
+pub(crate) fn fallback_line(file: &Config, e: &Entries, errs: &[String]) -> String {
+    const LINE: &str =
+        "ignoring config made in the UI until this is fixed; using the config files only";
+    let named = stored_devices_named(file, e, errs);
+    if named.is_empty() {
+        return LINE.to_owned();
+    }
+    format!(
+        "{LINE} (the devices made in the UI that the reasons name: {}; DELETE /api/v1/clients/{{name}} removes one)",
+        quoted(&named)
+    )
 }
 
 #[cfg(test)]

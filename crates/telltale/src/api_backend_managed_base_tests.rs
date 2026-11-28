@@ -1266,11 +1266,12 @@ fn token(auth: &Auth, user: i64, scope: &str, agent: Option<(&str, Option<&str>)
     format!("Bearer tt_{id}_{secret}")
 }
 
-/// REQ: AGT-004, API-010 (ADR-064; issue #113) — an agent token limited to a group may add a
-/// device in its group, and a dry run stores nothing; a refusal for a match key that a device
-/// outside its view holds doesn't name that device to it (its detail gives the merge's reasons,
-/// its hint stays plain), even with `querylog:read`. A person (here an operator) is told which
-/// device holds the key, and where it is defined.
+/// REQ: AGT-004, API-010 (ADR-064, ADR-191; issue #113) — an agent token limited to a group may add
+/// a device in its group, and a dry run stores nothing; a refusal for a match key that a device
+/// outside its view holds doesn't name that device to it (its detail doesn't give the merge's
+/// reasons, which can name devices it can't read, and its hint stays plain), even with
+/// `querylog:read`. A person (here an operator) gets the reasons, and is told which device holds
+/// the key, and where it is defined.
 #[tokio::test]
 async fn agt_004_a_group_agent_is_not_told_which_device_holds_a_key() {
     use axum::body::Body;
@@ -1330,10 +1331,11 @@ match = ["192.168.1.10"]
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
         assert_eq!(status.as_u16(), 422, "{who}: {v}");
-        assert!(
+        assert_eq!(
             v["detail"]
                 .as_str()
                 .is_some_and(|d| d.contains("`192.168.1.10`")),
+            told,
             "{who}: the reason: {v}"
         );
         assert_eq!(v.to_string().contains("`nas`"), told, "{who}: {v}");
@@ -1504,4 +1506,1120 @@ async fn a_dry_run_compares_with_what_the_stored_entries_make_now() {
         .await;
     let r = r.unwrap_or_else(|p| panic!("the dry run of the repair: {p:?}"));
     assert!(!r.applied && r.simulation.is_some(), "{r:?}");
+}
+
+/// The data folder of `n`.
+fn data_dir(n: &Node) -> std::path::PathBuf {
+    std::path::PathBuf::from(n.src.file_config.load().node.data_dir.as_str())
+}
+
+/// Saves this node's role and epoch on disk, as a promotion or a step-down does; no reload runs.
+fn save_role(n: &Node, role: telltale_cluster::node::Role, epoch: u64) {
+    let mut id = telltale_cluster::node::Identity::load(&data_dir(n))
+        .unwrap()
+        .unwrap();
+    id.save_role(role, epoch).unwrap();
+}
+
+/// REQ: API-010 (ADR-040, ADR-191; issue #113) — deleting a stored device that a device of the
+/// base hides (the files' `nas`, or `Newt` of the version a promoted primary builds on) removes the
+/// stored row, and the answer's `before`, which the audit entry records, is that row (its address,
+/// `source` `api`), not the base's device, which stays. So for a dry run and a saved delete, and
+/// through the API the audit entry has the row's address.
+#[tokio::test]
+async fn api_010_delete_of_a_hidden_stored_device_reports_the_row() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+    let client = crate::managed::CLIENT;
+    let nas = r#"
+[[client]]
+name = "nas"
+match = ["192.168.1.10"]
+"#;
+    let standalone = Node::standalone(config(nas));
+    standalone.store(client, "nas", &device_row("nas", &["192.168.1.12"]));
+    let promoted = newt_primary();
+    promoted.store(client, "Newt", &device_row("Newt", &["192.168.0.56"]));
+    for (node, n, name, row, kept) in [
+        (
+            "standalone",
+            &standalone,
+            "nas",
+            "192.168.1.12",
+            "192.168.1.10",
+        ),
+        (
+            "promoted",
+            &promoted,
+            "Newt",
+            "192.168.0.56",
+            "192.168.0.55",
+        ),
+    ] {
+        assert!(!n.falls_back(), "{node}");
+        for dry_run in [true, false] {
+            let r = n.device(name, None, dry_run).await;
+            let r = r.unwrap_or_else(|p| panic!("{node}, dry run {dry_run}: {p:?}"));
+            assert_eq!(
+                r.before
+                    .as_ref()
+                    .map(|b| (b.name.as_str(), b.matches.clone(), b.source.as_str())),
+                Some((name, vec![row.to_owned()], "api")),
+                "{node}, dry run {dry_run}: `before` is the stored row"
+            );
+        }
+        assert!(!n.stored(client).iter().any(|s| s == name), "{node}");
+        let running = n.running();
+        assert!(
+            running
+                .client
+                .iter()
+                .any(|c| c.name.as_str() == name && c.match_keys.iter().any(|k| k.as_str() == kept)),
+            "{node}: the base's device stays: {:?}",
+            running.client
+        );
+    }
+
+    // Through the API: the audit entry of the delete records the row as `before`.
+    standalone.store(client, "nas", &device_row("nas", &["192.168.1.12"]));
+    let app = telltale_api::router(
+        Arc::new(ApiBackend {
+            src: Arc::clone(&standalone.src),
+        }),
+        Arc::clone(&standalone.auth),
+    );
+    let olga = standalone
+        .auth
+        .create_user(
+            "olga",
+            "an operator password",
+            auth::Role::Operator,
+            false,
+            super::local_access_tests::now(),
+        )
+        .unwrap();
+    let operator = token(&standalone.auth, olga.id, "write", None);
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/clients/nas")
+        .header("authorization", operator.as_str())
+        .header("x-telltale-reason", "managed base tests")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let entries = standalone
+        .auth
+        .state()
+        .audit_page(None, 10, Some("client.delete"), None)
+        .unwrap();
+    let detail: serde_json::Value = entries
+        .first()
+        .map(|e| serde_json::from_str(&e.detail).unwrap())
+        .unwrap_or_default();
+    assert_eq!(
+        detail["before"]["match"],
+        json!(["192.168.1.12"]),
+        "the audit entry: {entries:?}"
+    );
+}
+
+/// A primary promoted from replica a moment ago, before the reload that follows its promotion: it
+/// was a replica that last applied [`INHERITED`] (a replica's reloads keep no base to merge the
+/// stored entries onto), `Newt` and `tablet` are stored (made in the UI here, earlier), and its role
+/// on disk is now primary.
+fn just_promoted() -> Node {
+    just_promoted_on(&config(INHERITED))
+}
+
+/// [`just_promoted`], with the version it last applied made from `inherited`.
+fn just_promoted_on(inherited: &Config) -> Node {
+    use telltale_cluster::node::Role;
+    let n = Node::promoted(config(OWN), inherited);
+    save_role(&n, Role::Replica, 1);
+    reload(&n.src);
+    n.store(
+        crate::managed::CLIENT,
+        "Newt",
+        &device_row("Newt", &["192.168.0.55"]),
+    );
+    n.store(
+        crate::managed::CLIENT,
+        "tablet",
+        &device_row("tablet", &["id:tablet"]),
+    );
+    assert!(
+        n.src.managed_base.load().is_none(),
+        "a replica keeps no base"
+    );
+    save_role(&n, Role::Primary, 2);
+    n
+}
+
+/// REQ: CLU-003, API-010, API-002 (ADR-051, ADR-191; issue #113) — a write in the moment after a
+/// promotion, before the reload that follows it has run, is checked on the version the node now
+/// builds on, as that reload merges it: the node's role and that version are read when the write
+/// is planned, not taken from what the last reload (as a replica) kept. The rename of the issue
+/// (`Newt` to `Newt-pve1`, same address) is refused and names `Newt` and where it is; a local name
+/// that version has is refused (409) with words that say where it comes from. Nothing is stored,
+/// the configuration version doesn't move, and after the reload the stored devices apply. So for
+/// every planner: an upstream group of an upstream only that version has is accepted and in
+/// effect after its reload, and a change of the rate limit starts from that version's.
+#[allow(clippy::too_many_lines)] // one case per planner
+#[tokio::test]
+async fn clu_003_a_write_right_after_promotion_is_checked_on_the_inherited_base() {
+    let client = crate::managed::CLIENT;
+    let mut wrong = Vec::new();
+
+    let n = just_promoted();
+    let version = n.version();
+    let r = n
+        .device(
+            "Newt",
+            Some(input(Some("Newt-pve1"), &["192.168.0.55"])),
+            false,
+        )
+        .await;
+    match &r {
+        Err(p)
+            if (400..500).contains(&p.status)
+                && said(p).contains("`Newt`")
+                && said(p).contains("the cluster version this node builds on") => {}
+        _ => wrong.push(format!("the rename of the issue: {}", outcome(&r, &n))),
+    }
+    if n.stored(client) != ["Newt", "tablet"] || n.version() != version {
+        wrong.push(format!(
+            "after the rename: stored {:?}, version {} (was {version})",
+            n.stored(client),
+            n.version()
+        ));
+    }
+    reload(&n.src);
+    if n.falls_back() || !n.has_device("tablet") {
+        wrong.push("after the reload, the stored devices don't apply".to_owned());
+    }
+
+    let n = just_promoted();
+    let version = n.version();
+    let r = n
+        .write(
+            ManagedKind::Record,
+            "printer.lan",
+            Some(json!({ "records": [{ "type": "A", "value": "192.168.0.8" }] })),
+        )
+        .await;
+    match &r {
+        Err(p)
+            if p.status == 409 && p.detail.contains("the cluster version this node builds on") => {}
+        _ => wrong.push(format!("a local name the version has: {}", outcome(&r, &n))),
+    }
+    if !n.stored(crate::managed::RECORD).is_empty() || n.version() != version {
+        wrong.push(format!(
+            "after the local name: stored {:?}, version {} (was {version})",
+            n.stored(crate::managed::RECORD),
+            n.version()
+        ));
+    }
+
+    // `plan_override`: `cloudflare` is that version's upstream, not this node's files'.
+    let n = just_promoted();
+    let r = n
+        .write(
+            ManagedKind::UpstreamGroup,
+            "fast",
+            Some(json!({ "members": ["cloudflare"] })),
+        )
+        .await;
+    let fast = |c: &Config| c.upstream_group.iter().any(|g| g.name.as_str() == "fast");
+    if r.is_err() || n.falls_back() || !fast(&n.running()) {
+        wrong.push(format!(
+            "an upstream group of that version's upstream: {}",
+            outcome(&r, &n)
+        ));
+    }
+
+    // `plan_singleton`: the rate limit before the change is that version's.
+    let n = just_promoted_on(&config(&format!(
+        "{INHERITED}\n[ratelimit]\nqueries = 300\n"
+    )));
+    let r = n
+        .write(
+            ManagedKind::RateLimit,
+            "default",
+            Some(json!({ "queries": 500 })),
+        )
+        .await;
+    match &r {
+        Ok(c) if c.before.as_ref().and_then(|b| b["queries"].as_u64()) == Some(300) => {}
+        Ok(c) => wrong.push(format!("the rate limit before the change: {:?}", c.before)),
+        Err(p) => wrong.push(format!("the rate limit: refused: {p:?}")),
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// REQ: CLU-003, API-010, API-002 (ADR-051, ADR-191; issue #113) — the base a write is checked on
+/// (`replication::managed_base`) is what `replication::unpinned` merges the stored entries onto,
+/// role by role. On a node that applies them, the configuration in effect is the stored entries
+/// merged onto that base, or onto the files when there is none; on one that doesn't (a replica, a
+/// primary with a `[cluster.git]` source) there is no base, and no stored entry is in effect. A
+/// promoted primary and an emergency primary under a Git authority build on the version they last
+/// applied; a standalone node, a first primary, a Git-managed primary under a Git authority, and a
+/// promoted primary whose applied version can't be read (no `applied.json`, a damaged one, a missing
+/// blob) build on their files.
+#[allow(clippy::too_many_lines)] // one case per role
+#[tokio::test]
+async fn clu_003_the_write_base_is_what_unpinned_merges_onto_for_every_role() {
+    use telltale_cluster::node::{Identity, Role};
+    use telltale_cluster::sync::{ClusterManifest, blob_ref};
+    let with_tablet = |n: Node| {
+        n.store(
+            crate::managed::CLIENT,
+            "tablet",
+            &device_row("tablet", &["id:tablet"]),
+        );
+        n
+    };
+    let promoted = || with_tablet(Node::promoted(config(OWN), &config(INHERITED)));
+    let files = |n: &Node| (*n.src.file_config.load_full()).clone();
+    let applied = |n: &Node| telltale_cluster::node::dir_of(&data_dir(n)).join("applied.json");
+    let authority = |n: &Node| {
+        Identity::load(&data_dir(n))
+            .unwrap()
+            .unwrap()
+            .save_authority("gitops")
+            .unwrap();
+    };
+    // (role, its config files, the node, whether it has a base, whether it applies stored entries)
+    let mut cases: Vec<(&str, Config, Node, bool, bool)> = Vec::new();
+    let n = with_tablet(Node::standalone(config(OWN)));
+    cases.push(("standalone", files(&n), n, false, true));
+    let n = with_tablet(Node::first_primary(config(OWN)));
+    cases.push(("first primary, never a replica", files(&n), n, false, true));
+    let n = promoted();
+    cases.push(("promoted from replica", files(&n), n, true, true));
+    let n = promoted();
+    authority(&n);
+    cases.push((
+        "emergency primary under a Git authority",
+        files(&n),
+        n,
+        true,
+        true,
+    ));
+    let n = promoted();
+    authority(&n);
+    let mut f = files(&n);
+    f.cluster.config_source = telltale_config::SafeString::from("gitops");
+    cases.push((
+        "Git-managed primary under a Git authority",
+        f,
+        n,
+        false,
+        true,
+    ));
+    let n = promoted();
+    let mut f = files(&n);
+    f.cluster.git = Some(
+        serde_json::from_value(
+            json!({ "repo": "https://git.example.test/homelab", "path": "telltale/shared.toml" }),
+        )
+        .unwrap(),
+    );
+    cases.push(("primary with a [cluster.git] source", f, n, false, false));
+    let n = promoted();
+    save_role(&n, Role::Replica, 1);
+    cases.push(("replica", files(&n), n, false, false));
+    let n = promoted();
+    std::fs::remove_file(applied(&n)).unwrap();
+    cases.push(("promoted, no applied.json", files(&n), n, false, true));
+    let n = promoted();
+    std::fs::write(applied(&n), b"{").unwrap();
+    cases.push((
+        "promoted, a damaged applied.json",
+        files(&n),
+        n,
+        false,
+        true,
+    ));
+    let n = promoted();
+    let mut m: ClusterManifest =
+        serde_json::from_slice(&std::fs::read(applied(&n)).unwrap()).unwrap();
+    m.config = blob_ref("config.json", b"never stored");
+    std::fs::write(applied(&n), serde_json::to_vec(&m).unwrap()).unwrap();
+    cases.push((
+        "promoted, its version's blob missing",
+        files(&n),
+        n,
+        false,
+        true,
+    ));
+
+    let mut wrong = Vec::new();
+    // Each node stays in `cases`, so its data folder (what these read) is there throughout.
+    for (role, file, _node, has_base, applies) in &cases {
+        let base = crate::replication::managed_base(file);
+        let unpinned = crate::replication::unpinned(file);
+        let in_effect = unpinned.client.iter().any(|c| c.name.as_str() == "tablet");
+        if base.is_some() != *has_base || in_effect != *applies {
+            wrong.push(format!(
+                "{role}: a base {}, the stored device in effect {in_effect}",
+                base.is_some()
+            ));
+            continue;
+        }
+        if *applies {
+            let onto = base.as_ref().unwrap_or(file);
+            if unpinned != crate::managed::effective(onto) {
+                wrong.push(format!(
+                    "{role}: the configuration in effect isn't the stored entries merged onto the base"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// REQ: API-010, CLU-003 (ADR-040, ADR-191; issue #113) — while the stored devices don't apply, the
+/// way back names itself. The fallback's log line names the stored device the reasons point at
+/// (`Newt-pve1`, the row to delete) by its name, not only by its place in a list, with the request
+/// that removes it, and not the stored device that has nothing to do with it (`tablet`). A device
+/// change refused meanwhile says, to whoever may read every device, which stored device that is;
+/// its plain hint names none, says the stored entries don't apply now, and doesn't point at the
+/// groups. A delete refused because something else stored names the device says so, not where the
+/// groups are.
+#[tokio::test]
+async fn api_010_a_fallback_names_the_stored_rows_to_delete() {
+    let client = crate::managed::CLIENT;
+    let mut wrong = Vec::new();
+    let n = newt_primary();
+    n.unstore(client, "Newt");
+    n.store(
+        client,
+        "Newt-pve1",
+        &device_row("Newt-pve1", &["192.168.0.55"]),
+    );
+    assert!(n.falls_back());
+    // The line the fallback logs (`managed::effective` logs `managed::fallback_line`), for the merge
+    // the reload runs: the stored entries onto the version this node builds on. Read from the
+    // function itself, as a test subscriber scoped to this thread doesn't see every event while
+    // other tests log in parallel.
+    let base = crate::replication::managed_base(&n.src.file_config.load()).unwrap();
+    let entries = crate::managed::entries(n.auth.state());
+    let Err(errs) = crate::managed::merge(&base, &entries) else {
+        panic!("the stored entries apply");
+    };
+    let line = crate::managed::fallback_line(&base, &entries, &errs);
+    if !line.contains("`Newt-pve1`")
+        || !line.contains("DELETE /api/v1/clients/")
+        || line.contains("tablet")
+    {
+        wrong.push(format!(
+            "the fallback's log line: {line} (the reasons: {errs:?})"
+        ));
+    }
+    let r = n
+        .device("speaker", Some(input(None, &["192.168.0.80"])), false)
+        .await;
+    match &r {
+        Err(p) => {
+            let plain = p.hint.as_deref().unwrap_or("");
+            if !said(p).contains("`Newt-pve1`")
+                || plain.contains("Newt-pve1")
+                || !plain.contains("don't apply")
+                || plain.contains("GET /api/v1/groups")
+            {
+                wrong.push(format!("a device change meanwhile: {p:?}"));
+            }
+        }
+        Ok(_) => wrong.push(format!("a device change meanwhile: {}", outcome(&r, &n))),
+    }
+
+    // A delete of a device that a stored quick rule names.
+    let s = Node::standalone(config(OWN));
+    s.store(client, "tv", &device_row("tv", &["192.168.1.20"]));
+    let body = json!({ "action": "block", "domain": "games.example.com", "devices": ["tv"] });
+    let row = super::rule_of(&body, "r-tv", "tests", None).unwrap();
+    s.store(
+        crate::managed::RULE,
+        "r-tv",
+        &serde_json::to_value(row).unwrap(),
+    );
+    assert!(!s.falls_back() && s.has_device("tv"));
+    let r = s.device("tv", None, false).await;
+    match &r {
+        Err(p) => {
+            let plain = p.hint.as_deref().unwrap_or("");
+            if plain.contains("GET /api/v1/groups") || !plain.contains("names this device") {
+                wrong.push(format!("the delete of a device a rule names: {p:?}"));
+            }
+        }
+        Ok(_) => wrong.push(format!(
+            "the delete of a device a rule names: {}",
+            outcome(&r, &s)
+        )),
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// Records `count` queries from `ip` in `n`'s telemetry, all in one hour (what `recentQueries`
+/// counts).
+fn queries_from(n: &Node, ip: [u8; 4], count: u64) {
+    use telltale_telemetry::event::{Name, Record};
+    let mut agg = n.src.pipeline.telemetry.aggregates();
+    for i in 0..count {
+        agg.record(&Record::Query(
+            telltale_telemetry::QueryEvent {
+                ts_us: (1_700_000_000 + i) * 1_000_000,
+                client_ip: std::net::Ipv4Addr::from(ip).to_ipv6_mapped().octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: telltale_telemetry::Status::Forwarded,
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 0,
+                t_total_us: 100,
+                t_upstream_us: 0,
+                resp_size: 64,
+                answers: 1,
+            },
+            Name::from_wire(b"\x07example\x03com\x00"),
+        ));
+    }
+}
+
+/// REQ: AGT-002, API-010 (ADR-191; issue #113) — deleting a stored device that a device of the
+/// base hides changes nothing in effect, so its answer counts no recent queries: not the traffic of
+/// the row's address, nor that of the base device, whose label stays. A delete of a device in
+/// effect still counts the queries of its address.
+#[tokio::test]
+async fn api_010_a_hidden_row_delete_counts_no_recent_queries() {
+    let client = crate::managed::CLIENT;
+    let n = Node::standalone(config(
+        r#"
+[[client]]
+name = "nas"
+match = ["192.168.1.10"]
+"#,
+    ));
+    n.store(client, "nas", &device_row("nas", &["192.168.1.12"]));
+    n.store(client, "tv", &device_row("tv", &["192.168.1.20"]));
+    queries_from(&n, [192, 168, 1, 12], 5);
+    queries_from(&n, [192, 168, 1, 10], 3);
+    queries_from(&n, [192, 168, 1, 20], 4);
+    let hidden = n.device("nas", None, true).await;
+    let hidden = hidden.unwrap_or_else(|p| panic!("the hidden row's delete: {p:?}"));
+    let tv = n.device("tv", None, true).await;
+    let tv = tv.unwrap_or_else(|p| panic!("the delete of a device in effect: {p:?}"));
+    assert_eq!(
+        (hidden.recent_queries, tv.recent_queries),
+        (0, 4),
+        "the hidden row's delete: {hidden:?}; a device in effect: {tv:?}"
+    );
+}
+
+/// A standalone node whose config file names `nas` (in group `kids`), and a stored `nas` that the
+/// file's device hides, with match keys (an address and a MAC) and a group of its own that no list
+/// shows; 5 recent queries came from the row's address. The API on it, and an operator who owns
+/// the tokens.
+fn hidden_nas() -> (Node, axum::Router, i64) {
+    let n = Node::standalone(config(
+        r#"
+[[group]]
+name = "kids"
+
+[[client]]
+name = "nas"
+match = ["192.168.1.10"]
+groups = ["kids"]
+"#,
+    ));
+    n.store(
+        crate::managed::CLIENT,
+        "nas",
+        &json!({ "name": "nas", "match": ["192.168.1.12", "02:00:00:00:00:12"], "groups": ["guests"] }),
+    );
+    assert!(!n.falls_back() && n.has_device("nas"));
+    queries_from(&n, [192, 168, 1, 12], 5);
+    let app = telltale_api::router(
+        Arc::new(ApiBackend {
+            src: Arc::clone(&n.src),
+        }),
+        Arc::clone(&n.auth),
+    );
+    let olga = n
+        .auth
+        .create_user(
+            "olga",
+            "an operator password",
+            auth::Role::Operator,
+            false,
+            super::local_access_tests::now(),
+        )
+        .unwrap();
+    (n, app, olga.id)
+}
+
+/// `DELETE /api/v1/clients/{name}` as `creds` (with a reason): the status, and the answer as
+/// JSON and as text.
+async fn api_delete(
+    app: &axum::Router,
+    creds: &str,
+    name: &str,
+    dry_run: bool,
+) -> (u16, serde_json::Value, String) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+    let uri = format!(
+        "/api/v1/clients/{name}{}",
+        if dry_run { "?dryRun=true" } else { "" }
+    );
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("authorization", creds)
+        .header("x-telltale-reason", "managed base tests")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or_default(),
+        text,
+    )
+}
+
+/// The detail of the newest `client.delete` audit entry.
+fn last_delete_audit(n: &Node) -> serde_json::Value {
+    n.auth
+        .state()
+        .audit_page(None, 10, Some("client.delete"), None)
+        .unwrap()
+        .first()
+        .map(|e| serde_json::from_str(&e.detail).unwrap())
+        .unwrap_or_default()
+}
+
+/// REQ: AGT-004, API-010 (ADR-064, ADR-191; issue #113) — deleting a stored device that a device
+/// of the config files hides answers, as `before`, the stored row it removes, which no list shows.
+/// An agent token limited to a group may delete it (the device in effect of that name is in its
+/// group), and is shown that row by its name and `source` only: no match keys, no groups, no
+/// recent queries, for a dry run and a saved delete alike. The audit entry of the saved delete
+/// keeps the whole row.
+#[tokio::test]
+async fn agt_004_a_group_agent_is_shown_a_hidden_stored_row_by_its_name_only() {
+    let (n, app, owner) = hidden_nas();
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", Some("kids"))),
+    );
+    let mut wrong = Vec::new();
+    for dry_run in [true, false] {
+        let (status, v, text) = api_delete(&app, &agent, "nas", dry_run).await;
+        let hidden = ["192.168.1.12", "02:00:00:00:00:12", "guests"];
+        if status != 200
+            || hidden.iter().any(|h| text.contains(h))
+            || v["before"]["name"] != "nas"
+            || v["before"]["source"] != "api"
+            || v["recentQueries"] != 0
+        {
+            wrong.push(format!("dry run {dry_run}: {status} {text}"));
+        }
+    }
+    let audit = last_delete_audit(&n);
+    if audit["before"]["match"] != json!(["192.168.1.12", "02:00:00:00:00:12"])
+        || audit["before"]["groups"] != json!(["guests"])
+    {
+        wrong.push(format!("the audit entry: {audit}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(n.stored(crate::managed::CLIENT).is_empty() && n.has_device("nas"));
+}
+
+/// REQ: AGT-004, API-010 (ADR-191; issue #113) — whoever may read every device (a person, here an
+/// operator; an agent token without a group that may read the query log) is shown that row whole
+/// as `before`, and the audit entry of the saved delete has it.
+#[tokio::test]
+async fn agt_004_a_caller_that_may_read_every_device_is_shown_the_hidden_row() {
+    let (n, app, owner) = hidden_nas();
+    let operator = token(&n.auth, owner, "write", None);
+    let unrestricted = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", None)),
+    );
+    let row = json!(["192.168.1.12", "02:00:00:00:00:12"]);
+    let mut wrong = Vec::new();
+    for (who, creds, dry_run) in [
+        ("an agent without a group", &unrestricted, true),
+        ("an operator", &operator, true),
+        ("an operator", &operator, false),
+    ] {
+        let (status, v, text) = api_delete(&app, creds, "nas", dry_run).await;
+        if status != 200
+            || v["before"]["match"] != row
+            || v["before"]["groups"] != json!(["guests"])
+        {
+            wrong.push(format!("{who}, dry run {dry_run}: {status} {text}"));
+        }
+    }
+    let audit = last_delete_audit(&n);
+    if audit["before"]["match"] != row || audit["before"]["groups"] != json!(["guests"]) {
+        wrong.push(format!("the audit entry: {audit}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// REQ: AGT-004, AGT-002, API-010 (ADR-064, ADR-191; issue #113) — a group agent deleting a device
+/// in effect in its group (a stored device that nothing hides) is shown it whole as `before`, with
+/// the recent queries of its address, for a dry run and a saved delete through the API alike: the
+/// device in effect is looked up before the write, so the reload of a saved delete doesn't make it
+/// look like a row that isn't in effect.
+#[tokio::test]
+async fn agt_004_a_group_agent_deleting_a_device_in_effect_is_shown_it_whole() {
+    let (n, app, owner) = hidden_nas();
+    n.store(
+        crate::managed::CLIENT,
+        "tv",
+        &json!({ "name": "tv", "match": ["192.168.1.20"], "groups": ["kids"] }),
+    );
+    assert!(!n.falls_back() && n.has_device("tv"));
+    queries_from(&n, [192, 168, 1, 20], 4);
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", Some("kids"))),
+    );
+    let mut wrong = Vec::new();
+    for dry_run in [true, false] {
+        let (status, v, text) = api_delete(&app, &agent, "tv", dry_run).await;
+        if status != 200
+            || v["before"]["match"] != json!(["192.168.1.20"])
+            || v["before"]["groups"] != json!(["kids"])
+            || v["recentQueries"] != 4
+        {
+            wrong.push(format!("dry run {dry_run}: {status} {text}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(!n.has_device("tv"), "the saved delete removed it");
+}
+
+/// REQ: AGT-004, API-010 (ADR-191; issue #113) — an agent token without `querylog:read` (and with
+/// no group) may not read every device either: it is shown the hidden stored row by its name and
+/// `source` only, dry run and saved, and the audit entry keeps the whole row.
+#[tokio::test]
+async fn agt_004_an_agent_without_querylog_read_is_shown_a_hidden_row_by_its_name_only() {
+    let (n, app, owner) = hidden_nas();
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients", None)),
+    );
+    let mut wrong = Vec::new();
+    for dry_run in [true, false] {
+        let (status, v, text) = api_delete(&app, &agent, "nas", dry_run).await;
+        let hidden = ["192.168.1.12", "02:00:00:00:00:12", "guests"];
+        if status != 200
+            || hidden.iter().any(|h| text.contains(h))
+            || v["before"]["name"] != "nas"
+            || v["before"]["source"] != "api"
+            || v["recentQueries"] != 0
+        {
+            wrong.push(format!("dry run {dry_run}: {status} {text}"));
+        }
+    }
+    let audit = last_delete_audit(&n);
+    if audit["before"]["match"] != json!(["192.168.1.12", "02:00:00:00:00:12"]) {
+        wrong.push(format!("the audit entry: {audit}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A saved `DELETE /api/v1/clients/{name}` as `creds` (with a reason), with an Idempotency-Key:
+/// the status and the answer as text.
+async fn api_delete_keyed(app: &axum::Router, creds: &str, name: &str, key: &str) -> (u16, String) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/clients/{name}"))
+        .header("authorization", creds)
+        .header("x-telltale-reason", "managed base tests")
+        .header("idempotency-key", key)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// REQ: AGT-003, AGT-004 (ADR-181, ADR-191) — an agent token's Idempotency-Keys are its own: with
+/// the key its owner used for the same request, it gets an answer of its own, and the owner's retry
+/// gets the owner's first answer.
+#[tokio::test]
+async fn agt_003_an_agent_token_gets_its_own_stored_answer() {
+    let (n, app, owner) = hidden_nas();
+    let operator = token(&n.auth, owner, "write", None);
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", Some("kids"))),
+    );
+    let (status, first) = api_delete_keyed(&app, &operator, "nas", "k-113").await;
+    assert!(
+        status == 200 && first.contains("192.168.1.12"),
+        "{status} {first}"
+    );
+    let mut wrong = Vec::new();
+    let (status, again) = api_delete_keyed(&app, &operator, "nas", "k-113").await;
+    if status != 200 || again != first {
+        wrong.push(format!("the owner's retry: {status} {again}"));
+    }
+    let (status, agents) = api_delete_keyed(&app, &agent, "nas", "k-113").await;
+    if agents == first || agents.contains("192.168.1.12") {
+        wrong.push(format!("the agent with its owner's key: {status} {agents}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A dry-run `PUT /api/v1/clients/{name}` of `body` as `creds` (with a reason): the status and the
+/// answer as text.
+async fn api_put_dry(
+    app: &axum::Router,
+    creds: &str,
+    name: &str,
+    body: &serde_json::Value,
+) -> (u16, String) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/v1/clients/{name}?dryRun=true"))
+        .header("authorization", creds)
+        .header("x-telltale-reason", "managed base tests")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// REQ: AGT-004, API-010 (ADR-191; issue #113) — while the stored entries don't apply (a stored quick
+/// rule names `secret-laptop`, which no device is), their reasons can name devices that a caller
+/// that may not read every device can't read. Such a caller's refused device change gets a
+/// `detail` without them, and a delete it may make gets the warning without them. An operator gets
+/// the reasons in both, as before.
+#[tokio::test]
+async fn agt_004_a_restricted_caller_is_not_given_the_reasons_of_rows_it_cant_read() {
+    let (n, app, owner) = hidden_nas();
+    let body =
+        json!({ "action": "block", "domain": "games.example.com", "devices": ["secret-laptop"] });
+    let row = super::rule_of(&body, "r-x", "tests", None).unwrap();
+    n.store(
+        crate::managed::RULE,
+        "r-x",
+        &serde_json::to_value(row).unwrap(),
+    );
+    assert!(n.falls_back(), "the stored entries don't apply");
+    let operator = token(&n.auth, owner, "write", None);
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", Some("kids"))),
+    );
+    let mut wrong = Vec::new();
+    for (who, creds, told) in [
+        ("an operator", &operator, true),
+        ("a group agent", &agent, false),
+    ] {
+        let speaker = json!({ "match": ["192.168.1.80"], "groups": ["kids"] });
+        let (status, text) = api_put_dry(&app, creds, "speaker", &speaker).await;
+        if status != 422 || text.contains("secret-laptop") != told {
+            wrong.push(format!("{who}, a device change: {status} {text}"));
+        }
+        let (status, _, text) = api_delete(&app, creds, "nas", true).await;
+        if status != 200
+            || text.contains("secret-laptop") != told
+            || !text.contains("still don't apply")
+        {
+            wrong.push(format!(
+                "{who}, the delete of the hidden row: {status} {text}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A `GET` of `uri` as `creds`: the status and the answer as text.
+async fn api_get(app: &axum::Router, creds: &str, uri: &str) -> (u16, String) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", creds)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// REQ: AGT-004, API-010 (ADR-191; issue #113) — in place of reasons that can name devices it can't
+/// read, a restricted agent is told what is true. For a match key a device of the config files
+/// holds (nothing is wrong now): that the change conflicts with another device, which the answer
+/// doesn't name, and the hint says what to do; that is true also for these agents, which may list
+/// that device (`config:read`; the group agent's own group). While the stored entries don't apply:
+/// that they don't apply now and that an operator sees why when making the change in the UI, with a
+/// hint that doesn't point at the reasons; and a delete then accepted says they still don't apply
+/// without pointing at warnings it doesn't get. An operator gets the reasons, the hint and the
+/// impact as they are.
+#[tokio::test]
+async fn agt_004_a_restricted_agent_is_told_what_is_true_in_place_of_the_reasons() {
+    let conflict = "this change conflicts with another device, which this answer doesn't name; the hint says what to do";
+    let key_hint =
+        "A match key identifies one device: give this one a key the other device doesn't use.";
+    let dont_apply = "the devices and settings made through the API don't apply now, before this change; an operator sees why when making the change in the UI";
+    let withheld_hint = "The devices and settings made through the API don't apply now, before this change: that has to be fixed first. A device made through the API that isn't in effect can be deleted (DELETE /api/v1/clients/{name}).";
+    let dont_apply_hint = telltale_api::config_api::STORED_ENTRIES_DONT_APPLY_HINT;
+    let (n, app, owner) = hidden_nas();
+    let operator = token(&n.auth, owner, "write", None);
+    let group_agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some((
+            "config:read config:write:clients querylog:read",
+            Some("kids"),
+        )),
+    );
+    let no_log_agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:read config:write:clients", None)),
+    );
+    let parse = |text: &str| serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
+    let mut wrong = Vec::new();
+
+    // The files' `nas` (in `kids`) holds the match key; both agents may list it.
+    let probe = json!({ "match": ["192.168.1.10"], "groups": ["kids"] });
+    for (who, creds) in [
+        ("a group agent", &group_agent),
+        ("an agent without querylog:read", &no_log_agent),
+    ] {
+        let (status, listed) = api_get(&app, creds, "/api/v1/clients").await;
+        if status != 200 || !listed.contains("\"nas\"") {
+            wrong.push(format!("{who} lists the devices: {status} {listed}"));
+        }
+        let (status, text) = api_put_dry(&app, creds, "probe", &probe).await;
+        let v = parse(&text);
+        if status != 422 || v["detail"] != conflict || v["hint"] != key_hint {
+            wrong.push(format!("{who}, the conflict: {status} {text}"));
+        }
+    }
+
+    // The stored entries don't apply (a stored rule names a device no one is); `tv` is stored, and so
+    // not in effect either.
+    let body =
+        json!({ "action": "block", "domain": "games.example.com", "devices": ["secret-laptop"] });
+    let row = super::rule_of(&body, "r-x", "tests", None).unwrap();
+    n.store(
+        crate::managed::RULE,
+        "r-x",
+        &serde_json::to_value(row).unwrap(),
+    );
+    n.store(
+        crate::managed::CLIENT,
+        "tv",
+        &device_row("tv", &["192.168.1.20"]),
+    );
+    assert!(n.falls_back(), "the stored entries don't apply");
+    let speaker = json!({ "match": ["192.168.1.80"], "groups": ["kids"] });
+    for (who, creds, told) in [
+        ("an operator", &operator, true),
+        ("a group agent", &group_agent, false),
+        ("an agent without querylog:read", &no_log_agent, false),
+    ] {
+        let (status, text) = api_put_dry(&app, creds, "speaker", &speaker).await;
+        let v = parse(&text);
+        let right = if told {
+            v["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("secret-laptop"))
+                && v["hint"] == dont_apply_hint
+        } else {
+            v["detail"] == dont_apply && v["hint"] == withheld_hint
+        };
+        if status != 422 || !right {
+            wrong.push(format!("{who}, a device change: {status} {text}"));
+        }
+    }
+    for (who, creds, told) in [
+        ("an operator", &operator, true),
+        ("an agent without querylog:read", &no_log_agent, false),
+    ] {
+        let (status, v, text) = api_delete(&app, creds, "tv", true).await;
+        let impact = v["impact"].as_str().unwrap_or_default();
+        if status != 200
+            || impact.contains("(the warnings say why)") != told
+            || !impact.contains("still don't apply after it")
+        {
+            wrong.push(format!("{who}, the delete of `tv`: {status} {text}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// REQ: AGT-004, API-010 (ADR-191) — a refusal whose reasons are about the caller's own input (here
+/// a group that doesn't exist) keeps them in `detail`, for a caller that may not read every device
+/// too.
+#[tokio::test]
+async fn agt_004_a_refusal_about_the_callers_own_input_keeps_its_reasons() {
+    let (n, app, owner) = hidden_nas();
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients", None)),
+    );
+    let body = json!({ "match": ["192.168.1.80"], "groups": ["nope"] });
+    let (status, text) = api_put_dry(&app, &agent, "speaker", &body).await;
+    assert!(
+        status == 422 && text.contains("unknown group `nope`"),
+        "{status} {text}"
+    );
+}
+
+/// REQ: AGT-004, AGT-002, API-010 (ADR-191; issue #113) — an agent token without `querylog:read` (and
+/// with no group) deleting a device in effect is shown it whole as `before`, with the recent queries
+/// of its address, for a dry run and a saved delete alike, as a group agent is.
+#[tokio::test]
+async fn agt_004_an_agent_without_querylog_read_deleting_a_device_in_effect_is_shown_it_whole() {
+    let (n, app, owner) = hidden_nas();
+    n.store(
+        crate::managed::CLIENT,
+        "tv",
+        &json!({ "name": "tv", "match": ["192.168.1.20"], "groups": ["kids"] }),
+    );
+    assert!(!n.falls_back() && n.has_device("tv"));
+    queries_from(&n, [192, 168, 1, 20], 4);
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients", None)),
+    );
+    let mut wrong = Vec::new();
+    for dry_run in [true, false] {
+        let (status, v, text) = api_delete(&app, &agent, "tv", dry_run).await;
+        if status != 200
+            || v["before"]["match"] != json!(["192.168.1.20"])
+            || v["before"]["groups"] != json!(["kids"])
+            || v["recentQueries"] != 4
+        {
+            wrong.push(format!("dry run {dry_run}: {status} {text}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(!n.has_device("tv"), "the saved delete removed it");
+}
+
+/// REQ: AGT-003 (ADR-181, ADR-191) — an agent token's retry with its own key gets its own first
+/// answer again; another agent token of the same owner sending that key gets an answer of its own.
+#[tokio::test]
+async fn agt_003_an_agent_tokens_retry_replays_its_own_answer_only() {
+    let (n, app, owner) = hidden_nas();
+    let one = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", Some("kids"))),
+    );
+    let two = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", Some("kids"))),
+    );
+    let (status, first) = api_delete_keyed(&app, &one, "nas", "k-a").await;
+    assert_eq!(status, 200, "{first}");
+    let mut wrong = Vec::new();
+    let (status, again) = api_delete_keyed(&app, &one, "nas", "k-a").await;
+    if status != 200 || again != first {
+        wrong.push(format!("the token's own retry: {status} {again}"));
+    }
+    let (status, other) = api_delete_keyed(&app, &two, "nas", "k-a").await;
+    if other == first {
+        wrong.push(format!("the other token with that key: {status} {other}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// REQ: API-010, AGT-004 (ADR-191; issue #113) — a device change whose match key another stored device
+/// (`tv`) holds says what to do: give the device a name and match keys no other device uses. A
+/// person gets that in the fuller hint, which also names `tv` and the request that removes it; a
+/// caller that may not read every device gets the sentence alone.
+#[tokio::test]
+async fn api_010_a_conflict_with_another_stored_device_says_to_use_free_keys() {
+    let sentence = "This change conflicts with another device made through the API: give this one a name and match keys no other device uses.";
+    let (n, app, owner) = hidden_nas();
+    n.store(
+        crate::managed::CLIENT,
+        "tv",
+        &json!({ "name": "tv", "match": ["192.168.1.20"], "groups": ["kids"] }),
+    );
+    assert!(!n.falls_back() && n.has_device("tv"));
+    let operator = token(&n.auth, owner, "write", None);
+    let agent = token(
+        &n.auth,
+        owner,
+        "write",
+        Some(("config:write:clients querylog:read", Some("kids"))),
+    );
+    let speaker = json!({ "match": ["192.168.1.20"], "groups": ["kids"] });
+    let parse = |text: &str| serde_json::from_str::<serde_json::Value>(text).unwrap_or_default();
+    let mut wrong = Vec::new();
+    let (status, text) = api_put_dry(&app, &operator, "speaker", &speaker).await;
+    let hint = parse(&text)["hint"].as_str().unwrap_or_default().to_owned();
+    if status != 422 || !hint.starts_with(sentence) || !hint.contains("`tv`") {
+        wrong.push(format!("an operator: {status} {text}"));
+    }
+    let (status, text) = api_put_dry(&app, &agent, "speaker", &speaker).await;
+    if status != 422 || parse(&text)["hint"] != sentence {
+        wrong.push(format!("a group agent: {status} {text}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

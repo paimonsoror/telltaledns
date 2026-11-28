@@ -61,10 +61,12 @@ pub(crate) struct Sources {
     pub(crate) config: ArcSwap<telltale_config::Config>,
     /// The config files alone (what the API's entries are merged onto; ADR-040).
     pub(crate) file_config: ArcSwap<telltale_config::Config>,
-    /// REQ: API-002, API-010, CLU-003 (ADR-040, ADR-051; GitHub issue #113) — what the last
-    /// reload merged the API's entries onto when that isn't `file_config` alone: on a primary
-    /// promoted from replica, the files plus the cluster version it last applied. The write
-    /// checks validate a change against that same merge. `None`: the files alone.
+    /// REQ: API-002, API-010, CLU-003 (ADR-040, ADR-051, ADR-191; GitHub issue #113) — what the
+    /// last reload merged the API's entries onto when that isn't `file_config` alone: on a primary
+    /// promoted from replica, the files plus the cluster version it last applied. What the API
+    /// lists reads it; a write's checks read the same merge again when the write is planned
+    /// (`api_backend::write_base`), as this copy lags a promotion until its reload. `None`: the
+    /// files alone.
     pub(crate) managed_base: ArcSwapOption<telltale_config::Config>,
     /// REQ: OBS-010 (ADR-179) — the files couldn't be read at start-up, so `file_config` holds
     /// the running configuration instead, until a reload reads them: nothing in it counts as this
