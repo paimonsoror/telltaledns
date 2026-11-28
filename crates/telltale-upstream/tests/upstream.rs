@@ -756,16 +756,18 @@ async fn ups_006_dead_sole_upstream_is_benched() {
 }
 
 /// Opens `up`'s breaker with three timeouts recorded `ago`: its 10 s backoff runs out 10 s
-/// after that.
+/// after that. Each records the whole 400 ms `timeout_ms`, as a real timeout does, so the next
+/// attempt's timeout (a check's too) is 400 ms, not one cut down to a few milliseconds.
 fn bench(up: &Upstream, ago: Duration) {
     let then = Instant::now().checked_sub(ago).unwrap();
     for _ in 0..3 {
-        up.health.record(false, Duration::from_millis(1), then);
+        up.health.record(false, Duration::from_millis(400), then);
     }
     assert_eq!(up.health.snapshot().breaker, Breaker::Open);
+    assert_eq!(up.attempt_timeout(), Duration::from_millis(400));
 }
 
-/// REQ: UPS-006 (ADR-191) — an upstream benched during an outage, on a node whose clients send
+/// REQ: UPS-006 (ADR-198) — an upstream benched during an outage, on a node whose clients send
 /// it no queries, is closed again by the first active check after its backoff: the check is
 /// the half-open probe. Before, only a query's attempt order admitted the probe, so the
 /// breaker stayed open for as long as no query came, while every check succeeded.
@@ -786,7 +788,7 @@ async fn ups_006_active_check_closes_a_recovered_idle_upstream() {
     assert_eq!(up.health.admit(Instant::now()), Admission::Yes);
 }
 
-/// REQ: UPS-006 (ADR-191) — before its backoff runs out, a benched upstream stays benched
+/// REQ: UPS-006 (ADR-198) — before its backoff runs out, a benched upstream stays benched
 /// whatever the check sees, as with a query's last-resort attempt.
 #[tokio::test]
 async fn ups_006_active_check_waits_for_the_backoff() {
@@ -804,7 +806,7 @@ async fn ups_006_active_check_waits_for_the_backoff() {
     assert_eq!(up.health.snapshot().breaker, Breaker::Open);
 }
 
-/// REQ: UPS-006 (ADR-191) — a check that fails as the probe opens the breaker again with the
+/// REQ: UPS-006 (ADR-198) — a check that fails as the probe opens the breaker again with the
 /// backoff doubled, as a query's failed probe does.
 #[tokio::test]
 async fn ups_006_failed_active_check_doubles_the_backoff() {
@@ -822,6 +824,107 @@ async fn ups_006_failed_active_check_doubles_the_backoff() {
         up.health.admit(now + Duration::from_secs(21)),
         Admission::Probe
     );
+}
+
+/// REQ: UPS-006 (ADR-198, issue #116) — the check loop by itself: an upstream benched 11 s ago,
+/// on a node that sends it no queries, is closed again by the loop's own check, with no query
+/// and no direct call to `health_check`. Before, the loop's checks were recorded into the open
+/// breaker and ignored, so it stayed open for as long as no query came.
+#[tokio::test]
+async fn ups_006_the_check_loop_closes_an_idle_benched_upstream() {
+    let up = upstream(1, fake(HEALTHY).await, 1);
+    bench(&up, Duration::from_secs(11));
+    let checks = tokio::spawn(telltale_upstream::active_health_checks(
+        vec![Arc::clone(&up)],
+        Duration::from_millis(100),
+    ));
+    wait_until("the loop's check closes the breaker", 3, || {
+        up.health.snapshot().breaker == Breaker::Closed
+    })
+    .await;
+    checks.abort();
+    assert_eq!(up.health.admit(Instant::now()), Admission::Yes);
+}
+
+/// REQ: UPS-006 (ADR-198) — while a query's probe is out, the check's outcome still counts: its
+/// answer closes the breaker, as the probe's own outcome would (whichever is recorded first
+/// settles it). This was already so before ADR-198, and the test passes without it too: it
+/// pins that sentence of the record.
+#[tokio::test]
+async fn ups_006_a_check_settles_the_breaker_while_a_querys_probe_is_out() {
+    let up = upstream(1, fake(HEALTHY).await, 1);
+    bench(&up, Duration::from_secs(11));
+    assert_eq!(
+        up.health.admit(Instant::now()),
+        Admission::Probe,
+        "a query takes the probe"
+    );
+    up.health_check().await;
+    assert_eq!(up.health.snapshot().breaker, Breaker::Closed);
+    assert_eq!(up.health.admit(Instant::now()), Admission::Yes);
+}
+
+/// REQ: UPS-006 (ADR-198, ADR-013) — a check that is the probe holds the one probe slot: a query
+/// meanwhile isn't admitted to that member, and a group of one still sends it there as its last
+/// resort and gets the answer, so no client waits on the check. Then the breaker is closed.
+#[tokio::test]
+async fn ups_006_the_check_takes_the_one_probe_and_a_query_is_still_answered() {
+    let up = upstream(
+        1,
+        fake(Fake::Healthy {
+            tag: 1,
+            delay: Duration::from_millis(150),
+        })
+        .await,
+        1,
+    );
+    bench(&up, Duration::from_secs(11));
+    let check = tokio::spawn({
+        let up = Arc::clone(&up);
+        async move { up.health_check().await }
+    });
+    wait_until("the check is the probe", 2, || {
+        up.health.snapshot().breaker == Breaker::HalfOpen
+    })
+    .await;
+    assert_eq!(
+        up.health.admit(Instant::now()),
+        Admission::No,
+        "one probe at a time"
+    );
+    let g = Group::new("one", vec![Arc::clone(&up)], Strategy::Failover);
+    let ans = g
+        .resolve(question("x.example"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(summarize(&ans.bytes).unwrap().rcode, rcode::NOERROR);
+    assert_eq!(answer_tag(&ans.bytes), 1);
+    check.await.unwrap();
+    assert_eq!(up.health.snapshot().breaker, Breaker::Closed);
+    assert_eq!(up.health.admit(Instant::now()), Admission::Yes);
+}
+
+/// REQ: UPS-006 (ADR-198) — on a closed breaker a check changes nothing but its own outcome: a
+/// healthy upstream stays closed, and a dead one is opened by its third failed check, as
+/// before. Passes without ADR-198 as well, by design.
+#[tokio::test]
+async fn ups_006_a_check_leaves_a_closed_breaker_alone() {
+    let healthy = upstream(1, fake(HEALTHY).await, 1);
+    healthy.health_check().await;
+    assert_eq!(healthy.health.snapshot().breaker, Breaker::Closed);
+    assert_eq!(healthy.health.admit(Instant::now()), Admission::Yes);
+
+    let dead = upstream(2, fake(Fake::Blackhole).await, 1);
+    for i in 1..=3 {
+        assert_eq!(
+            dead.health.snapshot().breaker,
+            Breaker::Closed,
+            "before check {i}"
+        );
+        dead.health_check().await;
+    }
+    assert_eq!(timeouts_of(&dead), 3);
+    assert_eq!(dead.health.snapshot().breaker, Breaker::Open);
 }
 
 /// REQ: UPS-006 (ADR-165) — the client gets its answer at the query's deadline and doesn't wait

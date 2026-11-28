@@ -345,6 +345,43 @@ mod tests {
         assert_eq!(h.admit(p1 + Duration::from_secs(21)), Admission::Probe);
     }
 
+    /// REQ: UPS-006 (ADR-198) — each failed probe doubles the backoff, and it stops at 5 minutes:
+    /// 20, 40, 80, 160, 300, 300 s. A probe that succeeds closes the breaker and resets it, so
+    /// the next opening is 10 s again. Since ADR-198 the probe can be an active check, so on a
+    /// node without queries the doubling runs as far as the cap.
+    #[test]
+    fn ups_006_failed_probes_double_the_backoff_up_to_five_minutes() {
+        let h = Health::default();
+        let t = Instant::now();
+        for _ in 0..3 {
+            h.record(false, MS, t);
+        }
+        let mut probe = t + BASE_BACKOFF;
+        for secs in [20, 40, 80, 160, 300, 300] {
+            assert_eq!(h.admit(probe), Admission::Probe);
+            h.record(false, MS, probe);
+            let backoff = Duration::from_secs(secs);
+            assert_eq!(
+                h.admit(probe + backoff.saturating_sub(MS)),
+                Admission::No,
+                "backoff {secs} s"
+            );
+            probe += backoff;
+        }
+        assert_eq!(h.admit(probe), Admission::Probe);
+        h.record(true, MS, probe);
+        assert_eq!(h.snapshot().breaker, Breaker::Closed);
+        for _ in 0..3 {
+            h.record(false, MS, probe);
+        }
+        assert_eq!(h.snapshot().breaker, Breaker::Open);
+        assert_eq!(
+            h.admit(probe + BASE_BACKOFF.saturating_sub(MS)),
+            Admission::No
+        );
+        assert_eq!(h.admit(probe + BASE_BACKOFF), Admission::Probe);
+    }
+
     #[test]
     fn ups_006_error_rate_over_window_opens() {
         let h = Health::default();

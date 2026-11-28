@@ -745,14 +745,16 @@ impl Upstream {
     /// REQ: UPS-006 — one active health check. A stub upstream (DNS-022) is up by
     /// [`Self::stub_liveness`]; any other asks [`Self::health_question`] as a client would.
     ///
-    /// REQ: UPS-006 (ADR-191) — an open breaker whose backoff has run out takes its half-open
+    /// REQ: UPS-006 (ADR-198) — an open breaker whose backoff has run out takes its half-open
     /// probe here, so the check's outcome closes it (or opens it again, with the backoff
     /// doubled). Only a query's attempt order used to admit the probe, so an upstream that
     /// nobody's query reached, such as a node with no clients, stayed benched after it had
     /// recovered, however many checks it answered. Before the backoff has run out, and while
     /// a query's probe is out, the check's outcome counts as it always has.
     pub async fn health_check(&self) {
-        let _probe = self.health.admit(Instant::now());
+        // The check runs whatever the admission is: what counts is the transition `admit`
+        // makes, to half-open with this check as the probe once the backoff has run out.
+        let _ = self.health.admit(Instant::now());
         let t0 = Instant::now();
         if let Some(up) = self.stub_liveness().await {
             let (outcome, latency) = if up {
