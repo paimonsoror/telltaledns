@@ -1277,12 +1277,17 @@ const fn default_zone_negative_ttl() -> u32 {
 pub struct RouterConfig {
     /// Unique name (logs, the leases' source).
     pub name: SafeString,
-    /// `unifi` (UniFi OS consoles and the Network application) or `opnsense`.
+    /// `unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`
+    /// (TR-064; one read without a sign-in is in the configuration file only).
     #[serde(rename = "type")]
     pub kind: RouterKind,
     /// The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`
-    /// (Network application), `https://opnsense.lan`.
+    /// (Network application), `https://opnsense.lan`, `https://192.168.178.1:49443` (a
+    /// FRITZ!Box signed in; `http://192.168.178.1:49000` without a sign-in).
     pub url: SafeString,
+    /// FRITZ!Box: IPv4 client networks whose Hosts entries this router may supply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_subnets: Vec<SafeString>,
     /// UniFi: the site (default `default`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SafeString>,
@@ -1293,7 +1298,8 @@ pub struct RouterConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_secret_file: Option<SafeString>,
     /// UniFi without an API key: a local (read-only is enough) user and a file holding its
-    /// password.
+    /// password. FRITZ!Box: a FRITZ!Box user and its password, to read the whole host list
+    /// at once (HTTP Digest); without them, one request a host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<SafeString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1346,6 +1352,7 @@ const fn is_default_offline_days(d: &u32) -> bool {
 pub enum RouterKind {
     Unifi,
     Opnsense,
+    Fritzbox,
 }
 
 /// REQ: OBS-010 (T7.12, `spec/06` §8) — alerts: rules checked on the primary (or a standalone

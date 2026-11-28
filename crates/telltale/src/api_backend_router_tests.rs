@@ -326,6 +326,47 @@ async fn wait_until(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
 
 // ---- T1: who may write a router.
 
+/// REQ: T8.2, API-002 (ADR-190) — the API takes a FRITZ!Box that signs in: its password is
+/// pasted and saved like any router key. One without a sign-in is the config file's (ADR-189),
+/// refused dry run or not, with nothing stored; a pasted password goes only over https://.
+#[tokio::test]
+async fn api_002_the_api_takes_a_fritzbox_only_signed_in() {
+    let n = Node::new(Reload::Applies);
+    let open = serde_json::json!({
+        "type": "fritzbox",
+        "url": "http://192.0.2.1:49000",
+        "client_subnets": ["192.168.40.0/24"]
+    });
+    for dry in [true, false] {
+        let (s, v) = n.put("box", &n.admin, dry, open.clone()).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "dry={dry}: {v}");
+        assert!(v.to_string().contains("configuration file"), "{v}");
+    }
+    assert!(n.stored("box").is_none(), "nothing was stored");
+    let mut plain = open.clone();
+    plain["username"] = "telltale".into();
+    plain["password"] = "pw".into();
+    let (s, v) = n.put("box", &n.admin, false, plain.clone()).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v.to_string().contains("https://"), "{v}");
+    let mut no_password = plain.clone();
+    no_password["url"] = "https://192.0.2.1:49443".into();
+    no_password.as_object_mut().unwrap().remove("password");
+    let (s, v) = n.put("box", &n.admin, false, no_password).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v.to_string().contains("`password`"), "{v}");
+    assert!(n.stored("box").is_none(), "nothing was stored");
+    let mut signed_in = plain;
+    signed_in["url"] = "https://192.0.2.1:49443".into();
+    let (s, v) = n.put("box", &n.admin, false, signed_in).await;
+    assert!(s.is_success(), "{v}");
+    let stored = n.stored("box").unwrap();
+    assert_eq!(stored.username.as_deref(), Some("telltale"));
+    let file = stored.password_file.unwrap();
+    assert_eq!(std::fs::read_to_string(file.as_str()).unwrap().trim(), "pw");
+    assert_eq!(n.secret_files().len(), 1, "{:?}", n.secret_files());
+}
+
 /// REQ: API-002, T8.2 (ADR-181, as ADR-179) — a router is added, changed or removed only by an
 /// administrator's own sign-in or an admin API token: an operator, a viewer, an operator's agent
 /// token with every write area, and an admin's agent token holding the scope an earlier build

@@ -185,13 +185,41 @@ impl Client {
 
     /// A client that also trusts the certificates in the PEM file at `path` (a self-signed
     /// router console, a private CA).
+    ///
+    /// REQ: T8.2 (ADR-190) — a server certificate that is one of these, byte for byte, is
+    /// accepted even where the chain check refuses it: a FRITZ!Box's self-signed certificate is
+    /// marked as a CA, and webpki won't take a CA as the server's own (`CaUsedAsEndEntity`).
+    /// An exact copy pins that one certificate; it must still name the server, and the handshake
+    /// signature is still checked.
     pub fn with_ca_file(resolver: Arc<dyn Resolve>, path: &str) -> Result<Self, String> {
         use rustls::pki_types::pem::PemObject;
-        let roots = CertificateDer::pem_file_iter(path)
+        let pins = CertificateDer::pem_file_iter(path)
             .map_err(|e| format!("{path}: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("{path}: {e}"))?;
-        Self::new(resolver, &roots)
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut roots = RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        for der in &pins {
+            roots.add(der.clone()).map_err(|e| format!("{path}: {e}"))?;
+        }
+        let chain = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::clone(&provider),
+        )
+        .build()
+        .map_err(|e| format!("{path}: {e}"))?;
+        let mut cfg = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(Pinned { chain, pins }))
+            .with_no_client_auth();
+        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(Self {
+            tls: TlsConnector::from(Arc::new(cfg)),
+            ..Self::new(resolver, &[])?
+        })
     }
 
     /// A client that skips certificate verification (signatures are still checked, so the
@@ -604,6 +632,104 @@ mod tests {
         assert_eq!(r("/other.txt"), "https://lists.example.com/other.txt");
         assert_eq!(r("next.txt"), "https://lists.example.com/a/b/next.txt");
         assert_eq!(r("//mirror.example.org/l"), "https://mirror.example.org/l");
+    }
+
+    /// REQ: T8.2 (ADR-190) — a self-signed certificate marked as a CA (a FRITZ!Box's) fails the
+    /// chain check as the server's own, and passes as an exact copy of a pinned one that names
+    /// the server; another such certificate, or another name, still fails.
+    #[test]
+    fn t8_2_a_pinned_ca_certificate_is_accepted_as_the_server_s_own() {
+        use rustls::client::danger::ServerCertVerifier as _;
+        let ca_cert = || {
+            let mut params = rcgen::CertificateParams::new(vec!["fritz.box".to_owned()]).unwrap();
+            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let key = rcgen::KeyPair::generate().unwrap();
+            params.self_signed(&key).unwrap().der().clone()
+        };
+        let (pinned, other) = (ca_cert(), ca_cert());
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut roots = RootCertStore::empty();
+        roots.add(pinned.clone()).unwrap();
+        let chain =
+            rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider)
+                .build()
+                .unwrap();
+        let name = ServerName::try_from("fritz.box").unwrap();
+        let now = rustls::pki_types::UnixTime::now();
+        let check = |v: &dyn rustls::client::danger::ServerCertVerifier,
+                     cert: &CertificateDer<'_>| {
+            v.verify_server_cert(cert, &[], &name, &[], now).is_ok()
+        };
+        assert!(
+            !check(chain.as_ref(), &pinned),
+            "webpki refuses a CA as the server's own"
+        );
+        let verifier = Pinned {
+            chain,
+            pins: vec![pinned.clone()],
+        };
+        assert!(check(&verifier, &pinned));
+        assert!(!check(&verifier, &other));
+        let elsewhere = ServerName::try_from("other.test").unwrap();
+        assert!(
+            verifier
+                .verify_server_cert(&pinned, &[], &elsewhere, &[], now)
+                .is_err(),
+            "a pinned certificate still has to name the server"
+        );
+    }
+}
+
+/// REQ: T8.2 (ADR-190) — the chain check, or an exact copy of a pinned certificate.
+#[derive(Debug)]
+struct Pinned {
+    chain: Arc<rustls::client::WebPkiServerVerifier>,
+    pins: Vec<CertificateDer<'static>>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        match self
+            .chain
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+        {
+            // The pin stands in for the chain, not for the name: it must still name the server.
+            Err(_) if self.pins.iter().any(|p| p.as_ref() == end_entity.as_ref()) => {
+                let cert = rustls::server::ParsedCertificate::try_from(end_entity)?;
+                rustls::client::verify_server_name(&cert, server_name)?;
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+            other => other,
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.chain.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.chain.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.chain.supported_verify_schemes()
     }
 }
 

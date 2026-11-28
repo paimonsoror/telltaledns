@@ -1749,6 +1749,79 @@ fn dns_019_resolver_arpa_default_on_and_not_written() {
     assert!(load_str("[special]\nresolver_arpa = \"no\"\n").is_err());
 }
 
+#[test]
+fn t8_2_fritzbox_requires_distinct_ipv4_client_networks() {
+    let source = |name: &str, subnets: &str| {
+        format!(
+            "[[router]]\nname = \"{name}\"\ntype = \"fritzbox\"\nurl = \"http://{name}:49000\"\nclient_subnets = {subnets}\n"
+        )
+    };
+    let first = source("site-a", r#"["192.168.40.0/24"]"#);
+    let valid = first.clone() + &source("site-b", r#"["192.168.50.0/24"]"#);
+    let loaded = load_str(&valid).unwrap();
+    assert_eq!(loaded.config.router.len(), 2);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("router[1].url: plain http://")),
+        "{:?}",
+        loaded.warnings
+    );
+    for subnets in ["[]", r#"["192.168.40.128/25"]"#, r#"["fd00::/64"]"#] {
+        let config = first.clone() + &source("site-b", subnets);
+        assert!(paths(&load_str(&config).unwrap_err()).contains(&"router[1].client_subnets"));
+    }
+}
+
+#[test]
+fn t8_2_fritzbox_url_is_an_origin_and_subnets_are_fritzbox_only() {
+    let source = |url: &str| {
+        format!(
+            "[[router]]\nname = \"box\"\ntype = \"fritzbox\"\nurl = \"{url}\"\nclient_subnets = [\"192.168.40.0/24\"]\n"
+        )
+    };
+    for url in ["http://192.168.40.1:49000", "http://[fd00::1]:49000/"] {
+        assert!(load_str(&source(url)).is_ok(), "{url}");
+    }
+    for url in [
+        "http://192.168.40.1:49000/tr064",
+        "http://admin:pw@192.168.40.1:49000",
+        "http://192.168.40.1:49000?a=1",
+        "http://",
+    ] {
+        let errs = load_str(&source(url)).unwrap_err();
+        assert!(paths(&errs).contains(&"router[0].url"), "{url}: {errs:?}");
+    }
+    let unifi = "[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"https://192.168.1.1\"\napi_key_file = \"/run/secrets/k\"\nclient_subnets = [\"192.168.40.0/24\"]\n";
+    assert!(paths(&load_str(unifi).unwrap_err()).contains(&"router[0].client_subnets"));
+}
+
+/// REQ: T8.2 (ADR-190) — a FRITZ!Box signs in with a user and its password, or not at all.
+#[test]
+fn t8_2_fritzbox_signs_in_with_a_user_and_its_password_or_not_at_all() {
+    let source = |extra: &str| {
+        format!(
+            "[[router]]\nname = \"box\"\ntype = \"fritzbox\"\nurl = \"https://192.168.40.1:49443\"\nclient_subnets = [\"192.168.40.0/24\"]\n{extra}"
+        )
+    };
+    for ok in [
+        "",
+        "username = \"telltale\"\npassword_file = \"/etc/telltale-secrets/box/password\"\n",
+    ] {
+        assert!(load_str(&source(ok)).is_ok(), "{ok}");
+    }
+    for bad in [
+        "username = \"telltale\"\n",
+        "password_file = \"/etc/telltale-secrets/box/password\"\n",
+        "api_key_file = \"/etc/telltale-secrets/box/key\"\n",
+        "api_secret_file = \"/etc/telltale-secrets/box/secret\"\n",
+    ] {
+        let errs = load_str(&source(bad)).unwrap_err();
+        assert!(paths(&errs).contains(&"router[0]"), "{bad}: {errs:?}");
+    }
+}
+
 /// A TLS `doh` listener on all addresses, for the ADR-194 tests to add keys to.
 const DOH_TLS: &str = "[[listen]]\nproto = \"doh\"\naddr = \"0.0.0.0:443\"\ntls = { cert = \"/etc/telltale/tls.crt\", key = \"/etc/telltale/tls.key\" }\n";
 

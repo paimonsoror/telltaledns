@@ -154,6 +154,7 @@ const TABLE: &[(&str, Class)] = &[
     ("route[].upstream_group", Plain),
     ("router[].api_key_file", Scan),
     ("router[].api_secret_file", Scan),
+    ("router[].client_subnets[]", Scan),
     ("router[].name", Plain),
     ("router[].password_file", Scan),
     ("router[].site", Plain),

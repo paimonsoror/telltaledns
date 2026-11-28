@@ -1464,10 +1464,41 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 - The Groups page shows each group's schedules and which are **on now**; the query log shows blocks as **schedule**.
 - **In the UI:** **Groups → Schedules** adds, changes, or removes schedules (windows one per line, like `weekdays 21:00-07:00`), and a group's editor picks the schedules it follows. Through the API: `PUT`/`DELETE /api/v1/schedules/{name}` with the same fields as `[[schedule]]` (agents need `config:write:groups`, and AI agents can plan one with the MCP tool `plan_set_schedule`).
 
-### Names from your router (UniFi, OPNsense)
+### Names from your router (UniFi, OPNsense, FRITZ!Box)
 TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and TelltaleDNS can read its client list, so devices show up by name.
 
-**In the UI (admins):** **Clients → Discovered → Routers → Add router**. Pick UniFi or OPNsense, give its `https://` address, and paste the API key (for OPNsense, the key and the secret; for UniFi without a key, Advanced shows a username and password). TelltaleDNS saves each pasted value to a new file only it can read, `secrets/router-<name>.<key>.<random>` in the data folder (mode 0600, folder 0700), and never shows it again; the router's row says **key saved**. Editing the router later keeps the key unless you type a new one, except that changing the address, the type, the site, or the TLS settings needs the key typed again, so a saved key isn't sent to a router address or TLS setting other than the one it was entered with (where a host name resolves is another matter: see the next points). A router added or changed is read within 5 seconds after the reads in progress end, and a removed router's names go after the next round of reads, without a restart.
+**FRITZ!Box via TR-064:**
+
+```toml
+[[router]]
+name = "site-a"
+type = "fritzbox"
+url = "https://192.168.40.1:49443"                    # TR-064 over TLS
+client_subnets = ["192.168.40.0/24"]
+username = "telltale"                                 # a user of the box (System → FRITZ!Box Users)
+password_file = "/etc/telltale-secrets/site-a/password"
+tls_ca = "/etc/telltale/site-a.pem"                   # the box's own certificate (self-signed)
+tls_server_name = "fritz.box"                         # the name in it
+
+[[router]]                                            # or, without a sign-in (configuration file only)
+name = "site-b"
+type = "fritzbox"
+url = "http://192.168.50.1:49000"
+client_subnets = ["192.168.50.0/24"]
+```
+
+**Signed in** (a user and its password; the box asks for HTTP Digest), the whole host list comes in one file (`X_AVM-DE_GetHostListPath`), so a box read over a VPN takes a few requests, not one per host. Give it a user of the box that may read its settings, over `https://…:49443` (the TR-064 port with TLS). The box's certificate is self-signed, marked as a CA, and names `fritz.box`: TelltaleDNS accepts it as the box's own when it is an exact copy of the one in `tls_ca`. Save it (`openssl s_client -connect 192.168.40.1:49443 </dev/null | openssl x509 > site-a.pem`) as `tls_ca` and set `tls_server_name` to the name in it (`openssl x509 -in site-a.pem -noout -ext subjectAltName`). A signed-in box can also be added in the UI or the API like UniFi and OPNsense (below): the password is pasted and kept like their keys. A list longer than 1,024 hosts fails the read and keeps the last list.
+
+**Without a sign-in:**
+Add a separate entry for each router, with distinct client subnets. Enable LAN access for applications (TR-064) on the FRITZ!Box. From the TelltaleDNS host, verify that `<url>/tr64desc.xml` is reachable over the LAN or private VPN. The host count and per-host read actions require no extra TR-064 rights. This source supports endpoints that allow those reads without credentials. Keep the API on the private network. For HTTPS, configure certificate trust as for other router sources.
+
+Only active IPv4 entries in the listed networks are used. In a Mesh, configure the Mesh Master for clients it reports. Enable the existing `[clients] router_macs` option when using these records for MAC-based policy matching. For a fleet, upgrade all members before adding this router type to shared configuration. The URL is the scheme, host and port only. A box read without a sign-in is configuration-file only: the router API and the UI take a FRITZ!Box only with a username and its password. Only full cluster members read a FRITZ!Box (not resolver pods); the other nodes hear what it says from them.
+
+Without a sign-in, each host is one request (5 seconds each, 2 minutes for the whole list, at most 1,024 hosts; more fails the read and keeps the last list). A plain `http://` URL isn't authenticated: the configuration check warns, and while its list identifies devices by MAC the node logs a warning too, so keep the route to the box private (LAN or VPN).
+
+Advertise TelltaleDNS as the client DNS server (FRITZ!Box **Local DNS server** in the LAN DHCP settings where supported), or set DNS directly on clients. Check the query log for their original LAN IPs. When the router forwards queries under its own IP, those queries have a router-level identity and policy.
+
+**In the UI (admins):** **Clients → Discovered → Routers → Add router**. Pick UniFi, OPNsense or FRITZ!Box, give its `https://` address, and paste the API key (for OPNsense, the key and the secret; for UniFi without a key, a username and password; for a FRITZ!Box, a username and its password, and its client networks). TelltaleDNS saves each pasted value to a new file only it can read, `secrets/router-<name>.<key>.<random>` in the data folder (mode 0600, folder 0700), and never shows it again; the router's row says **key saved**. Editing the router later keeps the key unless you type a new one, except that changing the address, the type, the site, or the TLS settings needs the key typed again, so a saved key isn't sent to a router address or TLS setting other than the one it was entered with (where a host name resolves is another matter: see the next points). A router added or changed is read within 5 seconds after the reads in progress end, and a removed router's names go after the next round of reads, without a restart.
 - **Only administrators** add, change, or remove routers: their own sign-in or an admin API token. Agent tokens can't, whatever scopes they hold. Others see the routers without their key files or user names, and whether each key is saved.
 - **Paste the key; don't name a file.** The UI and the API take the key itself. A key that lives in a file elsewhere (a Docker secret in `/run/secrets/`, a Kubernetes Secret through the chart's `secretMounts`) is named in the configuration file instead.
 - **`https://` only for a pasted key** (or a loopback address such as `http://127.0.0.1`): over `http://` the key could be read on the way. A self-signed console works over `https://` with `tls_ca` and `tls_server_name`, below.

@@ -7,10 +7,15 @@
 //!   An API key (`X-API-KEY`), or a local username and password.
 //! - **OPNsense**: the DHCP leases (Dnsmasq, Kea, or ISC, whichever the box runs), with an
 //!   API key and secret.
+//! - **FRITZ!Box**: the TR-064 Hosts entries in `client_subnets`. Signed in (a user and its
+//!   password, HTTP Digest; ADR-190), the whole host list at once; without a sign-in (config
+//!   file only), one request a host. Read by full cluster members, not resolver pods.
 //!
 //! Polled every `interval_secs`; the result replaces that router's part of the lease view
 //! the naming falls back to (after configured device names and TelltaleDNS's own DHCP).
 //! Never on the DNS path; a router that's down keeps its last answer and is logged.
+
+mod fritzbox;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -654,6 +659,23 @@ fn rebuild(parts: &HashMap<String, Polled>, view: &ArcSwap<Leases>, stale: &Hash
     view.store(Arc::new(m));
 }
 
+/// Why this router's answers aren't authenticated, and the fix; `None` when they are.
+fn unauthenticated(r: &RouterConfig) -> Option<(&'static str, &'static str)> {
+    if r.url.starts_with("http://") {
+        Some((
+            "this router is read over plain http://",
+            "use an https:// url with tls_ca, keep the route to it private",
+        ))
+    } else if r.tls_insecure_skip_verify {
+        Some((
+            "this router's certificate isn't checked (tls_insecure_skip_verify)",
+            "set tls_ca (and tls_server_name)",
+        ))
+    } else {
+        None
+    }
+}
+
 /// Polls every `[[router]]` until `stop`. `resolver_pod`: a Helm resolver pod, which has the
 /// routers' settings but not their key files (ADR-120), logs its failures as info; the
 /// controller, which serves the names in the UI, warns.
@@ -739,6 +761,11 @@ pub(crate) async fn run(
                 failing.remove(r.name.as_str());
                 continue;
             }
+            // REQ: T8.2, CLU-009 (ADR-189) — one box isn't polled by every resolver pod; the
+            // names it gives come from a full member (`devices.names`).
+            if resolver_pod && r.kind == RouterKind::Fritzbox {
+                continue;
+            }
             let client = if r.tls_insecure_skip_verify {
                 telltale_filter::fetch::Client::insecure(Arc::clone(&resolver))
             } else if let Some(p) = &r.tls_ca {
@@ -771,6 +798,7 @@ pub(crate) async fn run(
             let result = match r.kind {
                 RouterKind::Unifi => poll_unifi(&client, r).await,
                 RouterKind::Opnsense => poll_opnsense(&client, r).await,
+                RouterKind::Fritzbox => fritzbox::poll(&client, r).await,
             };
             let was_failing = failing.get(r.name.as_str()).copied().unwrap_or(false);
             match result {
@@ -778,17 +806,14 @@ pub(crate) async fn run(
                     if was_failing || !parts.contains_key(r.name.as_str()) {
                         info!(router = %r.name, devices = seen.now.len(), offline = seen.offline.len(), "router integration: devices read");
                     }
-                    // REQ: FLT-006 (ADR-183) — a router whose certificate isn't checked now
-                    // decides which named device an address is: said once per router.
-                    if r.tls_insecure_skip_verify {
-                        let current = sources.pipeline.current();
-                        let clients = &current.policy.clients;
-                        if clients.router_macs()
-                            && clients.uses_macs()
-                            && warned_tls.insert(r.name.to_string())
-                        {
-                            warn!(router = %r.name, "router integration: this router's certificate isn't checked (tls_insecure_skip_verify), and its client list now decides which named device an address is, so anything posing as it could give a device another's rules; set tls_ca (and tls_server_name), or `[clients] router_macs = false`");
-                        }
+                    // REQ: FLT-006 (ADR-183, ADR-189) — a router whose answer can't be trusted
+                    // (plain HTTP, or a certificate that isn't checked) now decides which
+                    // named device an address is: said once per router.
+                    if let Some((why, fix)) = unauthenticated(r)
+                        && feeds_identification(&sources)
+                        && warned_tls.insert(r.name.to_string())
+                    {
+                        warn!(router = %r.name, "router integration: {why}, and its client list now decides which named device an address is, so anything posing as it could give a device another's rules; {fix}, or `[clients] router_macs = false`");
                     }
                     // REQ: FLT-006 (ADR-183) — rows whose MAC can't identify a device withhold
                     // their address: said once per router, so the fallback can be explained.

@@ -139,7 +139,7 @@ pub(crate) fn slug(name: &str) -> String {
 }
 
 /// 16 random hex digits; `None` if the system's random source fails.
-fn random_hex() -> Option<String> {
+pub(crate) fn random_hex() -> Option<String> {
     let mut r = [0u8; 8];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut r).ok()?;
     Some(r.iter().fold(String::new(), |mut t, b| {
@@ -184,11 +184,19 @@ pub(crate) fn paste_wording(errs: Vec<String>) -> Vec<String> {
         .map(|e| {
             e.replace(
                 "UniFi needs api_key_file, or username and password_file",
-                "UniFi needs a key: paste the API key (`api_key`), or, under Advanced, a username and a password (`password`)",
+                "UniFi needs a key: paste the API key (`api_key`), or a username and a password (`password`)",
             )
             .replace(
                 "OPNsense needs api_key_file and api_secret_file",
                 "OPNsense needs a key: paste the API key and the API secret (`api_key`, `api_secret`)",
+            )
+            .replace(
+                "FRITZ!Box signs in with username and password_file, not an API key",
+                "FRITZ!Box signs in with a username and its password (`password`), not an API key",
+            )
+            .replace(
+                "FRITZ!Box needs username and password_file together (neither: read without sign-in)",
+                "FRITZ!Box needs a username and its password (`password`)",
             )
         })
         .collect()

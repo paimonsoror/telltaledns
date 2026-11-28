@@ -1444,7 +1444,7 @@ export interface paths {
         };
         /**
          * Devices found on the network (API-010; T8.2, T8.3).
-         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
+         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense, FRITZ!Box), then the
          *     names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
          *     TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
          *     because these are the router's DHCP leases.
@@ -2219,7 +2219,7 @@ export interface paths {
          * @description The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi
          *     console: `{"type": "unifi", "url": "https://192.168.1.1", "api_key": "…",
          *     "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
-         *     UniFi password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
+         *     UniFi or FRITZ!Box password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
          *     each to a new file only it can read under `<data_dir>/secrets/` on this node and stores that
          *     file's path. The value itself is never stored, logged, or returned; with an `Idempotency-Key`,
          *     the record kept for a retry holds only a keyed hash of it, for a day (ADR-181). A pasted key goes only
@@ -2232,7 +2232,9 @@ export interface paths {
          *     only: an administrator's own sign-in or an admin API token; agent tokens can't. The routers
          *     are read again within 5 seconds after the reads in progress end; a router the config files
          *     define is overridden until this one is deleted. A key left out with none of its own is
-         *     refused (422) by the name to paste (`api_key`, `api_secret`, `password`).
+         *     refused (422) by the name to paste (`api_key`, `api_secret`, `password`). A FRITZ!Box
+         *     (`"type": "fritzbox"`, with `client_subnets`) signs in here: a `username` and its `password`;
+         *     one read without a sign-in is a `[[router]]` entry in the config file (422).
          */
         put: operations["put_router"];
         post?: never;

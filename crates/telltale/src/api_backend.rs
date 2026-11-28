@@ -5633,6 +5633,23 @@ fn plan_override(
     // REQ: API-002, T8.2 (ADR-181) — routers are an administrator's (checked again here, where
     // every write is planned; `do_write_managed` checks before a body's keys are looked at).
     router_guard(w)?;
+    // REQ: T8.2, API-002 (ADR-190) — a FRITZ!Box from the UI or the API signs in, so its
+    // password is pasted, sent only over https:// and kept like any router key; one read
+    // without a sign-in (a box's open TR-064) stays the configuration file's (ADR-189).
+    if w.kind == ManagedKind::Router
+        && let Some(body) = w.body.as_ref()
+        && body.get("type").and_then(serde_json::Value::as_str) == Some("fritzbox")
+        && body
+            .get("username")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|u| u.trim().is_empty())
+    {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            "`username`: a FRITZ!Box router set through the UI or the API signs in with a username and its password",
+        )
+        .hint("Give a FRITZ!Box user and paste its password, over the box's https:// address (port 49443). A box read without a sign-in is a `[[router]]` entry in the configuration file."));
+    }
     // REQ: OBS-010, API-002 (ADR-179) — before anything else about the body is checked, so
     // whoever is refused learns nothing more.
     if w.kind == ManagedKind::AlertDestination {
