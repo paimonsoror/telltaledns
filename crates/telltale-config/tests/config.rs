@@ -1930,6 +1930,53 @@ fn dns_003_forwarding_keys_keep_the_tls_requirement() {
     assert_eq!(errs.len(), 1, "{errs:?}");
 }
 
+/// REQ: DNS-003 (ADR-194) — a loopback listener's peers are this host in the listener's own
+/// family: an IPv4 one never sees `::1`, an IPv6 one never sees `127.0.0.1`, and an entry it can
+/// never see is a warning.
+#[test]
+fn dns_003_a_loopback_listener_warns_about_the_other_family() {
+    let warns = |addr: &str, list: &str| -> Vec<String> {
+        let loaded = load_str(&format!(
+            "[[listen]]\nproto = \"doh\"\naddr = \"{addr}\"\ntls = {{ cert = \"/c\", key = \"/k\" }}\nproxy_protocol = true\ntrusted_proxies = [{list}]\n"
+        ))
+        .unwrap();
+        listen_warnings(&loaded)
+            .iter()
+            .map(|w| (*w).to_owned())
+            .collect()
+    };
+    assert_eq!(
+        warns("127.0.0.1:9443", "\"::1/128\""),
+        [
+            "listen[0].trusted_proxies[0]: a loopback listener only sees this host; `::1/128` never connects"
+        ]
+    );
+    assert_eq!(
+        warns("[::1]:9443", "\"127.0.0.1/32\""),
+        [
+            "listen[0].trusted_proxies[0]: a loopback listener only sees this host; `127.0.0.1/32` never connects"
+        ]
+    );
+    assert!(warns("127.0.0.1:9443", "\"127.0.0.2\"").is_empty());
+    assert!(warns("[::1]:9443", "\"::1\"").is_empty());
+}
+
+/// REQ: DNS-003 (ADR-194) — `trusted_proxies` takes networks or addresses only: a host name is
+/// refused with the network type's own message.
+#[test]
+fn dns_003_trusted_proxies_entries_are_networks() {
+    let errs = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"proxy.example\"]\n"
+    ))
+    .unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.path.starts_with("listen[0].trusted_proxies")
+                && e.message.contains("`proxy.example` is not an IP network")),
+        "{errs:?}"
+    );
+}
+
 /// REQ: DNS-003, CLU-010 (ADR-194, ADR-187) — the new keys are written only when set: every
 /// listener without them serializes as before (the defaults, and a `doh` listener that sets
 /// them to their defaults), and set ones read back.

@@ -1411,9 +1411,14 @@ fn behind_proxies(l: &crate::schema::Listener, p: &str, r: &mut Report<'_>) {
                 "{p}.trusted_proxies[{j}]: `{n}` is a network, not one proxy: every machine in it can name any client; list only your proxies"
             ));
         }
-        let sees_this_host = loopback(n.addr)
-            || n.contains(std::net::Ipv4Addr::LOCALHOST.into())
-            || n.contains(std::net::Ipv6Addr::LOCALHOST.into());
+        // A loopback listener's peers are this host in the listener's own family: `127.0.0.0/8`
+        // for an IPv4 one, `::1` for an IPv6 one.
+        let sees_this_host = if l.addr.ip().to_canonical().is_ipv4() {
+            let a = n.addr.to_canonical();
+            (a.is_ipv4() && a.is_loopback()) || n.contains(std::net::Ipv4Addr::LOCALHOST.into())
+        } else {
+            n.contains(std::net::Ipv6Addr::LOCALHOST.into())
+        };
         if loopback(l.addr.ip()) && !sees_this_host {
             r.warn(format!(
                 "{p}.trusted_proxies[{j}]: a loopback listener only sees this host; `{n}` never connects"
