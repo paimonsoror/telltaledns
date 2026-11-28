@@ -492,6 +492,9 @@ Beaconing detection shipped in T3.13 (the anomaly engine). io_uring was measured
   - *AC:* the documented forms parse and answer exactly (checked against known rows); mistakes are 400s with hints (unknown stages, fields, keys, groups, statuses); the cost estimate bounds the matches and a dry run doesn't scan; queries over the limit are refused, and long scans stop and say so; it needs `querylog:read` and group-restricted agents can't use it; the MCP tool works from the official SDK client.
   - *Done 2026-10-06:* `crates/telltale-api/src/vqlog.rs` (parser, normalized text), `crates/telltale/src/vqlog.rs` (pushdown, residual conditions, aggregation, labels), `qlog::estimate` (headers only) in `telltale-store` (ADR-082, Proposed); the route, scopes, and MCP tool; OpenAPI, MCP catalog, and UI types regenerated; unit tests (`agt_012_*`: parse, errors, glob, estimate, run, dry run); `deploy/mcp-e2e` calls it through the MCP SDK (top-K, by client with p95, estimate only, a typo, no scope); docs and the glossary.
 
+## Future ideas (not planned)
+- A FreeBSD build and an OPNsense or pfSense package (issue 49): not planned now; the FAQ says how to run TelltaleDNS beside a firewall.
+
 ## M10 — The v1.0 gate (owner request 2026-10-07)
 Every `00 §5` gate and the other v1.0 gate items, measured and closed. Status: `docs/v1-gate.md`.
 
