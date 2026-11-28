@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use telltale_proto::{NameBuf, Query};
 
 pub use entry::{Client, Uncacheable};
-pub use singleflight::{Flight, FlightGuard, Singleflight};
+pub use singleflight::{Flight, FlightGuard, Outcome, Singleflight, Waiter};
 
 /// One cached answer, as [`Cache::inspect`] reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
