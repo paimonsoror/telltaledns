@@ -66,7 +66,7 @@ name = "manual"
 rules = ["||ads.example.com^", "@@||cdn.example.com^"]</code></pre>
       <ul>
         <li>Adding, removing, or editing lists applies on reload (<code>SIGHUP</code>). <code>[filter]</code> changes need a restart.</li>
-        <li>Lists refresh every 24 hours by default (<code>[filter] refresh_secs</code>). To refresh every list now, send <code>SIGUSR1</code> (with Docker: <code>sudo kill -USR1 "$(docker inspect -f '{{.State.Pid}}' telltale)"</code>), like <code>pihole -g</code> in Pi-hole.</li>
+        <li>Lists refresh every 24 hours by default (<code>[filter] refresh_secs</code>). To refresh every list now, send <code>SIGUSR1</code> (with Docker: <code>sudo kill -USR1 "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' telltale)"</code>), like <code>pihole -g</code> in Pi-hole.</li>
         <li><code>telltale lists fetch -c telltale.toml</code> fetches outside the server, and <code>telltale lists check -c telltale.toml</code> shows which lines were skipped and why.</li>
       </ul>
     </div>

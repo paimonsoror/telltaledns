@@ -53,7 +53,7 @@ docker run -d --name telltale --restart unless-stopped \
   echo 'net.ipv4.ip_unprivileged_port_start=53' | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system
   ```
   Alternatively, run the container as root with only that one capability: `--user 0:0 --cap-drop ALL --cap-add NET_BIND_SERVICE`. Adding `NET_BIND_SERVICE` while running as `65532` doesn't work, because Docker doesn't pass added capabilities to non-root users.
-- Reload with `sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' telltale)"` (not `docker kill -s HUP`, see [Reload in Docker](#reload-in-docker)); stop with `docker stop` (a graceful drain, see [Stop](#stop)).
+- Reload with `sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' telltale)"` (not `docker kill -s HUP`, see [Reload in Docker](#reload-in-docker)); stop with `docker stop` (a graceful drain, see [Stop](#stop)).
 
 Build it yourself with `docker buildx build -t telltale:dev .` (add `--platform linux/amd64,linux/arm64,linux/arm/v7` for all three). The build cross-compiles, so it doesn't need QEMU.
 
@@ -286,7 +286,7 @@ In every level **secrets are removed**: passwords and hashes, API and session to
 **Who can, and the record.** Admins only. Each package is recorded in the audit log as `support.package` (the level and counts, never the content) and each map download as `support.package.map`. One package at a time per node (a second request gets 409).
 
 ## When a node stops answering (the watchdog)
-Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits.
+Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits. With `unless-stopped`, Docker doesn't start a container again once it has marked it as manually stopped, and a reload signaled through Docker sets that mark: see [Reload in Docker](#reload-in-docker).
 
 ```toml
 [watchdog]                  # restart-only; each node has its own
@@ -3860,11 +3860,13 @@ Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`; with Docker see [Re
 ### Reload in Docker
 Signal the process from the host (Linux):
 ```sh
-sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' telltale)"
+sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' telltale)"
 # with Compose, in the folder of compose.yaml:
-sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' $(docker compose ps -q telltale))"
+sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' $(docker compose ps -q telltale))"
 ```
-**Not `docker kill -s HUP` or `docker compose kill -s HUP`:** Docker marks a container signaled that way as manually stopped, whatever the signal. It keeps running, but with `restart: unless-stopped` Docker then doesn't start it after a reboot, a Docker restart, or a crash. To see whether that has happened (as root): `grep -o '"HasBeenManuallyStopped":[a-z]*' /var/lib/docker/containers/$(docker inspect -f '{{.Id}}' telltale)/config.v2.json`. `docker restart telltale` (or stopping and starting it) clears the mark. Where the host can't signal the process (Docker Desktop), use `docker restart telltale`.
+The template prints the process ID only when there is one. For a container that is stopped, not started yet, or restarting, it prints nothing, and `kill` fails without signaling anything: a container that is restarting has nothing to reload yet, and reads the file when it starts.
+
+**Not `docker kill -s HUP` or `docker compose kill -s HUP`:** Docker marks a container signaled that way as manually stopped, whatever the signal. It keeps running, but with `restart: unless-stopped` Docker then doesn't start it after a reboot, a Docker restart, or a crash. To see whether that has happened (as root): `grep -o '"HasBeenManuallyStopped":[a-z]*' /var/lib/docker/containers/$(docker inspect -f '{{.Id}}' telltale)/config.v2.json`. `docker restart telltale` (or stopping and starting it) clears the mark. Where the host can't signal the process (Docker Desktop), use `docker restart telltale`: that is a restart, not a reload, so the node stops answering while it restarts.
 
 ## Stop
 `SIGTERM` or `SIGINT` (Ctrl-C) shuts down gracefully, also when it arrives while the node is still starting (it is kept, and the shutdown below runs once the node is up). A stop during a cluster join ends the join and stops the node at once (exit 0): it isn't ready yet, so there is nothing to drain. Otherwise:

@@ -105,13 +105,14 @@ plans_by_default = false   # true: agents' plans simulate even when they don't a
   <h2>Apply file changes without a restart</h2>
   <p>Edit the config file, then send <code>SIGHUP</code>:</p>
 <pre><code>sudo systemctl reload telltale      # native install
-sudo kill -HUP "$(docker inspect -f '{{.State.Pid}}' telltale)"   # Docker
+sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' telltale)"   # Docker
 kill -HUP &lt;pid&gt;                     # anything else</code></pre>
   <ul>
     <li><b>The whole file is validated first.</b> If anything is wrong, the errors are logged and the previous configuration keeps serving.</li>
     <li><b>Applied at once, with no dropped queries:</b> upstreams, groups, routes, local records and hosts files, <code>[access]</code>, <code>[ratelimit]</code>, <code>[special]</code>, and <code>[[listen]]</code> (new listeners are bound before removed ones are closed, so a listener other than plain UDP (<code>tcp</code>, <code>dot</code>, <code>doh</code>, <code>doq</code>, <code>doh3</code>) that moves between the wildcard address and one address on the same port needs a restart).</li>
     <li><b>Applied at the next restart:</b> <code>[cache]</code>, <code>[telemetry]</code>, and <code>[node]</code>. A warning names them. The cache is kept across reloads, so warm answers aren't lost.</li>
     <li>Upstream health starts fresh after a reload and is learned again within a few queries.</li>
+    <li><b>The Docker line prints the process ID only when there is one.</b> For a container that is stopped or restarting it prints nothing, and <code>kill</code> fails without signaling anything; a restarting container reads the file when it starts.</li>
     <li><b>Not <code>docker kill -s HUP</code>:</b> Docker then counts the container as manually stopped, and with <code>unless-stopped</code> doesn't start it after a reboot or a crash. <code>docker restart telltale</code> clears that.</li>
   </ul>
   <p class="muted">Run <code>telltale config check</code> before you reload, so you see every problem at once.</p>
