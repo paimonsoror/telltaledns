@@ -3724,3 +3724,10 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Assistants connect with SSO and the user's consent, and no long-lived token is stored in the assistant.
 - Each request verifies a signature (keys cached with discovery, refreshed on rotation); no per-token cache is kept.
 - Providers that only issue opaque access tokens need a token per agent instead, until introspection is added.
+
+
+## ADR-189 — Read FRITZ!Box Hosts via TR-064 (Proposed)
+
+**Context:** T8.2, API-010, FLT-006. Issue #109 requests names and MAC bindings for clients querying a resolver over routed links.
+
+**Decision:** A configured FRITZ!Box endpoint supplies active IPv4 host entries via TR-064 Hosts enumeration without credentials. Explicit, nonoverlapping client subnets scope each box's entries. Reuse the router snapshot, conflict, and freshness checks from ADR-183. Direct DNS preserves the source address needed for attribution. The type is the configuration file's: the router API refuses it. Only full cluster members read a box, not resolver pods. Hosts are read one request each with a 5 s budget per request (120 s for the whole list, 1,024 hosts); UPnP error 713 ends the list. A plain `http://` router is warned about as one with an unchecked certificate: by the configuration check, and at run time while its list identifies devices. Authenticated TR-064, IPv6 host bindings, the bulk host list (`X_AVM-DE_GetHostListPath` needs sign-in on boxes tried), and Mesh topology discovery are deferred.

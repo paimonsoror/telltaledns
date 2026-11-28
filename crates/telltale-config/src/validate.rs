@@ -238,6 +238,7 @@ fn rewrites(cfg: &Config, r: &mut Report<'_>) {
 // REQ: T8.2 — router integrations: unique names, http(s) URLs, the credentials each kind needs.
 fn routers(cfg: &Config, r: &mut Report<'_>) {
     let mut names = HashSet::new();
+    let mut fritz_networks: Vec<(usize, crate::Cidr)> = Vec::new();
     for (i, x) in cfg.router.iter().enumerate() {
         let p = format!("router[{i}]");
         if x.name.is_empty() || !names.insert(x.name.as_str()) {
@@ -263,6 +264,12 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                     r.err(p.clone(), "OPNsense needs api_key_file and api_secret_file");
                 }
             }
+            crate::RouterKind::Fritzbox => {
+                fritzbox(x, i, &p, &mut fritz_networks, r);
+            }
+        }
+        if x.kind != crate::RouterKind::Fritzbox && !x.client_subnets.is_empty() {
+            r.err(format!("{p}.client_subnets"), "only for type fritzbox");
         }
         if x.interval_secs < 30 {
             r.err(format!("{p}.interval_secs"), "at least 30 seconds");
@@ -272,6 +279,10 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                 format!("{p}.offline_days"),
                 "at most 365 days (0: only the connected clients)",
             );
+        }
+        // REQ: FLT-006 (ADR-189) — like an unchecked certificate: anything on the path can answer.
+        if x.url.starts_with("http://") {
+            r.warn(format!("{p}.url: plain http:// isn't authenticated (prefer https:// with tls_ca; keep the route to the router private)"));
         }
         if x.tls_insecure_skip_verify {
             r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca, with tls_server_name if the certificate doesn't name the address)"));
@@ -300,6 +311,58 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                 );
             }
         }
+    }
+}
+
+// REQ: FLT-006 — match a routed query only against its configured FRITZ!Box network.
+fn fritzbox(
+    router: &crate::RouterConfig,
+    index: usize,
+    path: &str,
+    networks: &mut Vec<(usize, crate::Cidr)>,
+    report: &mut Report<'_>,
+) {
+    // The TR-064 paths are appended to the URL, so it is an origin and nothing else.
+    if let Some((_, rest)) = router.url.split_once("://") {
+        let authority = rest.strip_suffix('/').unwrap_or(rest);
+        if authority.is_empty() || authority.contains(['/', '?', '#', '@']) {
+            report.err(
+                format!("{path}.url"),
+                "scheme, host and port only, e.g. http://192.168.178.1:49000 (no path, query or user)",
+            );
+        }
+    }
+    let subnets = format!("{path}.client_subnets");
+    if router.client_subnets.is_empty() {
+        report.err(subnets.clone(), "one or more IPv4 client networks");
+    }
+    for subnet in &router.client_subnets {
+        let Some(net) = crate::Cidr::parse(subnet.as_str())
+            .ok()
+            .filter(|net| net.addr.is_ipv4())
+        else {
+            report.err(subnets.clone(), "expected an IPv4 client network");
+            continue;
+        };
+        if networks.iter().any(|(other, previous)| {
+            *other != index && (previous.contains(net.addr) || net.contains(previous.addr))
+        }) {
+            report.err(
+                subnets.clone(),
+                "must not overlap another FRITZ!Box's networks",
+            );
+        }
+        networks.push((index, net));
+    }
+    if router.username.is_some()
+        || router.password_file.is_some()
+        || router.api_key_file.is_some()
+        || router.api_secret_file.is_some()
+    {
+        report.err(
+            path.to_owned(),
+            "FRITZ!Box Hosts polling does not use credentials",
+        );
     }
 }
 

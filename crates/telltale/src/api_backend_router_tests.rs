@@ -326,6 +326,24 @@ async fn wait_until(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
 
 // ---- T1: who may write a router.
 
+/// REQ: T8.2, API-002 (ADR-189) — a FRITZ!Box router is the config file's: the API refuses it,
+/// dry run or not, and stores nothing.
+#[tokio::test]
+async fn api_002_the_api_refuses_a_fritzbox_router() {
+    let n = Node::new(Reload::Applies);
+    let body = serde_json::json!({
+        "type": "fritzbox",
+        "url": "http://192.0.2.1:49000",
+        "client_subnets": ["192.168.40.0/24"]
+    });
+    for dry in [true, false] {
+        let (s, v) = n.put("box", &n.admin, dry, body.clone()).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "dry={dry}: {v}");
+        assert!(v.to_string().contains("config file"), "{v}");
+    }
+    assert!(n.stored("box").is_none(), "nothing was stored");
+}
+
 /// REQ: API-002, T8.2 (ADR-181, as ADR-179) — a router is added, changed or removed only by an
 /// administrator's own sign-in or an admin API token: an operator, a viewer, an operator's agent
 /// token with every write area, and an admin's agent token holding the scope an earlier build

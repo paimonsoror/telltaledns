@@ -3208,6 +3208,14 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "client_subnets": {
+          "description": "FRITZ!Box: IPv4 client networks whose Hosts entries this router may supply.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
         "interval_secs": {
           "description": "Seconds between reads. While a device is named by its MAC address and `[clients]\nrouter_macs` is on, the MACs a router lists identify devices, so it is read at least\nevery 600 seconds whatever this says (a list older than 900 seconds doesn't say who\nholds an address, and a read that fails is asked again within that time).",
           "type": "integer",
@@ -3262,7 +3270,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`unifi` (UniFi OS consoles and the Network application) or `opnsense`.",
+          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or `fritzbox`\n(in the configuration file only).",
           "$ref": "#/$defs/RouterKind"
         },
         "url": {
@@ -3291,7 +3299,8 @@
       "type": "string",
       "enum": [
         "unifi",
-        "opnsense"
+        "opnsense",
+        "fritzbox"
       ]
     },
     "RuleAction": {
