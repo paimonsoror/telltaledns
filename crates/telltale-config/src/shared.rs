@@ -434,6 +434,36 @@ name = \"pi\"
         assert!(e.contains("unknown field"), "{e}");
     }
 
+    // REQ: UPS-009, CLU-010 (ADR-192) — an upstream's `loop_tag` is not written while it is on
+    // (unset or `true`): a replica one version behind refuses an `[[upstream]]` key it doesn't
+    // know, so a primary whose upstreams leave the switch on sends exactly the entries that
+    // replica reads. Off, it is sent and a replica takes it; back on, the replica reads it as on.
+    #[test]
+    fn ups_009_loop_tag_default_is_not_shared() {
+        let primary = |extra: &str| {
+            load(&format!(
+                "[[upstream]]\nname = \"u\"\nurl = \"udp://192.0.2.1\"\n{extra}\n[[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n"
+            ))
+        };
+        let bytes = |cfg: &Config| serde_json::to_vec(&shared_part(cfg)).unwrap();
+        let unset = shared_part(&primary(""));
+        let entry = unset["upstream"][0].as_object().unwrap();
+        assert!(!entry.contains_key("loop_tag"), "{unset}");
+
+        // Written as `true`: the same shared part, byte for byte.
+        assert_eq!(bytes(&primary("loop_tag = true")), bytes(&primary("")));
+
+        // Off at the primary: the key is sent, and a replica takes it.
+        let shared_off = shared_part(&primary("loop_tag = false"));
+        assert_eq!(shared_off["upstream"][0]["loop_tag"], false);
+        let merged = with_shared(&load("[node]\nname = \"pi\"\n"), &shared_off).unwrap();
+        assert_eq!(shared_part(&merged)["upstream"][0]["loop_tag"], false);
+
+        // Back at the default: not sent, and the replica reads it as on (not written again).
+        let back = with_shared(&merged, &unset).unwrap();
+        assert_eq!(bytes(&back), bytes(&primary("")));
+    }
+
     #[test]
     fn clu_006_local_sections_stay_and_shared_ones_come_from_the_primary() {
         let primary = load(

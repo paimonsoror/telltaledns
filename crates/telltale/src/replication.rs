@@ -139,6 +139,23 @@ pub(crate) fn unpinned(file: &Config) -> Config {
     }
 }
 
+/// REQ: API-002, API-010, CLU-003 (ADR-040, ADR-051; GitHub issue #113) — what [`unpinned`] merges
+/// the entries made through the API onto, when that isn't `file` alone: on a primary promoted from
+/// replica (and not the Git-managed source itself), `file` plus the last cluster version it applied.
+/// `None`: the files alone, or a node that doesn't apply those entries (a replica, a Git source).
+/// The API checks a change against the same merge, so a change it accepts is one the reload
+/// applies.
+pub(crate) fn managed_base(file: &Config) -> Option<Config> {
+    let id = identity(file)?;
+    let promoted = matches!(id.meta.role, Some(node::Role::Primary))
+        && file.cluster.git.is_none()
+        && !(id.meta.config_authority == "gitops" && gitops_capable(file));
+    if !promoted {
+        return None;
+    }
+    merged(file, &last_applied(file)?).ok()
+}
+
 /// REQ: CLU-006 — says which of this node's own shared settings the primary replaces, once per
 /// set: every replicated change rebuilt the configuration and repeated it (2026-10-14 review).
 fn warn_ignored_once(ignored: Vec<String>) {

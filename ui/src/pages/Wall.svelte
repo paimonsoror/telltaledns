@@ -11,6 +11,7 @@
   import { navigate, route } from '../lib/router.svelte';
   import { clock } from '../lib/format';
   import { session } from '../lib/session.svelte';
+  import { tk } from '../lib/i18n';
   import Logo from '../lib/components/Logo.svelte';
   import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
   import WallMap from '../lib/components/wall/WallMap.svelte';
@@ -30,6 +31,8 @@
     screenClassStable,
     type ScreenClass,
   } from '../lib/wall';
+  import { tr } from '../lib/i18n';
+  const { t } = tr('wall');
 
   const panels = $derived(parsePanels(route.params.get('panels')));
   const every = $derived(parseEvery(route.params.get('every')));
@@ -74,14 +77,14 @@
   $effect(() => {
     void turn;
     if (paused || !rotating) return;
-    const t = setTimeout(() => step(1, null), every * 1000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => step(1, null), every * 1000);
+    return () => clearTimeout(timer);
   });
   $effect(() => {
     void hero;
     titleShown = true;
-    const t = setTimeout(() => (titleShown = false), 3000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => (titleShown = false), 3000);
+    return () => clearTimeout(timer);
   });
   // A new address or a new layout starts each slot from its first panel.
   // REQ: OBS-035 (#69) — keyed on strings, not on `layout`: the layout object is made again
@@ -174,10 +177,10 @@
   <div class="corner">
     <Logo />
     <span class="clock" data-testid="wall-clock">{clock(now)}</span>
-    {#if paused}<span class="paused" data-testid="wall-paused">paused</span>{/if}
+    {#if paused}<span class="paused" data-testid="wall-paused">{t('paused')}</span>{/if}
   </div>
   {#if single && hero}
-    <h1 class="title" class:fade={motion && !titleShown} class:gone={!motion && !titleShown}>{PANEL_TITLE[hero]}</h1>
+    <h1 class="title" class:fade={motion && !titleShown} class:gone={!motion && !titleShown}>{tk(PANEL_TITLE[hero])}</h1>
   {/if}
   <div class="area" bind:clientWidth={aw} bind:clientHeight={ah} data-testid="wall-area">
     {#each layout.slots as s, i (i)}
@@ -193,7 +196,7 @@
         data-panel={p}
         data-rotates={s.panels.length > 1 ? 'yes' : 'no'}
       >
-        {#if !single && p}<h2 class="caption">{PANEL_TITLE[p]}</h2>{/if}
+        {#if !single && p}<h2 class="caption">{tk(PANEL_TITLE[p])}</h2>{/if}
         <div class="panel" data-testid="wall-panel-{p}">
           {#key p}
             {#if p === 'map'}<WallMap {motion} />
@@ -207,7 +210,7 @@
       </section>
     {/each}
   </div>
-  <ol class="dots" aria-label="Panels" data-testid="wall-order">
+  <ol class="dots" aria-label={t('Panels')} data-testid="wall-order">
     {#each panels as p (p)}<li class:on={p === hero} data-panel={p}></li>{/each}
   </ol>
   {#if !paused && rotating}
@@ -217,18 +220,20 @@
   {/if}
   <div class="tail" data-testid="wall-tail" data-side={layout.tailSide ? 'yes' : 'no'}>
     {#each rows as r, i (i)}
-      <span class="item s-{r.status}">{r.clientName ?? r.client} → {r.name} · {r.status}</span>
+      <span class="item s-{r.status}" translate="no">{r.clientName ?? r.client} → {r.name} · {r.status}</span>
     {:else}
-      <span class="muted">Waiting for queries…</span>
+      <span class="muted">{t('Waiting for queries…')}</span>
     {/each}
   </div>
-  <span hidden data-testid="wall-hero-list">{heroList.join(',')}</span>
+  <span hidden data-testid="wall-hero-list" translate="no">{heroList.join(',')}</span>
 </div>
 
 <style>
   .wall {
     position: fixed;
     inset: 0;
+    /* REQ: API-013 — below a test language pack's banner, when there is one. */
+    top: var(--devpack-h, 0px);
     background: var(--bg);
     color: var(--text);
     display: grid;

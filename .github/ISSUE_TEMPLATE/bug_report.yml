@@ -33,6 +33,8 @@ body:
         names and keeps only warnings and errors from the log. Look it over, then drag the
         `.tar.gz` here. Log lines are redacted by pattern, which is best effort. Don't attach the
         pseudonym map (`--keep-map`): it holds your real names.
+        A support package includes the newest watchdog dump (`<data_dir>/watchdog/hang-*.txt`),
+        so attach one when the node has hung.
       placeholder: Drag the file here, or say why you can't share one.
   - type: textarea
     id: more

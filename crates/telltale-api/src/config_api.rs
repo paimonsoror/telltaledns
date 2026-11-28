@@ -637,27 +637,137 @@ pub(crate) async fn backup_download(
     }
 }
 
+/// REQ: API-010, AGT-004 (ADR-191; GitHub issue #113) — the plain hint of a device refusal made
+/// while the stored entries already didn't apply before the change (`api_backend` puts it there).
+pub const STORED_ENTRIES_DONT_APPLY_HINT: &str = "The devices and settings made through the API don't apply now, before this change (the reasons say why): fix that first. A device made through the API that isn't in effect can be deleted (DELETE /api/v1/clients/{name}).";
+
+/// REQ: API-010, AGT-004 (ADR-191; GitHub issue #113) — how the warning starts that a delete of a
+/// stored device is accepted with while the stored entries still don't apply after it; the merge's
+/// reasons follow it after a colon (`api_backend` writes it).
+pub const STORED_ENTRIES_STILL_DONT_APPLY: &str =
+    "the devices and settings made through the API still don't apply";
+
+/// REQ: AGT-004, API-010 (ADR-191) — [`STORED_ENTRIES_DONT_APPLY_HINT`] as a caller that may not read
+/// every device gets it: without the pointer to the reasons, which it doesn't get.
+pub const STORED_ENTRIES_DONT_APPLY_HINT_WITHHELD: &str = "The devices and settings made through the API don't apply now, before this change: that has to be fixed first. A device made through the API that isn't in effect can be deleted (DELETE /api/v1/clients/{name}).";
+
+/// REQ: AGT-004, API-010 (ADR-191) — the `detail` of a device refusal made while the stored entries
+/// already didn't apply, for a caller that may not read every device, in place of reasons that can
+/// name devices it can't read. An operator making the change in the UI is shown them.
+pub const DONT_APPLY_DETAIL: &str = "the devices and settings made through the API don't apply now, before this change; an operator sees why when making the change in the UI";
+
+/// REQ: AGT-004, API-010 (ADR-191) — the `detail` of a device refusal whose fuller hint names another
+/// device (a match key or name it holds), for a caller that may not read every device. It is true
+/// whether or not that caller can list the other device.
+pub const CONFLICT_DETAIL: &str = "this change conflicts with another device, which this answer doesn't name; the hint says what to do";
+
+/// REQ: API-010, AGT-004 (ADR-191) — the plain hint of a device delete refused because something
+/// else made through the API names the device (`api_backend` puts it there).
+pub const SOMETHING_ELSE_NAMES_IT_HINT: &str = "Something else made through the API names this device (the reasons say what): change or remove that first.";
+
+/// REQ: AGT-004, API-010 (ADR-191) — [`SOMETHING_ELSE_NAMES_IT_HINT`] for a caller that may not read
+/// every device and whose `detail` is [`CONFLICT_DETAIL`]: without the pointer to the reasons.
+pub const SOMETHING_ELSE_NAMES_IT_HINT_WITHHELD: &str =
+    "Something else made through the API names this device: change or remove that first.";
+
+/// REQ: AGT-004, API-010 (ADR-191) — how the impact of a delete accepted while the stored entries
+/// still don't apply points at the warnings (`api_backend` writes it); dropped from the impact for a
+/// caller whose warning is cut back.
+pub const SEE_THE_WARNINGS: &str = " (the warnings say why)";
+
+/// REQ: CLU-004 (ADR-174) — the device in effect named `name`, as the device list shows it: a
+/// federated read (every node is asked), off the runtime's worker.
+async fn device_in_effect(
+    backend: &Arc<dyn Backend>,
+    name: &str,
+) -> Result<Option<crate::model::ClientInfo>, Problem> {
+    let (backend, name) = (Arc::clone(backend), name.to_owned());
+    blocking(move || Ok(backend.clients().into_iter().find(|c| c.name == name))).await
+}
+
+/// REQ: AGT-004, API-010 (ADR-064, ADR-191; GitHub issue #113) — what a caller that may not read
+/// every device (`simulate_api::may_read_every_device`, the rule of the fuller hints) is shown of
+/// a device delete's answer `c`. Its `before` is the stored row the delete removes, which isn't
+/// always the device in effect of that name: a device of the config files, or of the version a
+/// promoted primary builds on, can hide it, and no list shows such a row. The caller is shown the
+/// device that was in effect of that name before the write (`in_effect`, looked up then: after a
+/// saved delete it is gone) as the device list showed it, and any other row by its name and
+/// `source` only, with no match keys, no groups and no recent queries; a lookup that failed shows
+/// it by its name only. The warning a delete gets while the stored entries still don't apply is
+/// cut back to its first words, as its reasons can name devices the caller can't read, and the
+/// impact then no longer points at the warnings for why. The audit entry keeps the whole answer.
+fn shown_before(
+    mut c: serde_json::Value,
+    in_effect: &Result<Option<crate::model::ClientInfo>, Problem>,
+) -> serde_json::Value {
+    let mut cut = false;
+    if let Some(ws) = c["warnings"].as_array_mut() {
+        for w in ws.iter_mut() {
+            if w.as_str()
+                .is_some_and(|s| s.starts_with(&format!("{STORED_ENTRIES_STILL_DONT_APPLY}:")))
+            {
+                *w = serde_json::json!(STORED_ENTRIES_STILL_DONT_APPLY);
+                cut = true;
+            }
+        }
+    }
+    if cut
+        && let Some(impact) = c["impact"]
+            .as_str()
+            .map(|s| s.replace(SEE_THE_WARNINGS, ""))
+    {
+        c["impact"] = serde_json::json!(impact);
+    }
+    if c["before"].is_null() {
+        return c;
+    }
+    let (listed, row, source) = {
+        let before = &c["before"];
+        (
+            matches!(in_effect, Ok(Some(d))
+                if before["match"] == serde_json::json!(d.matches)
+                    && before["groups"] == serde_json::json!(d.groups)),
+            before["name"].as_str().unwrap_or_default().to_owned(),
+            before["source"].as_str().unwrap_or("api").to_owned(),
+        )
+    };
+    if !listed {
+        let only_its_name = crate::model::ClientInfo {
+            name: row,
+            matches: Vec::new(),
+            groups: Vec::new(),
+            source,
+            effective_groups: Vec::new(),
+            groups_from: String::new(),
+            kind: None,
+            identity: None,
+        };
+        c["before"] = serde_json::to_value(only_its_name).unwrap_or_default();
+        c["recentQueries"] = serde_json::json!(0);
+    }
+    c
+}
+
+/// The device in effect of a name before a write, as [`group_guard`] looked it up.
+struct Looked(Option<crate::model::ClientInfo>);
+
 /// REQ: AGT-004 — an agent restricted to a group changes only that group's devices, and
-/// only into that group (ADR-064).
+/// only into that group (ADR-064). Returns the device in effect of that name it looked up, for
+/// such an agent (`None` for any other caller: it looks up nothing).
 async fn group_guard(
     p: &crate::auth::Principal,
     backend: &Arc<dyn Backend>,
     name: &str,
     op: &Op,
-) -> Result<(), Problem> {
+) -> Result<Option<Looked>, Problem> {
     let Some(g) = p.agent.as_ref().and_then(|a| a.group.as_deref()) else {
-        return Ok(());
+        return Ok(None);
     };
     let refuse = |why: String| {
         Err(Problem::new(Code::Forbidden, why)
             .hint(format!("This token is restricted to group `{g}`.")))
     };
-    // REQ: CLU-004 (ADR-174) — the device list is a federated read (every node is asked): off the
-    // runtime's worker.
-    let existing = {
-        let (backend, name) = (Arc::clone(backend), name.to_owned());
-        blocking(move || Ok(backend.clients().into_iter().find(|c| c.name == name))).await?
-    };
+    let existing = device_in_effect(backend, name).await?;
     if let Some(c) = &existing
         && !c.groups.iter().any(|x| x == g)
     {
@@ -668,7 +778,7 @@ async fn group_guard(
             "devices you change must be in group `{g}` (set \"groups\": [\"{g}\"])"
         )),
         Op::Client(None) if existing.is_none() => refuse(format!("`{name}` isn't in group `{g}`")),
-        Op::Client(_) => Ok(()),
+        Op::Client(_) => Ok(Some(Looked(existing))),
         Op::Managed(..) => refuse(
             "restricted tokens can't change local names, forwarded domains, quick rules, upstreams, lists, or groups".into(),
         ),
@@ -1701,16 +1811,19 @@ fn json_of<T: serde::Serialize>(v: &T) -> String {
 ///
 /// Names devices across every view: the query log, live tail, charts, and history (names
 /// are resolved when read, so earlier queries are relabelled too). To rename, send the new
-/// `name` in the body. Devices defined in the config files are read-only here (409). Needs
-/// the operator role (or a `write` token).
+/// `name` in the body. Devices defined in the config files are read-only here (409), and so,
+/// on a primary promoted from replica, are those of the cluster version it builds on. The
+/// change is checked against the configuration the node applies (ADR-040, ADR-191): those
+/// files or that version, every device and setting made through the API, and the change.
+/// Needs the operator role (or a `write` token).
 #[utoipa::path(put, path = "/api/v1/clients/{name}", tag = "config",
     params(("name" = String, Path, description = "The device's current name (or the name for a new one)."), DryRun),
     request_body = ClientInput,
     responses(
         (status = 200, body = ClientChange, description = "Applied (or, with dryRun, what would change)."),
-        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused for another request; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 409, body = Problem, description = "Defined in the config files (or in the cluster version a promoted primary builds on), or an Idempotency-Key reused for another request; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "If-Match: the config changed since that version."),
-        (status = 422, body = Problem, description = "The resulting configuration is invalid (e.g. an unknown group)."),
+        (status = 422, body = Problem, description = "The resulting configuration is invalid (e.g. an unknown group, or a match key another device has: the hint names that device to whoever may read every device); nothing is stored."),
         (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn put_client(
@@ -1742,15 +1855,20 @@ pub(crate) async fn put_client(
 /// Delete a device named through the API.
 ///
 /// Its queries, past and future, go back to showing the address, and it leaves its groups
-/// (the `default` group applies). Devices from the config files can't be deleted here (409).
-/// Needs the operator role (or a `write` token).
+/// (the `default` group applies). Devices from the config files can't be deleted here (409),
+/// nor, on a primary promoted from replica, those of the cluster version it builds on. A device
+/// stored through the API that isn't in effect (the files or that version have a device of its
+/// name, or the devices and settings made through the API don't apply) is removed too, even
+/// while they still don't apply after it (`warnings` then say why, ADR-191). Needs the operator
+/// role (or a `write` token).
 #[utoipa::path(delete, path = "/api/v1/clients/{name}", tag = "config",
     params(("name" = String, Path, description = "The device's name."), DryRun),
     responses(
-        (status = 200, body = ClientChange, description = "The result."),
+        (status = 200, body = ClientChange, description = "The result: removed (or, with dryRun, what would change)."),
         (status = 404, body = Problem, description = "No device by that name was created through the API."),
-        (status = 409, body = Problem, description = "Defined in the config files; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
+        (status = 409, body = Problem, description = "Defined in the config files (or in the cluster version a promoted primary builds on); or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer)."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "Without it the configuration would be invalid (e.g. a quick rule still names it); nothing is stored."),
         (status = 503, body = Problem, description = "Too many configuration changes are running at once (`Retry-After`: retry shortly)."),
     ))]
 pub(crate) async fn delete_client(
@@ -2050,7 +2168,7 @@ impl WriteGate {
             .ok()
     }
 
-    /// Tests: `key` (`<user ID>:<Idempotency-Key>`) as if its first request were running, or no
+    /// Tests: `key` (as `idempotency_key` stores it) as if its first request were running, or no
     /// longer.
     #[cfg(test)]
     pub(crate) fn hold_key(&self, key: &str, held: bool) {
@@ -2080,6 +2198,18 @@ impl Drop for KeyHeld {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.key);
+    }
+}
+
+/// REQ: AGT-003 (ADR-181, ADR-191) — the stored form of an Idempotency-Key `raw` sent by `p`: whose
+/// it is, then the key. An agent's keys are its own (`plans::owner_key`: its token): its principal
+/// carries its owner's user, and an empty key is no key. A person's keys are `{user_id}:{key}`,
+/// shared by their sessions and API tokens. `write` drops what is too short to be a key.
+pub(crate) fn idempotency_key(p: &crate::auth::Principal, raw: &str) -> Option<String> {
+    let k = raw.trim();
+    match &p.agent {
+        Some(_) => (!k.is_empty()).then(|| format!("{}:{k}", crate::plans::owner_key(p))),
+        None => Some(format!("{}:{k}", p.user_id)),
     }
 }
 
@@ -2155,19 +2285,33 @@ async fn write(
     }
     // `simulate=auto` from a token that can't read the log: no simulation, not an error.
     let simulate = simulate.filter(|_| crate::simulate_api::agent_may_simulate(&p, None).is_ok());
-    if let Err(e) = group_guard(&p, &backend, &name, &op).await {
-        return e.into_response();
-    }
+    let looked = match group_guard(&p, &backend, &name, &op).await {
+        Ok(l) => l,
+        Err(e) => return e.into_response(),
+    };
+    // REQ: AGT-004, API-010 (ADR-064, ADR-191) — a caller that may not read every device is shown
+    // of a device write's answer only what it can read anyway. For a delete's `before` that is the
+    // device in effect of that name before the write (`shown_before`), looked up now: the lookup
+    // `group_guard` made, or the same one. A lookup that fails shows the row by its name only.
+    let restricted = matches!(op, Op::Client(_)) && !crate::simulate_api::may_read_every_device(&p);
+    let in_effect = if restricted && matches!(op, Op::Client(None)) {
+        Some(match looked {
+            Some(Looked(existing)) => Ok(existing),
+            None => device_in_effect(&backend, &name).await,
+        })
+    } else {
+        None
+    };
     let expect = match expected_version(&headers) {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
     // REQ: AGT-003 — a retried request gets the first response; another request with the
-    // same key is refused.
+    // same key is refused (`idempotency_key`).
     let key = headers
         .get(IDEMPOTENCY_KEY)
         .and_then(|v| v.to_str().ok())
-        .map(|k| format!("{}:{}", p.user_id, k.trim()))
+        .and_then(|k| idempotency_key(&p, k))
         .filter(|k| !dry_run && k.len() > 2);
     let now = backend.now_unix_seconds();
     let held = match &key {
@@ -2235,8 +2379,29 @@ async fn write(
                     .await
                     .map(|c| serde_json::to_value(c).unwrap_or_default()),
             };
-            let result = result.map_err(|e| {
+            let result = result.map_err(|mut e| {
+                // REQ: AGT-004, API-010 (ADR-191) — a device refusal whose reasons can name devices
+                // that caller can't read gives it a `detail` without them, saying what is true:
+                // made while the stored entries already didn't apply (that state, and a hint without
+                // the pointer to the reasons), or with a fuller hint (a conflict with another
+                // device; the plain hint, which `sanitize_problem` keeps, says what to do).
+                if restricted && e.hint.as_deref() == Some(STORED_ENTRIES_DONT_APPLY_HINT) {
+                    DONT_APPLY_DETAIL.clone_into(&mut e.detail);
+                    e.hint = Some(STORED_ENTRIES_DONT_APPLY_HINT_WITHHELD.to_owned());
+                } else if restricted && e.fuller_hint.is_some() {
+                    CONFLICT_DETAIL.clone_into(&mut e.detail);
+                    // A hint that points at the reasons, which this caller now doesn't get.
+                    if e.hint.as_deref() == Some(SOMETHING_ELSE_NAMES_IT_HINT) {
+                        e.hint = Some(SOMETHING_ELSE_NAMES_IT_HINT_WITHHELD.to_owned());
+                    }
+                }
                 let mut e = crate::simulate_api::sanitize_problem(&p, e);
+                // REQ: CLU-013, AGT-004 (ADR-191) — the diff a `409 cluster_pinned` carries is the
+                // shared configuration the pin holds back, every device in it: only for a caller that
+                // may read every device. The detail and the hint's sentences stay.
+                if !crate::simulate_api::may_read_every_device(&p) {
+                    e.diff = None;
+                }
                 // REQ: API-002, T8.2 (ADR-181) — security F3: the diff of a `409 cluster_pinned`
                 // shows a router's key files and username to an administrator only.
                 if !admin
@@ -2249,19 +2414,24 @@ async fn write(
                 }
                 e
             });
+            // REQ: AGT-004, API-010 (ADR-064, ADR-191) — the audit entry records the whole answer;
+            // a caller that may not read every device is shown of a device delete's answer only
+            // what it can read anyway (`shown_before`, with the device in effect looked up above).
+            let audited = result.as_ref().ok().map(|c| {
+                serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] })
+            });
+            let result = match (result, &in_effect) {
+                (Ok(c), Some(in_effect)) => Ok(shown_before(c, in_effect)),
+                (other, _) => other,
+            };
             let (status, text) = match &result {
                 Ok(c) => (StatusCode::OK, c.to_string()),
                 Err(e) => (e.code_status(), json_of(e)),
             };
-            if let Ok(c) = &result
+            if let (Ok(c), Some(detail)) = (&result, &audited)
                 && c["applied"].as_bool() == Some(true)
             {
-                auth.record(
-                    &actor,
-                    &action,
-                    &name,
-                    &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
-                );
+                auth.record(&actor, &action, &name, detail);
             }
             if let Some(k) = &key
                 && status.is_success()

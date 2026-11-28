@@ -11,9 +11,17 @@ build output (`dist/`) is embedded in the binary by `telltale-api` (`rust-embed`
 npm ci
 npm run dev        # http://localhost:5173, proxies /api to a server on 127.0.0.1:8053 (TELLTALE_API=...)
 npm run check      # svelte-check (types, a11y)
-npm run build      # dist/ + .gz files; fails over the 400 KiB gzipped budget
+npm run check:i18n # messages, contexts, locale files and the text ratchets (ADR-189)
+npm run build      # dist/ + .gz files; fails over the budgets: the UI with English 400 KiB
+                   # gzipped (everything outside assets/locales/), each language 80, all of them 400
 npm run types      # regenerate src/lib/api-types.ts from ../docs/api/openapi.json (CI checks it's current)
 ```
+
+`dev`, `check`, `build` and `test:e2e` first run `node scripts/i18n.mjs prebuild`, which writes
+`src/lib/i18n/locales.gen.ts`, `src/lib/i18n/emitted.gen.json` and `public/assets/locales/` (all
+git-ignored): a fresh checkout needs no extra step. `scripts/i18n.mjs` needs Node 24 (as CI and the
+Dockerfile use; 22.18 and later also work), which strips TypeScript types: the tool imports the
+runtime's own modules.
 
 Then rebuild the binary (`cargo build -p telltale`) to embed `dist/`. A binary built without
 `dist/` still works and says the UI is missing.
@@ -48,3 +56,151 @@ tests/demo/run.sh            # or `tests/demo/run.sh 60` for a quick look
   CSSOM, which CSP allows). The suite fails on any CSP violation.
 - Every chart gets a table view; every page works at 360 px.
 - Filters and tabs live in the URL hash (`#/queries?client=...`).
+
+## Languages
+
+The UI's text goes through a small layer of its own (`src/lib/i18n/`, `spec/11` ADR-189, API-012).
+English is the key: the English stays in the source, and with English active `t()` returns it
+unchanged. Every other language is a data file fetched before the page is drawn; a translation is
+shown only if it agrees with the English it replaces, otherwise English is. No language is offered
+yet; `?lang=en-XA` shows the pseudo-locale (accented, longer English) for one page load.
+
+**Add a string.** In the file that shows it, bind the file's context (its name in lower camel case:
+`pages/Cache.svelte` is `cache`; `src/locales/contexts.json` renames a file whose name another
+file already has) and write the English as a literal:
+
+```svelte
+<script lang="ts">
+  import { tr } from '../lib/i18n';
+  import T from '../lib/i18n/T.svelte';
+  const { t, tn } = tr('cache');
+  const { t: tc } = tr('common'); // bare actions shared by every file (at most 40)
+</script>
+
+<h2>{t('Holds')}</h2>
+<p>{t('{n} entries of {max}', { n: num(count), max: num(limit) })}</p>
+<p>{tn('{n} answer', '{n} answers', n, { n: num(n) })}</p>
+<T ctx="cache" msg={'Kept by <b>{who}</b>'} params={{ who }}>{#snippet b(text)}<b>{text}</b>{/snippet}</T>
+```
+
+- Literals only: the check reads them from the syntax tree. `t('Open', undefined, 'verb')` separates
+  two meanings of the same English in one file.
+- A sentence is one message. Markup inside it goes through `<T>`, whose `msg` is an expression
+  (`msg={'…'}`): in a quoted attribute Svelte would replace `{who}` itself.
+- `tn()` only where the English has two forms; the form follows the language of the text, never the
+  browser's. Numbers are formatted by the caller (`num()`), dates and times by `lib/format.ts`,
+  the only place that calls `Intl`.
+- A `t()` result is text to show: never a key, a comparison operand, a stored value, a URL or part of
+  a request. Keep an identifier beside it.
+- Nothing translates at the top level of a `.ts` module or `<script module>` (it would run before
+  the language is loaded): mark a label there with `m('Lists')` and show it with `tk(label)`.
+- Names, addresses and code shown as data get `translate="no"`.
+
+`npm run check:i18n` fails on a non-literal message, a context that is not the file's or `common`,
+two files with one context, a hash collision, a translated text misused as above, literal text in a
+file `i18n-baseline.json` holds at zero (in the markup, or in an attribute a reader sees or hears:
+`aria-label`, `title`, `placeholder`, `alt`, `aria-roledescription`, `aria-description`,
+`aria-valuetext`, `aria-placeholder`, and `label` on `<optgroup>`), a new `Intl` call outside
+`lib/format.ts`, and a new physical CSS property (`margin-left`, `text-align: right`; use logical
+ones). It reports, and never fails on, missing, outdated and left-over translations. A change to
+English alone never fails a language. A file `i18n-baseline.json` does not list (one added or moved
+since) holds none of the three: literal text, an `Intl` call or a physical property in it fails, and a
+moved file that still holds some keeps its counts only if its entries in `i18n-baseline.json` are
+renamed to the new path by hand. After removing text, an `Intl` call or a physical property,
+`node scripts/i18n.mjs baseline` lowers that file's count (it never raises one, and lists a new file
+only at zero). Every file holds no literal text and no `Intl` call outside `lib/format.ts`; the
+physical CSS properties of the files that have them are kept at their counts and are converted
+with the right-to-left work.
+
+**The pseudo-locale tests** (`tests/e2e/8-i18n-pseudo.spec.ts`, the rule in
+`tests/e2e/i18n-pseudo-rule.ts`) read every page under `?lang=en-XA`: each text node outside
+`translate="no"`, each attribute a reader sees or hears, the value of a button and the canvas text
+must carry a pseudo character, have no letters, be code, be a formatted date, time or compact number,
+or be data of the test (a name or value its mocks or the server sent). A name or value the page
+shows as it was given and that is also the English of a message (`default`, `admin`, a status word)
+needs `translate="no"` on the element that shows it. Two excuses are kept to the place they name: the
+help glossary (`docs/help/topics.json`, English in part A) only inside the help panel and the drawer
+that holds it, and the shared table in `i18n-pseudo-rule.ts` (`DATA`: the series label that uPlot writes
+itself in a chart legend) only as a text node at its place. A piece that is a message's English, or fits
+one that has a letter of its own (one word for each placeholder), fails even beside data (`1 odd` where
+`odd` is a value); a value counts as whole words; and a message with a placeholder that code joined to
+pseudo text with ` · ` in English (`you · 4.2 q/s`) fails too.
+
+**Moving a file to the layer** (part A): `node scripts/i18n-codemod.mjs <file under src/>` (or
+`--all`) prints, per file, what it can move and what it leaves for the hand; `--write` rewrites the
+file. Each template text and each attribute a reader sees or hears becomes `t('…')` (the text as
+the browser shows it), and the file gets its `tr()` line. It lists, with the line, and never edits:
+a sentence with an expression, an inline element or a block inside, words cut by an element with no
+text (a colour key, an icon: class `split`; one message for the whole run), `<pre>`, script strings, plural
+ternaries (`tn()` takes the `one` form for -1), labels used as keys, canvas text and `Intl` calls.
+
+**Add a language.** A new language's pull request carries two things: its pack,
+`src/locales/<tag>.json`, and its entry in `src/locales/manifest.json` (`owners`: the GitHub logins
+of the people who answer for its content; `dir`; `offered: false` until a release turns it on;
+`since`). The check fails either one alone (a pack with no entry is `stray`, an entry with no pack
+is `... is missing`), so the translator adds the entry or asks a maintainer to add it to the
+branch. If the language is not in `src/locales/plurals.json`, a maintainer adds it (`node
+scripts/i18n.mjs plurals` writes it from CLDR; review the diff). A tag names the script where the
+language has several (`zh-Hans`, `sr-Latn`); there is no `en-*` catalog (English is built in). The
+translator runs `node scripts/i18n.mjs sync <tag>`, fills in the empty translations of
+`src/locales/<tag>.json` (pairs of English and translation; a plural lists the language's
+categories), and opens the pull request. A pull request that updates a language already in the
+manifest changes only its pack. A plural form other than `other` may
+leave out `{n}` only where it is used for exactly one number. Many forms are used for more: French
+and Brazilian Portuguese `one` is 0 and 1, Russian `one` is 1, 21, 31, 101 and so on, Latvian
+`zero` is 0, 10 to 20, 30 and so on. Keep `{n}` in a form unless you know that it covers exactly
+one number in your language. The CLDR plural rules for the language list what each form covers
+(https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html).
+After an English edit that keeps the meaning, a maintainer runs `node scripts/i18n.mjs carry
+<context> --from "<old>" --to "<new>"`; otherwise the old pair is reported as left over and English
+is shown until the language's owner confirms the new text.
+
+**Without a checkout: test a pack in the browser** (API-013, ADR-190). For a translator without Node:
+Settings → Account (Advanced view) → **Test a language pack**. The template for a tag is byte for byte
+what `node scripts/i18n.mjs sync <tag>` writes for a new language at that build (`prebuild` writes it as
+`assets/locales/template-<sha8>.json`, with a budget line of its own, 64 KiB), with notes for translators
+(`<tag>-notes.txt`). The card checks a translated file with the build's own rules (`src/lib/i18n/pack.ts`:
+the parser of `pairs.ts`, the shipping function of `shipping.ts`, the whole agreement rule of `agree.ts`)
+and lists what breaks a rule (shown in English), what is missing and what is left over; **Use this
+pack…** shows the UI in that file's language in that browser only, for the user who loaded it (paused for
+anyone else, and on the sign-in page after a sign-out), under an English banner, until another build of the
+web UI or the server, 7 days, or **Remove**; **Download for a pull request** writes
+the file in the repository's exact form. Only CI judges the manifest entry and owner, back-translations of
+sensitive messages, English changed since that build, and the file as committed. The banner, the
+confirmation, the notices and the card's Use, Download for a pull request and Remove are English on
+purpose: they hold no message, under `translate="no"` and `lang="en"`. The pack's code
+(`src/lib/devpack/`) loads only when the card is opened or a pack is in use, and a page load whose pack
+keeps the table checked for that build and file fetches neither the template nor the checking code.
+Developers with a checkout keep `sync`, a manifest entry with `offered: false` and `?lang=<tag>`.
+The project site's page [Write a language pack](https://paimonsoror.github.io/telltaledns/dev-languages.html)
+walks a translator through all of it, with examples.
+
+**Exemptions.** A translation that adds a time, a ratio, a date pattern, a list joined by slashes,
+a grouped number or a price (`24:00`, `16:9`, `TT/MM/JJJJ`, `1.000.000.000`, `$5`) fails as an added
+structural token, naming it. A maintainer may then allow that token for that message in
+`src/locales/notes.json`: `exemptAdded` lists the tokens a translation may add (`"exemptAdded":
+["24:00"]`, with the reason in `text`), and any other token it adds still fails. A translation that
+writes a number in words is exempted with `exemptDigits` (the reason as the value). The check
+reports the allowed tokens instead, and the reviewer reads them. The browser does not re-check the
+two rules for a catalog the build shipped, and does for any other.
+
+**Review a catalog pull request by structure.** You do not need to read the language:
+
+1. The pull request changes only that language's pack, and for a new language adds its manifest
+   entry (`owners`, `dir`, `offered: false`, `since`). An update to a language already in the
+   manifest changes its pack only.
+2. `npm run check:i18n` is green: every translation keeps the placeholders, tags and web addresses
+   of its English, every structural token (a URL, a path, `[x]`, `=`, `_`, `$`, `|`, a host and port,
+   an IP address, a glossary term), every number, and every word `src/locales/verbatim.json` lists
+   for it; it adds no address, port, path or setting (also written with fullwidth or ideographic
+   punctuation, `８．８．８．８`); and it has no direction overrides, invisible characters, lone
+   surrogates or words that mix scripts. The added-token lines of the report name no address.
+   An address written in the language's own script shows only as an added-token line (`例子.公司`,
+   for its `.` between two letters of that script; after a bare `https://` it fails), and with an
+   ideographic full stop (`例子。公司`) not at all. Digits of another script (`٨٫٨٫٨٫٨`) and an
+   address with spaces in it (`8 . 8 . 8 . 8`) are not seen either: the language's owner reads the
+   text for these.
+3. The job summary's **sensitive** lines (messages `src/locales/notes.json` marks sensitive: the
+   pull request carries a back-translation of each) and **swap** lines (a new translation equal to
+   another message's old one) are explained.
+4. The language's owner has approved it.

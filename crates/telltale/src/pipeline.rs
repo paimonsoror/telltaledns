@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
+use telltale_cache::{
+    Cache, CacheKey, Client, Flight, Lookup, Outcome as FlightOutcome, Singleflight,
+};
 use telltale_config::BlockMode;
 use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
 use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Matcher, Scratch};
@@ -32,6 +34,14 @@ use tokio::sync::Semaphore;
 
 /// REQ: DNS-019, UPS-007 (ADR-187) — the labels of `resolver.arpa`.
 const RESOLVER_ARPA_LABELS: usize = 2;
+
+/// How long past the query budget a client waits for its resolution's answer. A query waiting
+/// on another's upstream request is wanted for as long (REQ: DNS-006, ADR-197).
+const CLIENT_GRACE: Duration = Duration::from_millis(100);
+
+/// REQ: DNS-006 (ADR-197) — no shortened try (a leader's second try, or a follower of a leader
+/// that went away) starts with less time left than this: the waiting queries take the failure.
+const MIN_TRY: Duration = Duration::from_millis(100);
 
 /// REQ: DNS-019, UPS-007 (ADR-187) — whether a name in `resolver.arpa` is answered here, given the
 /// label count of the suffix that chose its route (`Selection::suffix_labels`; `None` without an
@@ -220,6 +230,39 @@ impl ScheduleNow {
                 .iter()
                 .map(|s| (telltale_policy::quick_ref(&s.name), s.name.clone()))
                 .collect(),
+        }
+    }
+
+    /// REQ: FLT-010 — a schedule follows its group across a reload that renumbers the groups
+    /// (`old` and `new`: the group names by index, before and after): each group's entries
+    /// move to its name's new index, and a new group has none until the ticker's next pass.
+    pub(crate) fn regroup(&self, old: &[&str], new: &[&str]) -> Self {
+        let at = |name: &str| old.iter().position(|n| *n == name);
+        let block_all: Vec<_> = new
+            .iter()
+            .map(|n| at(n).and_then(|i| self.block_all.get(i).cloned().flatten()))
+            .collect();
+        let extras: Vec<Vec<String>> = new
+            .iter()
+            .map(|n| {
+                at(n)
+                    .and_then(|i| self.extras.get(i).cloned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        Self {
+            block_all: if block_all.iter().any(Option::is_some) {
+                block_all
+            } else {
+                Vec::new()
+            },
+            extras: if extras.iter().any(|e| !e.is_empty()) {
+                extras
+            } else {
+                Vec::new()
+            },
+            scheduled: self.scheduled.clone(),
+            names: self.names.clone(),
         }
     }
 }
@@ -550,7 +593,8 @@ impl Refresh {
             return;
         };
         rt.spawn(async move {
-            let _ = pipe.resolve_shared(req, key, view, permit).await;
+            let deadline = pipe.wanted_until(Instant::now());
+            let _ = pipe.resolve_shared(req, key, view, deadline, permit).await;
         });
     }
 }
@@ -798,7 +842,46 @@ impl Pipeline {
     /// Swaps in new routing/policy (OPS-009). In-flight queries finish with the state they
     /// started with; new queries see the new state immediately.
     pub(crate) fn reload(&self, router: Arc<Router>, policy: Policy) {
-        retire(self.state.swap(Arc::new(Dynamic { router, policy })));
+        // REQ: OBS-005 (issue #108) — the exported per-group counters move to their group's new
+        // index, by name, in one step with the swap: under the aggregates' lock, which a scrape
+        // holds while it reads them with the group table, so it sees both before or both after.
+        // Events already on their way (in the rings, up to one drain; held for a Kubernetes
+        // workload, up to `WORKLOAD_HOLD`; from queries that started before the swap and still
+        // wait for an upstream) carry the old index and count under its new owner: a handful
+        // of queries per reload, not a group's total. Nothing changes on the query path.
+        fn names(p: &Policy) -> Vec<&str> {
+            p.clients.groups().iter().map(|g| &*g.name).collect()
+        }
+        fn upstreams(r: &Router) -> Vec<(u16, &str)> {
+            r.upstreams()
+                .iter()
+                .map(|u| (u.id, u.name.as_str()))
+                .collect()
+        }
+        let old = {
+            let mut agg = self.telemetry.aggregates();
+            let current = self.state.load_full();
+            let groups = (names(&current.policy), names(&policy));
+            agg.exported.regroup(&groups.0, &groups.1);
+            // REQ: FLT-010 — a schedule follows its group across a reload: the schedule state is
+            // by group index too (the ticker recomputes it every 15 s), so it moves with the
+            // names, before the masks below are rebuilt from it.
+            let schedules =
+                (groups.0 != groups.1).then(|| self.schedules.load().regroup(&groups.0, &groups.1));
+            drop(groups);
+            // The same for the upstream histograms, by upstream ID (an upstream's place in the
+            // configuration), when the reload builds a new router.
+            if !Arc::ptr_eq(&current.router, &router) {
+                agg.exported
+                    .reupstream(&upstreams(&current.router), &upstreams(&router));
+            }
+            let old = self.state.swap(Arc::new(Dynamic { router, policy }));
+            if let Some(s) = schedules {
+                self.schedules.store(Arc::new(s));
+            }
+            old
+        };
+        retire(old);
         // Group/client changes re-derive the per-client list masks for the current snapshot.
         self.set_filter(None);
     }
@@ -1134,8 +1217,9 @@ impl Pipeline {
             Internal::Miss(key, view) => (key, view),
         };
         let permit = Arc::clone(&self.inflight).try_acquire_owned().ok()?;
+        let deadline = self.wanted_until(Instant::now());
         let (a, _) = Arc::clone(self)
-            .resolve_shared(req, key, view, permit)
+            .resolve_shared(req, key, view, deadline, permit)
             .await?;
         Some(a.to_vec())
     }
@@ -2144,7 +2228,7 @@ impl Pipeline {
         Response::Deferred(Box::pin(async move {
             let waited = Instant::now();
             let mut answer = Arc::clone(&this)
-                .resolve_for_client(req.clone(), key, view, stale_ok, transport)
+                .resolve_for_client(req.clone(), key, view, stale_ok, transport, waited)
                 .await
                 .map(|(bytes, status, upstream)| {
                     // REQ: OBS-001 (review 04-07) — the upstream that answered.
@@ -2184,7 +2268,8 @@ impl Pipeline {
     }
 
     /// The deferred stage: resolve upstream (shared via singleflight), then build the client's
-    /// response from the answer, from stale data, or as SERVFAIL with an EDE.
+    /// response from the answer, from stale data, or as SERVFAIL with an EDE. `since` is when
+    /// the client started waiting.
     async fn resolve_for_client(
         self: Arc<Self>,
         req: Vec<u8>,
@@ -2192,6 +2277,7 @@ impl Pipeline {
         view: u16,
         stale_ok: bool,
         transport: Transport,
+        since: Instant,
     ) -> Option<(Vec<u8>, Status, u16)> {
         let q = parse_query(&req).ok()?;
         // REQ: NFR-002 (T10.2) — the client's response buffer is allocated once the answer is
@@ -2216,11 +2302,13 @@ impl Pipeline {
         };
         // Run the resolution as its own task so that, if we give up waiting and serve stale,
         // it still completes and refreshes the cache (RFC 8767 §5).
-        let task = tokio::spawn(Arc::clone(&self).resolve_shared(req.clone(), key, view, permit));
+        let deadline = self.wanted_until(since);
+        let shared = Arc::clone(&self).resolve_shared(req.clone(), key, view, deadline, permit);
+        let task = tokio::spawn(shared);
         let wait = if stale_ok {
             self.settings.stale_answer_timeout
         } else {
-            self.settings.budget + Duration::from_millis(100)
+            self.settings.budget + CLIENT_GRACE
         };
         // REQ: DNS-007 — a zero wait answers from the expired entry at once (the spawned
         // resolution carries on and refreshes it); a zero-length timer would still let an
@@ -2305,28 +2393,86 @@ impl Pipeline {
         }
     }
 
+    /// REQ: DNS-006 (ADR-197) — when a query that starts waiting at `since` stops being
+    /// wanted: the query budget, plus the grace its client waits beyond it.
+    fn wanted_until(&self, since: Instant) -> Instant {
+        since
+            .checked_add(self.settings.budget.saturating_add(CLIENT_GRACE))
+            .unwrap_or(since)
+    }
+
     /// Resolves `req` upstream once per (key, name), inserting the answer into the cache.
+    /// `deadline` is when the query it answers stops being wanted ([`Self::wanted_until`]).
+    ///
+    /// REQ: DNS-006 (ADR-197) — a waiting query takes its leader's outcome, or resolves within
+    /// the budget of the query it answers:
+    /// - a follower takes the leader's answer, or its failure;
+    /// - a leader whose own try fails tries once more for its followers, within the time left
+    ///   until the latest of their deadlines; queries that join meanwhile take that try's
+    ///   outcome. So a request makes at most two tries, however many queries join it;
+    /// - only a leader that goes away without an outcome (cancelled with its caller) leaves its
+    ///   followers to resolve on their own, each within its own time;
+    /// - a shortened try starts only with [`MIN_TRY`] left, and runs as [`Self::cut_short`]
+    ///   says.
     async fn resolve_shared(
         self: Arc<Self>,
         req: Vec<u8>,
         key: CacheKey,
         view: u16,
+        deadline: Instant,
         _permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Option<(Arc<[u8]>, u16)> {
         let q = parse_query(&req).ok()?;
-        let guard = match self.flights.join(key, q.qname.as_wire()) {
+        let guard = match self.flights.join(key, q.qname.as_wire(), deadline) {
             Flight::Leader(g) => g,
-            Flight::Follower(rx) => {
-                if let Some(a) = Flight::wait(rx).await {
-                    return Some(a);
-                }
-                // The leader gave up; resolve without coalescing.
-                return self.resolve_upstream(&q, key, view).await;
+            Flight::Follower(waiter) => {
+                return match waiter.wait().await {
+                    FlightOutcome::Answered(answer, upstream) => Some((answer, upstream)),
+                    FlightOutcome::Failed => None,
+                    FlightOutcome::Abandoned => {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        if left < MIN_TRY {
+                            return None;
+                        }
+                        self.cut_short(left, &q, key, view).await
+                    }
+                };
             }
         };
-        let (answer, upstream) = self.resolve_upstream(&q, key, view).await?;
-        guard.complete(Arc::clone(&answer), upstream);
-        Some((answer, upstream))
+        if let Some((answer, upstream)) = self.resolve_upstream(&q, key, view).await {
+            guard.complete(Arc::clone(&answer), upstream);
+            return Some((answer, upstream));
+        }
+        // REQ: DNS-006 (ADR-197) — no answer: once more for the queries waiting, if one still
+        // has time, and then the outcome is theirs too.
+        if let Some(left) = guard.retry_within(Instant::now(), MIN_TRY)
+            && let Some((answer, upstream)) = self.cut_short(left, &q, key, view).await
+        {
+            guard.complete(Arc::clone(&answer), upstream);
+            return Some((answer, upstream));
+        }
+        guard.fail();
+        None
+    }
+
+    /// REQ: DNS-006, DNS-011 (ADR-197) — [`Self::resolve_upstream`] ended after `left`: it runs
+    /// with the configured budget and is cut from outside, so nothing it shares with other
+    /// queries learns the shorter time (the DNSSEC validator keeps the budget of each group's
+    /// first lookup for every later one; an attempt's timeout feeds its upstream's latency
+    /// average and breaker; a failed unsigned-zone proof is remembered for a minute). A try cut
+    /// short emits no upstream event, and its queries still out are dropped rather than left to
+    /// finish.
+    async fn cut_short(
+        &self,
+        left: Duration,
+        q: &Query<'_>,
+        key: CacheKey,
+        view: u16,
+    ) -> Option<(Arc<[u8]>, u16)> {
+        tokio::time::timeout(left, self.resolve_upstream(q, key, view))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// The answer and the ID of the upstream that gave it (REQ: OBS-001, review 04-07).
@@ -3129,6 +3275,129 @@ groups = ["kids"]
         assert!(
             !blocked(&ask("10.0.1.5:1000", "game.example.com")),
             "only for its own group"
+        );
+    }
+
+    /// REQ: FLT-010 (T7.10) — a schedule follows its group across a reload that renumbers the
+    /// groups, before the schedule ticker's next pass: a block-everything schedule stays with
+    /// its group, and so does a list a schedule turns on. The schedule state is computed once,
+    /// at fixed instants; the reload reads no clock.
+    #[test]
+    #[allow(clippy::too_many_lines)] // two reloads, each checked from three groups
+    fn flt_010_a_reload_that_renumbers_groups_keeps_each_schedule_with_its_group() {
+        let schedules = r#"
+[[list]]
+name = "games"
+rules = ["||game.example.com^"]
+
+[[schedule]]
+name = "bedtime"
+action = "block_all"
+tz = "UTC"
+window = [{ days = ["daily"], start = "21:00", end = "07:00" }]
+
+[[schedule]]
+name = "weekend-games"
+action = "enable_lists"
+lists = ["games"]
+tz = "UTC"
+window = [{ days = ["weekends"], start = "12:00", end = "18:00" }]
+"#;
+        let groups = r#"
+[[group]]
+name = "default"
+schedules = ["weekend-games"]
+
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+schedules = ["bedtime"]
+"#;
+        // The same groups, with one added in front: `default` moves from 0 to 1, `kids` to 2.
+        let renumbered =
+            format!("[[group]]\nname = \"aaa\"\nnetworks = [\"10.0.2.0/24\"]\n{groups}");
+        let load = |groups: &str| -> telltale_config::Config {
+            telltale_config::Loader::new()
+                .toml_str("t.toml", format!("{schedules}{groups}"))
+                .env(Vec::<(String, String)>::new())
+                .load()
+                .unwrap()
+                .config
+        };
+        let policy = |cfg: &telltale_config::Config| {
+            let clients = Arc::new(ClientTable::from_config(cfg));
+            Policy {
+                quick: Arc::new(telltale_policy::QuickRules::from_config(cfg, &clients)),
+                clients,
+                ..Policy::open()
+            }
+        };
+        let (before, after) = (load(groups), load(&renumbered));
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            policy(&before),
+        );
+        install_lists(&p, &[("games", "||game.example.com^\n")]);
+        // The ticker's pass at `now` for `cfg`'s groups (as numbered now).
+        let tick = |cfg: &telltale_config::Config, now: i64| {
+            let clients = Arc::clone(&p.current().policy.clients);
+            p.schedules.store(Arc::new(ScheduleNow::compute(
+                cfg,
+                &telltale_config::schedule::compile(cfg),
+                clients.groups(),
+                now,
+            )));
+            p.set_filter(None);
+        };
+        let ask = |peer: &str, name: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
+                Response::Ready(len) => out[..len].to_vec(),
+                _ => Vec::new(),
+            }
+        };
+        let blocked =
+            |r: &[u8]| summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1);
+        let (kid, other, new) = ("10.0.1.5:1000", "10.0.0.9:1000", "10.0.2.5:1000");
+        // Monday 2026-10-05 22:00 UTC: bedtime is on for `kids`.
+        let monday_2200: i64 = 1_791_237_600;
+        tick(&before, monday_2200);
+        assert!(blocked(&ask(kid, "www.example.org")), "bedtime blocks kids");
+        assert!(!blocked(&ask(other, "www.example.org")));
+        p.reload(Arc::new(Router::default()), policy(&after));
+        assert!(
+            blocked(&ask(kid, "www.example.org")),
+            "bedtime still blocks kids after the reload"
+        );
+        assert!(
+            !blocked(&ask(other, "www.example.org")),
+            "and not default, now at kids' old index"
+        );
+        assert!(!blocked(&ask(new, "www.example.org")), "nor the new group");
+        // Saturday 13:00 UTC: the weekend games list is on for `default` (index 1 now); a
+        // reload back to the first table puts `default` at 0 and `kids` at 1.
+        tick(&after, monday_2200 + 4 * 86_400 + 15 * 3600);
+        assert!(
+            blocked(&ask(other, "game.example.com")),
+            "games on for default"
+        );
+        assert!(!blocked(&ask(new, "game.example.com")));
+        p.reload(Arc::new(Router::default()), policy(&before));
+        assert!(
+            blocked(&ask(other, "game.example.com")),
+            "the games list stays with default after the reload"
+        );
+        assert!(
+            !blocked(&ask(kid, "game.example.com")),
+            "and not kids, now at default's old index"
         );
     }
 
@@ -5738,6 +6007,10 @@ members = [\"u\"]
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "pipeline_flight_tests.rs"]
+mod flight_tests;
 
 #[cfg(test)]
 mod policy_tests {

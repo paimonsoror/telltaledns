@@ -9,6 +9,10 @@
 /ui/test-results/
 /ui/playwright-report/
 /ui/.shots/
+# Made by `node ui/scripts/i18n.mjs prebuild` before dev, check, build and test:e2e (ADR-189).
+/ui/src/lib/i18n/locales.gen.ts
+/ui/src/lib/i18n/emitted.gen.json
+/ui/public/assets/locales/
 /fuzz/artifacts/
 /fuzz/corpus/
 /fuzz/target/

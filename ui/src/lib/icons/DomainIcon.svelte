@@ -56,6 +56,7 @@
     style:--ink={inkFor(hex)}
     title={slug ? brandTitle(slug) : undefined}
     aria-hidden="true"
+    translate="no"
   >
     {#if kind === 'brand' && glyph}
       <svg viewBox="0 0 {grid} {grid}" width={inner} height={inner} fill="currentColor"><path d={glyph[1]} /></svg>

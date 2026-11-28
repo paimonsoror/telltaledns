@@ -43,7 +43,7 @@
   <ul>
     <li><b>The gate.</b> The <code>image</code> workflow builds every platform, then <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/image/size.py"><code>deploy/image/size.py</code></a> adds up the <i>compressed</i> layer sizes per platform and fails over 15 MiB. Compressed is what a Pi downloads, so how well something compresses matters: the same bytes stored twice cost twice.</li>
     <li><b>Where the bytes are.</b> About 97% of the image is the one static binary. Its largest parts are the DNS and TLS code, SQLite, and the embedded web UI.</li>
-    <li><b>Where we are.</b> About 13.0 MiB on amd64, 12.3 on arm64, and 12.8 on armv7 after the cuts below (it was 14.84, 14.16, and 14.82 when the margin ran out). The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
+    <li><b>Where we are.</b> About 13.6 MiB on amd64, 13.0 on arm64, and 13.5 on armv7 on <code>main</code> at the end of November 2026. The cuts below took it from 14.84, 14.16, and 14.82, when the margin ran out, to 13.0, 12.3, and 12.8. The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
     <li><b>Measure it like CI does.</b> Build the image with BuildKit and OCI output as the <a href="https://github.com/paimonsoror/telltaledns/blob/main/.github/workflows/image.yml"><code>image</code> workflow</a> does, then run <code>python3 deploy/image/size.py --oci image.tar</code>. A debug build says nothing: the release profile uses fat LTO, one codegen unit, and abort on panic.</li>
   </ul>
 </section>
@@ -87,7 +87,8 @@
 <section id="ui">
   <h2>The web UI: 400 KiB</h2>
   <ul>
-    <li><b>The budget</b> is 400 KiB gzipped for the whole of <code>ui/dist</code>, lazy chunks included. <code>npm run build</code> prints the total and fails over the limit (<code>ui/scripts/postbuild.mjs</code>). It is about 296 KiB now.</li>
+    <li><b>The budget</b> is 400 KiB gzipped for the UI with English: everything in <code>ui/dist</code> outside <code>assets/locales/</code>, lazy chunks included. Each further language is one file in <code>assets/locales/</code> and may take 80 KiB gzipped, and all of them together 400 KiB (ADR-189). <code>npm run build</code> prints the three figures and fails over any of them (<code>ui/scripts/postbuild.mjs</code>). The UI is about 340 KiB now (about 21 KiB of it the code for testing a language pack, which loads only when it is used), and ships no other language yet.</li>
+    <li><b>The template for translators</b> (<code>assets/locales/template-&lt;hash&gt;.json</code>, every English text of the build with its notes, ADR-190) has a line and a budget of its own, 64 KiB gzipped, outside both totals: about 29 KiB now. The build also fails if the entry chunk does not hold the template's file name.</li>
     <li><b>Big data goes in a lazy chunk</b> that loads when something needs it (the icon glyphs are one), so a page that never shows it never pays for it.</li>
     <li><b>The UI is embedded in the binary</b> as gzip only, so every KiB of UI is close to a KiB in the image.</li>
     <li><b>A chart or a font library is a dependency.</b> Justify it against the budget before you add it.</li>

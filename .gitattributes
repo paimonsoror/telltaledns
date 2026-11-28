@@ -1,2 +1,4 @@
 # List fixtures are byte-exact test inputs (CRLF, BOM, trailing spaces).
 crates/telltale-filter/tests/fixtures/** -text
+# The web UI's language files are compared byte for byte with what `sync` writes (ADR-189, ADR-190).
+ui/src/locales/*.json text eol=lf

@@ -2065,6 +2065,8 @@ async fn obs_008_live_tail_streams_server_sent_events() {
         .await
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
+    // Firefox needs a byte before it reports the stream open; the first event is that hello.
+    assert!(text.starts_with(": connected\n\n"), "{text}");
     assert!(text.contains("event: query\n"), "{text}");
     assert!(text.contains("id: 1791072000000000\n"), "{text}");
     assert!(text.contains("\"name\":\"ads.example.com\""), "{text}");
@@ -3895,6 +3897,20 @@ impl Backend for PinnedBackend {
         Box::pin(async {
             Err(
                 Problem::new(crate::problem::Code::ClusterPinned, "the cluster is pinned")
+                    .hint("Unpin to publish changes (Cluster page, or DELETE /api/v1/cluster/pin). Held back since the pin: router: changed.")
+                    .diff(serde_json::Value::Array(pin_ops())),
+            )
+        })
+    }
+    fn write_client(
+        &self,
+        w: crate::ClientWrite,
+    ) -> BoxFuture<Result<crate::model::ClientChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Err(
+                Problem::new(crate::problem::Code::ClusterPinned, "the cluster is pinned")
+                    .hint("Unpin to publish changes (Cluster page, or DELETE /api/v1/cluster/pin). Held back since the pin: router: changed.")
                     .diff(serde_json::Value::Array(pin_ops())),
             )
         })
@@ -3983,6 +3999,98 @@ async fn api_002_a_pin_diff_names_no_router_key_file() {
     for h in hidden {
         assert!(text.contains(h), "the admin sees {h}: {text}");
     }
+}
+
+/// REQ: CLU-013, AGT-004 (ADR-191) — the `409 cluster_pinned` a write gets on a pinned primary carries
+/// the diff of the shared configuration the pin holds back (every device in it) only to a caller
+/// that may read every device: a person gets it, for a device and for any other kind; an agent
+/// limited to a group, or one without `querylog:read`, gets the 409 with its detail and hint, and no
+/// diff.
+#[tokio::test]
+async fn agt_004_a_pinned_refusal_carries_its_diff_only_to_whoever_may_read_every_device() {
+    let app = app_over(Arc::new(PinnedBackend {
+        inner: Fake::default(),
+    }));
+    let operator = bearer_for(&app, "olga", auth::Role::Operator, "write");
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "kids-helper", "kind": "agent", "group": "kids",
+                "scopes": ["querylog:read", "config:write:clients"]}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let group_agent = v["token"].as_str().unwrap().to_owned();
+    let no_log_agent = agent_token(
+        &app,
+        "upstreams-helper",
+        &["config:write:clients", "config:write:upstreams"],
+    )
+    .await;
+    let put = |bearer: &str, uri: &str, body: &serde_json::Value| {
+        Request::builder()
+            .method("PUT")
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-telltale-reason", "a write on a pinned cluster")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let device = serde_json::json!({"match": ["192.168.1.9"], "groups": ["kids"]});
+    let upstream = serde_json::json!({"url": "udp://9.9.9.9"});
+    let mut wrong = Vec::new();
+    for (who, bearer, uri, body, with_diff) in [
+        (
+            "an operator, a device",
+            &operator,
+            "/api/v1/clients/tablet",
+            &device,
+            true,
+        ),
+        (
+            "an operator, an upstream",
+            &operator,
+            "/api/v1/upstreams/up",
+            &upstream,
+            true,
+        ),
+        (
+            "a group agent, a device",
+            &group_agent,
+            "/api/v1/clients/tablet",
+            &device,
+            false,
+        ),
+        (
+            "an agent without querylog:read, a device",
+            &no_log_agent,
+            "/api/v1/clients/tablet",
+            &device,
+            false,
+        ),
+        (
+            "an agent without querylog:read, an upstream",
+            &no_log_agent,
+            "/api/v1/upstreams/up",
+            &upstream,
+            false,
+        ),
+    ] {
+        let (s, _, v) = send(&app, put(bearer, uri, body)).await;
+        let has_diff = v.get("diff").is_some_and(|d| !d.is_null());
+        let detail = v["detail"].as_str().is_some_and(|d| d.contains("pinned"));
+        let hint = v["hint"]
+            .as_str()
+            .is_some_and(|h| h.contains("Held back since the pin"));
+        if s != StatusCode::CONFLICT || has_diff != with_diff || !detail || !hint {
+            wrong.push(format!("{who}: {s} {v}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 // ---- Review round 2.
@@ -4278,25 +4386,149 @@ async fn api_002_a_change_whose_task_fails_answers_a_fixed_500() {
     );
 }
 
+/// A backend whose device writes are refused as a delete is when something else made through the
+/// API names the device, with a fuller hint that names another device.
+struct NamesItBackend {
+    inner: Fake,
+}
+
+impl Backend for NamesItBackend {
+    fake_reads!();
+    fn write_client(
+        &self,
+        w: crate::ClientWrite,
+    ) -> BoxFuture<Result<crate::model::ClientChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Err(Problem::new(
+                crate::problem::Code::InvalidConfig,
+                "rule[0].devices[0]: `tv` isn't a named device (`[[client]]`), an IP, or a CIDR",
+            )
+            .hint("Something else made through the API names this device (the reasons say what): change or remove that first.")
+            .fuller_hint("Something else made through the API names this device (the reasons say what): change or remove that first. The devices made through the API that the reasons name: `other-tv`."))
+        })
+    }
+}
+
+/// REQ: AGT-004, API-010 (ADR-191) — a caller that may not read every device, whose refused delete's
+/// `detail` doesn't give the reasons, isn't pointed at them by the hint either: it gets the hint
+/// that something else made through the API names the device, without "(the reasons say what)". A
+/// person gets the reasons and the fuller hint as they are.
+#[tokio::test]
+async fn agt_004_a_restricted_caller_is_not_pointed_at_reasons_it_does_not_get() {
+    let app = app_over(Arc::new(NamesItBackend {
+        inner: Fake::default(),
+    }));
+    let operator = bearer_for(&app, "olga", auth::Role::Operator, "write");
+    let agent = agent_token(&app, "clients-helper", &["config:write:clients"]).await;
+    let delete = |bearer: &str| {
+        Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/clients/tv")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-telltale-reason", "a delete that something else needs")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let mut wrong = Vec::new();
+    let (s, _, v) = send(&app, delete(&agent)).await;
+    if s != StatusCode::UNPROCESSABLE_ENTITY
+        || v["detail"]
+            != "this change conflicts with another device, which this answer doesn't name; the hint says what to do"
+        || v["hint"]
+            != "Something else made through the API names this device: change or remove that first."
+    {
+        wrong.push(format!("the agent: {s} {v}"));
+    }
+    let (s, _, v) = send(&app, delete(&operator)).await;
+    if s != StatusCode::UNPROCESSABLE_ENTITY
+        || !v["detail"].as_str().is_some_and(|d| d.contains("rule[0]"))
+        || !v["hint"].as_str().is_some_and(|h| h.contains("`other-tv`"))
+    {
+        wrong.push(format!("the operator: {s} {v}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// REQ: AGT-003 (ADR-181, ADR-191) — the stored form of an Idempotency-Key is whose it is, then the
+/// key: a person's `{user_id}:{key}` from any session or token (trimmed; an empty key is left to
+/// `write`, which drops it while it is too short), an agent token's `token:{id}:{key}`, an MCP OAuth
+/// agent's under its OAuth identity, and an agent's empty key is no key.
+#[test]
+fn agt_003_an_idempotency_key_is_stored_per_caller() {
+    use crate::auth::{AgentGrant, Principal, Role, Via};
+    let person = |via| Principal {
+        user_id: 12,
+        username: "olga".into(),
+        role: Role::Operator,
+        via,
+        agent: None,
+        display: None,
+    };
+    let agent = |id: &str| Principal {
+        agent: Some(AgentGrant {
+            token_name: "helper".into(),
+            scopes: std::collections::BTreeSet::new(),
+            group: None,
+            rate_per_minute: None,
+            client: None,
+        }),
+        ..person(Via::Token { id: id.into() })
+    };
+    let key = crate::config_api::idempotency_key;
+    let session = Via::Session {
+        id_hash: vec![1, 2, 3],
+        csrf: "c".into(),
+    };
+    assert_eq!(key(&person(session), " k-1 ").as_deref(), Some("12:k-1"));
+    assert_eq!(key(&person(Via::Basic), "k-1").as_deref(), Some("12:k-1"));
+    assert_eq!(
+        key(
+            &person(Via::Token {
+                id: "AbCd_EfGh-IjKlMn".into()
+            }),
+            "k-1"
+        )
+        .as_deref(),
+        Some("12:k-1")
+    );
+    assert_eq!(key(&person(Via::Basic), "").as_deref(), Some("12:"));
+    assert_eq!(
+        key(&agent("AbCd_EfGh-IjKlMn"), " k-1 ").as_deref(),
+        Some("token:AbCd_EfGh-IjKlMn:k-1")
+    );
+    assert_eq!(
+        key(&agent("oauth:mcp-client:sub-7"), "k-1").as_deref(),
+        Some("token:oauth:mcp-client:sub-7:k-1")
+    );
+    assert_eq!(key(&agent("AbCd_EfGh-IjKlMn"), "  "), None);
+}
+
 // ---- Review round 3.
 
 /// REQ: AGT-007, AGT-003 (ADR-181) — review round 3 (F3): an MCP `apply_plan` that finds the node
 /// busy (every place for a change taken: 503) or the plan's first apply still running (409
 /// `change_in_progress`) doesn't spend the plan: it is `ready` again and the agent is told to
-/// apply it again. Once the node is free, the plan is applied.
+/// apply it again. Once the node is free, the plan is applied. Each call has 30 s to answer, so a
+/// held key that no longer holds the apply fails the test instead of leaving it waiting.
 #[tokio::test]
 async fn agt_007_a_busy_apply_leaves_the_plan_to_apply_again() {
+    let within = std::time::Duration::from_secs(30);
     let backend = Arc::new(GatedBackend::new(false));
     let app = app_over(Arc::clone(&backend) as Shared);
     let agent = agent_token(&app, "planner", &["config:write:records"]).await;
-    let made = mcp_call(
-        &app,
-        &agent,
-        "plan_set_local_name",
-        serde_json::json!({"name": "nas.home.arpa", "records": [{"type": "A", "value": "192.168.1.10"}],
-            "reason": "a test of a busy apply"}),
+    let made = tokio::time::timeout(
+        within,
+        mcp_call(
+            &app,
+            &agent,
+            "plan_set_local_name",
+            serde_json::json!({"name": "nas.home.arpa", "records": [{"type": "A", "value": "192.168.1.10"}],
+                "reason": "a test of a busy apply"}),
+        ),
     )
-    .await;
+    .await
+    .expect("the plan is made within 30 s");
     assert_eq!(made["result"]["isError"], false, "{made}");
     let id = made["result"]["structuredContent"]["planId"]
         .as_str()
@@ -4325,17 +4557,39 @@ async fn agt_007_a_busy_apply_leaves_the_plan_to_apply_again() {
     };
     // Every place taken.
     let all = app.auth.write_gate().take_every_place().unwrap();
-    busy(&apply().await, "503");
+    let v = tokio::time::timeout(within, apply())
+        .await
+        .expect("the busy apply answers within 30 s");
+    busy(&v, "503");
     drop(all);
-    // The plan's first apply still running (its Idempotency-Key is the plan's ID).
-    let root = app.auth.state().user_by_name("root").unwrap().unwrap();
-    let key = format!("{}:{id}", root.id);
+    // The plan's first apply still running: its Idempotency-Key is the plan's ID, stored as the
+    // write path stores the agent's keys (`config_api::idempotency_key`, from its principal).
+    let principal = app
+        .auth
+        .authenticate(
+            &auth::Presented {
+                session: None,
+                bearer: Some(&agent),
+                basic: None,
+                https: false,
+                remote: None,
+            },
+            auth_now(),
+        )
+        .unwrap()
+        .unwrap();
+    let key = crate::config_api::idempotency_key(&principal, &id).unwrap();
     app.auth.write_gate().hold_key(&key, true);
-    busy(&apply().await, "409");
+    let v = tokio::time::timeout(within, apply())
+        .await
+        .expect("the held apply answers within 30 s");
+    busy(&v, "409");
     app.auth.write_gate().hold_key(&key, false);
     // Free: applied.
     backend.gate.add_permits(1);
-    let v = apply().await;
+    let v = tokio::time::timeout(within, apply())
+        .await
+        .expect("the free apply answers within 30 s");
     assert_eq!(v["result"]["isError"], false, "{v}");
     assert_eq!(v["result"]["structuredContent"]["state"], "applied", "{v}");
 }

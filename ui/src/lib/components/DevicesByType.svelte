@@ -3,6 +3,8 @@
   import { api, type S } from '../api';
   import { href } from '../router.svelte';
   import HelpButton from './HelpButton.svelte';
+  import { tr } from '../i18n';
+  const { t } = tr('devicesByType');
 
   let items = $state<S['DeviceIdentity'][]>([]);
   $effect(() => {
@@ -20,16 +22,16 @@
 
 <section class="card" data-testid="devices-by-type">
   <div class="card-head">
-    <h2>Devices by type<HelpButton id="identify" /></h2>
-    <a href={href('/clients')} class="small">Clients</a>
+    <h2>{t('Devices by type')}<HelpButton id="identify" /></h2>
+    <a href={href('/clients')} class="small">{t('Clients')}</a>
   </div>
   {#if counts.length === 0}
-    <p class="empty">No devices identified yet.</p>
+    <p class="empty">{t('No devices identified yet.')}</p>
   {:else}
     <table class="compact">
-      <thead><tr><th>Type</th><th class="num">Devices</th></tr></thead>
+      <thead><tr><th>{t('Type')}</th><th class="num">{t('Devices')}</th></tr></thead>
       <tbody>
-        {#each counts as [cls, n] (cls)}<tr><td>{cls}</td><td class="num">{n}</td></tr>{/each}
+        {#each counts as [cls, n] (cls)}<tr><td translate="no">{cls}</td><td class="num">{n}</td></tr>{/each}
       </tbody>
     </table>
   {/if}

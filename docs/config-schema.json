@@ -2467,6 +2467,18 @@
               "type": "null"
             }
           ]
+        },
+        "trusted_proxies": {
+          "description": "REQ: DNS-003, DNS-020 (ADR-194) — `doh` only, with `proxy_protocol` or `x_forwarded_for`:\nthe proxies in front of this listener (e.g. `[\"10.0.5.20/32\"]`). Only they may connect;\nany other address is closed at once. A connection or request that then names no usable\nclient (a PROXY `LOCAL` or address-less header, a missing or unreadable `X-Forwarded-For`,\nan unspecified or loopback address) is refused, never answered as the proxy. With\n`x_forwarded_for`, these are also the hops skipped. List only your proxies, never a whole\nnetwork: each address listed can name any client. Default: none.",
+          "type": "array",
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        },
+        "x_forwarded_for": {
+          "description": "REQ: DNS-003 (ADR-194) — `doh` only, with `trusted_proxies`, not with `proxy_protocol`: the\nclient's address is the rightmost `X-Forwarded-For` entry that isn't in `trusted_proxies`\n(as for `[api] trusted_proxies`). `X-Real-IP` and `Forwarded` are never read. Such a\nlistener sends no `Alt-Svc` and takes client IDs from the URL path only (the SNI is the\nproxy's). Default: false.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
@@ -4024,6 +4036,10 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
           }
         },
+        "loop_tag": {
+          "description": "REQ: UPS-009 (ADR-192) — send the loop-detection EDNS option (code 65429, with this node's\nrandom tag) in every query forwarded to this upstream and to its own `bootstrap` servers,\nso a query that comes back to this node is dropped instead of going round. On by default.\n`false` leaves it out, for a resolver that drops every query carrying an EDNS option it\ndoesn't know. It doesn't fix a loop, it hides one: keep it on for any upstream that can\nsend queries back to this node. `false` is refused on a `recursive://` upstream (which\nnever sends the option) and toward this node, as far as the configuration tells: a\nloopback or unspecified address, `localhost` or a name under it, or a `[[listen]]`\naddress on any port, in the URL or in `bootstrap`. Validation reads no host, so it\ndoesn't see the machine's other addresses or names, a DNS stamp's address, or a resolver\nthat forwards back. Not written while it is on. Don't write this key until every node\nruns this version: an older node refuses it in its own file, and in a shared\nconfiguration (where only `false` is written) it stops converging.",
+          "type": "boolean"
+        },
         "name": {
           "description": "Unique name referenced by upstream groups.",
           "type": "string",
@@ -4235,7 +4251,7 @@
       ]
     },
     "WatchdogConfig": {
-      "description": "REQ: OPS-012 (ADR-163, GitHub issue #7) — the watchdog. A thread outside the runtime checks\nevery 5 s that the runtime runs a task and that this node's own UDP listener answers; when\nneither has passed for `stall_secs` it writes a dump under `<data_dir>/watchdog/` and, with\n`action = \"restart\"`, exits (status 70) so the supervisor (systemd, Compose, Kubernetes)\nstarts the node again. Restart-only. Node-local.",
+      "description": "REQ: OPS-012 (ADR-163, GitHub issue #7) — the watchdog. A thread outside the runtime checks\nevery 5 s that the runtime runs a task and that this node's own UDP listener answers; when\neither one hasn't passed for `stall_secs` it writes a dump under `<data_dir>/watchdog/` and, with\n`action = \"restart\"`, exits (status 70) so the supervisor (systemd, Compose, Kubernetes)\nstarts the node again. Restart-only. Node-local.",
       "type": "object",
       "properties": {
         "action": {

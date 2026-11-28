@@ -21,6 +21,7 @@
     <li><a href="#choose">Choose your upstreams</a></li>
     <li><a href="#encrypt-upstreams">Encrypt lookups to your upstreams</a></li>
     <li><a href="#devices">Offer encrypted DNS to your devices</a></li>
+    <li><a href="#behind-proxy">DoH behind a reverse proxy</a></li>
     <li><a href="#routes">Send a domain to another server</a></li>
     <li><a href="#stub">When the server only knows that domain (stub zones)</a></li>
     <li><a href="#recursive">Resolve without a forwarder</a></li>
@@ -135,6 +136,10 @@ url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFs
       <p>Your devices' subnets are never sent. <code>ecs = "203.0.113.0/24"</code> sends a subnet you choose, for better CDN answers; <code>ecs = "client"</code> suits clients on public addresses. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#client-subnet-ecs">Details</a>.</p>
     </div>
     <div class="card">
+      <h3>Forwarding loops</h3>
+      <p>Queries forwarded to upstreams carry a loop-detection option, so a query that comes back to TelltaleDNS is dropped instead of going round. It doesn't catch two TelltaleDNS nodes that forward to each other, since a node never passes a client's options on: don't make two nodes each other's upstream. For a resolver that drops every query with an option it doesn't know, set <code>loop_tag = false</code> on it. Turning it off hides a loop, it doesn't fix one: keep it on for any upstream that can reach TelltaleDNS. It's refused toward a loopback or unspecified address, <code>localhost</code>, or a <code>[[listen]]</code> address on any port; the configuration doesn't check a DNS stamp's address, the node's API, metrics or cluster addresses, or other names and addresses of the machine, and <b>Test it</b> doesn't check it at all. In a cluster, upgrade every node first: a node that can't read the key stops following the cluster's changes (<a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#setting-loop_tag-in-a-cluster">in a cluster</a>). <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#forwarding-loops">Details</a>.</p>
+    </div>
+    <div class="card">
       <h3>Through a proxy (Tor)</h3>
       <p><code>proxy = "socks5://127.0.0.1:9050"</code> sends an upstream's traffic through SOCKS5 or HTTP, so the resolver never sees your address. Use <code>tcp://</code> or <code>tls://</code> with Tor. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#through-a-proxy-tor">Details</a>.</p>
     </div>
@@ -144,7 +149,7 @@ url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFs
     </div>
     <div class="card">
       <h3>Plugin upstreams</h3>
-      <p><code>unix://</code> or <code>exec://</code>: anything that speaks DNS over a Unix socket can be an upstream. A dead plugin is a failing upstream like any other. Plugins are defined in the config file: the UI and the API don't take them. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#plugin-upstreams">Details</a>.</p>
+      <p><code>unix://</code> or <code>exec://</code>: anything that speaks DNS over a Unix socket can be an upstream. A dead plugin is a failing upstream like any other. Its health check asks the root's NS records (<code>. NS</code>), so a plugin should answer that question with NOERROR or NXDOMAIN, or it stays benched for longer on a node that sends it few queries. Plugins are defined in the config file: the UI and the API don't take them. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#plugin-upstreams">Details</a>.</p>
     </div>
   </div>
 </section>
@@ -209,10 +214,50 @@ tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }</code></
       </div>
   <ul>
     <li><b>Devices can identify themselves.</b> With a wildcard certificate (<code>dns.example.com</code> and <code>*.dns.example.com</code>), a device set to <code>kids-tablet.dns.example.com</code>, or to the URL <code>https://dns.example.com/dns-query/kids-tablet</code>, gets the client ID <code>kids-tablet</code>. <code>[[client]] match = ["id:kids-tablet"]</code> recognizes it wherever it is, even on mobile data. The path wins over the name. See <a href="guide-devices.html">Groups, devices, and VLANs</a>.</li>
-    <li><b>Behind a load balancer:</b> <code>proxy_protocol = true</code> on a <code>tcp</code>, <code>dot</code>, or <code>doh</code> listener reads the client's address from a PROXY protocol v2 header. Every connection must then start with one, so only turn it on when the balancer sends it.</li>
+    <li><b>Behind a load balancer:</b> <code>proxy_protocol = true</code> on a <code>tcp</code>, <code>dot</code>, or <code>doh</code> listener reads the client's address from a PROXY protocol v2 header. Every connection must then start with one, so only turn it on when the balancer sends it. A header that names no client address (<code>LOCAL</code> health checks, <code>AF_UNSPEC</code>, <code>AF_UNIX</code>) keeps the socket address, and the settings for that address apply; those connections are counted in <code>telltale_proxy_protocol_no_address_total</code>, and from loopback the log says so for <code>AF_UNSPEC</code> and <code>AF_UNIX</code> (<code>LOCAL</code> only at debug), at most once a minute per listener. A <code>doh</code> listener with <code>trusted_proxies</code> refuses such headers instead (<a href="#behind-proxy">below</a>).</li>
+    <li><b>Behind a reverse proxy:</b> list the proxies on the <code>doh</code> listener, and it takes each client's address from them. See <a href="#behind-proxy">below</a>.</li>
     <li><b>Connection limits</b> per listener: <code>max_connections</code> (default 1,024) and <code>max_connections_per_address</code> (default 32, <code>0</code> = no limit).</li>
   </ul>
   <p class="muted">Metrics, timeouts, and HTTP details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#encrypted-dns-for-your-devices-dot-doh-and-doq">Encrypted DNS for your devices in the docs</a>.</p>
+</section>
+
+<section id="behind-proxy">
+  <h2>DoH behind a reverse proxy</h2>
+  <p>A reverse proxy in front of DoH (to share port 443 with other sites, or to handle certificates) makes every query look like it comes from the proxy. List the proxies on the listener, and it takes each client's address from them. The listener keeps its TLS: the proxy re-encrypts to it, on the same host or across your network.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="How the proxy names its clients">
+      <button role="tab" type="button">X-Forwarded-For</button>
+      <button role="tab" type="button">PROXY protocol</button>
+    </div>
+    <div class="panel" id="behind-proxy-xff"><h3>A proxy that sends X-Forwarded-For</h3>
+<pre><code>[[listen]]
+proto = "doh"
+addr = "0.0.0.0:443"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+x_forwarded_for = true
+trusted_proxies = ["10.0.5.20/32", "10.0.5.21/32"]   # the proxies' own addresses
+max_connections_per_address = 0                       # every connection is a proxy's</code></pre>
+      <p>The client is the rightmost <code>X-Forwarded-For</code> entry that isn't a listed proxy, as for the web UI's <code>[api] trusted_proxies</code>. <code>X-Real-IP</code> and <code>Forwarded</code> are not read. The proxy must add the address it sees, not pass on the client's: in nginx, <code>proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;</code>.</p>
+    </div>
+    <div class="panel" id="behind-proxy-pp"><h3>A proxy or balancer that sends a PROXY header</h3>
+<pre><code>[[listen]]
+proto = "doh"
+addr = "127.0.0.1:8443"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+proxy_protocol = true
+trusted_proxies = ["127.0.0.1/32"]</code></pre>
+      <p>For example Caddy's <code>reverse_proxy https://127.0.0.1:8443</code> with <code>transport http { proxy_protocol v2 }</code>, or a balancer that passes TLS through. A proxy that pools connections must keep one per client (Caddy does).</p>
+    </div>
+  </div>
+  <ul>
+    <li><b>Only the listed proxies connect.</b> Any other address is closed at once.</li>
+    <li><b>Nothing is answered without a client's address:</b> a PROXY header that is <code>LOCAL</code> or has no address, a missing or unreadable <code>X-Forwarded-For</code>, and a loopback or unspecified client are refused (a request gets <code>403</code>; on HTTP/1.1 its connection is closed). A device on the proxy's own host uses the local listeners instead, and a proxy's health check goes to a TCP connect or the web UI's <code>/livez</code>.</li>
+    <li><b>The real client is the client everywhere:</b> allowed networks, the rate limit, groups and devices, the query log. Clients outside your allowed networks are refused.</li>
+    <li><b>List only your proxies</b>, never a whole network: each listed address can name any client. <code>config check</code> refuses <code>0.0.0.0/0</code> and warns about wider networks.</li>
+    <li>Behind <code>x_forwarded_for</code>, client IDs come from the URL path (<code>/dns-query/kids-tablet</code>), not the certificate name, and the listener isn't probed: add the proxy's public URL to <code>[probe] targets</code>.</li>
+    <li>In a cluster, set it on every node: listener settings are never shared. Remove the keys before going back to an older version, which refuses them.</li>
+  </ul>
+  <p class="muted">Every rule, the metric, and Kubernetes notes: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#behind-a-reverse-proxy">Behind a reverse proxy in the docs</a>.</p>
 </section>
 
 <section id="routes">
@@ -376,8 +421,10 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed<
       <tr><td>An internal domain fails in <code>validate</code> mode</td><td>Add it to <code>negative_trust_anchors</code>, or set <code>dnssec_nta = true</code> on its route.</td></tr>
       <tr><td>A Tor or HTTP proxy upstream doesn't answer</td><td>They don't carry UDP: use <code>tcp://</code> or <code>tls://</code>.</td></tr>
       <tr><td>Encrypted connections refused behind a load balancer</td><td>If the balancer hides client addresses, every client looks like the balancer: raise <code>max_connections_per_address</code> or set it to <code>0</code>, or use <code>proxy_protocol</code> if the balancer sends it.</td></tr>
+      <tr><td>Behind a reverse proxy, DoH gets <code>403</code> or connections close at once</td><td>Check that the proxy's own address is in <code>trusted_proxies</code> and that it sends <code>X-Forwarded-For</code> (or the PROXY header). Clients on the proxy's own host are refused through it. <code>telltale_doh_forwarded_refused_total</code> counts the refusals by reason.</td></tr>
       <tr><td>A renewed certificate isn't used</td><td>A broken renewal keeps the old certificate and logs a warning. Check the log and the new files.</td></tr>
-      <tr><td>The log reports a loop</td><td>An upstream forwards back to TelltaleDNS. Point it somewhere else.</td></tr>
+      <tr><td>The log reports a loop</td><td>An upstream forwards back to TelltaleDNS. Point it somewhere else. Don't set <code>loop_tag = false</code> on it: that hides the loop instead of fixing it, and the queries go round.</td></tr>
+      <tr><td>An upstream times out on every query (over DoH, fails with an HTTP error), while <code>dig</code> from the same host gets answers</td><td>It may drop queries that carry an EDNS option it doesn't know. Set <code>loop_tag = false</code> on it (see <a href="#encrypt-upstreams">Forwarding loops</a>).</td></tr>
     </tbody>
   </table></div>
 </section>

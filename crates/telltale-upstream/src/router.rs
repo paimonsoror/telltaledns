@@ -301,12 +301,17 @@ fn build_upstreams<'c>(
             _ if ep.protocol == Protocol::Recursive => None,
             // The proxy resolves the name (REQ: UPS-010).
             (Host::Name(_), true) if proxy.is_some() => None,
-            (Host::Name(_), false) => Some(Arc::new(Bootstrap::new(
-                u.bootstrap
-                    .iter()
-                    .map(|ip| SocketAddr::new(*ip, 53))
-                    .collect(),
-            ))),
+            // REQ: UPS-009 (ADR-192) — the upstream's own bootstrap servers follow its `loop_tag`;
+            // the system resolvers below are shared by every upstream without its own, and keep it.
+            (Host::Name(_), false) => Some(Arc::new(
+                Bootstrap::new(
+                    u.bootstrap
+                        .iter()
+                        .map(|ip| SocketAddr::new(*ip, 53))
+                        .collect(),
+                )
+                .with_loop_tag(u.loop_tag),
+            )),
             (Host::Name(_), true) => {
                 let bs =
                     system_bootstrap.get_or_insert_with(|| Arc::new(Bootstrap::system(&listen)));
@@ -374,6 +379,8 @@ fn build_upstreams<'c>(
             }
             .with_ipv6(u.recursive.ipv6),
             self_probe: false,
+            // REQ: UPS-009 (ADR-192)
+            loop_tag: u.loop_tag,
         };
         match Upstream::build(id, u.name.as_str(), ep, &opts, tls) {
             Ok(up) => {
@@ -562,4 +569,104 @@ impl Router {
 /// Parses `A`, `aaaa`, `PTR`, ..., or `TYPE65`.
 pub fn parse_qtype(s: &str) -> Option<u16> {
     telltale_proto::rtype::from_name(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use telltale_proto::{ResponseBuilder, parse_query, rcode, rtype};
+    use tokio::net::UdpSocket;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use super::*;
+
+    /// REQ: UPS-009 (ADR-192) — an upstream's own `bootstrap` servers follow its `loop_tag`: with
+    /// `false`, the lookups of its host name carry no loop-detection option either; at the default
+    /// they carry this node's tag. The system resolvers (for a hostname upstream without
+    /// `bootstrap`) are shared by every such upstream and always carry it.
+    #[tokio::test]
+    async fn ups_009_bootstrap_follows_the_upstreams_loop_tag() {
+        // The tag of this test binary (the first call wins; `upstream.rs`'s tests set the same).
+        crate::set_node_tag(0x5EED);
+        let cfg = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"[[upstream]]
+name = "plain"
+url = "tls://dns.example"
+bootstrap = ["192.0.2.53"]
+loop_tag = false
+
+[[upstream]]
+name = "tagged"
+url = "tls://dns.example"
+bootstrap = ["192.0.2.53"]
+
+[[upstream_group]]
+name = "default"
+members = ["plain", "tagged"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config;
+        let router = Router::from_config(&cfg).unwrap();
+        let tags = |name: &str| {
+            router
+                .upstreams()
+                .iter()
+                .find(|u| u.name == name)
+                .and_then(|u| u.bootstrap())
+                .map(|b| b.loop_tag())
+        };
+        assert_eq!(tags("plain"), Some(false), "its own bootstrap follows it");
+        assert_eq!(tags("tagged"), Some(true), "at the default");
+        assert!(
+            Bootstrap::system(&[]).loop_tag(),
+            "the shared system bootstrap keeps the tag"
+        );
+
+        // What a lookup through such servers sends: a bootstrap server on a port of its own
+        // records the loop tag of each query (the A, then the AAAA lookup of a name).
+        let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = s.local_addr().unwrap();
+        let (tx, mut seen) = unbounded_channel();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            while let Ok((n, from)) = s.recv_from(&mut buf).await {
+                let mut out = [0u8; 512];
+                let (tag, len) = {
+                    let q = parse_query(&buf[..n]).unwrap();
+                    let tag = q.edns.and_then(|e| e.loop_tag()).map(<[u8]>::to_vec);
+                    let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+                    if q.qtype == rtype::A {
+                        b.answer_a(300, Ipv4Addr::new(192, 0, 2, 7)).unwrap();
+                    }
+                    (tag, b.finish(None).unwrap())
+                };
+                let _ = tx.send(tag);
+                let _ = s.send_to(&out[..len], from).await;
+            }
+        });
+        // A bounded wait for each recorded query: a lookup that never leaves fails, not hangs.
+        let mut next = async || {
+            tokio::time::timeout(Duration::from_secs(2), seen.recv())
+                .await
+                .expect("the bootstrap server received a query in time")
+                .unwrap()
+        };
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+        let plain = Bootstrap::new(vec![server]).with_loop_tag(false);
+        assert_eq!(plain.resolve("plain.example").await.unwrap(), [ip]);
+        assert_eq!(next().await, None, "the A lookup, untagged");
+        assert_eq!(next().await, None, "the AAAA lookup, untagged");
+        let tagged = Bootstrap::new(vec![server]);
+        assert_eq!(tagged.resolve("tagged.example").await.unwrap(), [ip]);
+        let ours = Some(0x5EED_u64.to_be_bytes().to_vec());
+        assert_eq!(next().await, ours, "the A lookup, tagged");
+        assert_eq!(next().await, ours, "the AAAA lookup, tagged");
+    }
 }

@@ -3,7 +3,7 @@
   // and system information.
   import { api, type S } from '../lib/api';
   import { can, session, refreshSession } from '../lib/session.svelte';
-  import { ago, dateTime, duration } from '../lib/format';
+  import { ago, dateTime, duration, num } from '../lib/format';
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
@@ -14,59 +14,74 @@
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
   import { iconPrefs, setIconPrefs } from '../lib/icons/prefs.svelte';
+  import DevPackStub from '../lib/devpack/DevPackStub.svelte';
+  import { tr } from '../lib/i18n';
+  import T from '../lib/i18n/T.svelte';
+  const { t, tn } = tr('settings');
+
+  // The words of the table rows below, read once here (never at module level, never per row).
+  const words = {
+    agent: t('agent'), never: t('never'), revoke: t('Revoke'),
+    userAgent: t('agent'), userNever: t('never'), userRevoke: t('Revoke'),
+    viewer: t('viewer'), operator: t('operator'), admin: t('admin'),
+    on: t('on'), off: t('off'), reset: t('Reset'), you: t('(you)'),
+    disabled: t('Disabled · enable'), active: t('Active · disable'), tokens: t('Tokens'), delete: t('Delete'), reallyDelete: t('Really delete?'),
+    webUi: t('Web UI and API'), extraTarget: t('(extra target)'), skipped: t('skipped'), answers: t('answers'), notAnswering: t('not answering'), missedOnce: t('missed once'),
+  };
+  const selfSigned = t('self-signed certificate (doesn\'t expire)');
 
   // OBS-039 — what the Domain icons card previews: a brand, an ordinary name, a name of the network.
   const ICON_PREVIEW = ['www.netflix.com', 'cdn.example.org', 'nas.home.arpa'];
 
   const tabs = $derived<TabItem[]>(
     [
-      { id: 'account', label: 'Account' },
-      { id: 'tokens', label: 'API tokens' },
-      ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
-      { id: 'system', label: 'System' },
+      { id: 'account', label: t('Account') },
+      { id: 'tokens', label: t('API tokens') },
+      ...(can('admin') ? [{ id: 'users', label: t('Users') }, { id: 'audit', label: t('Audit log') }] : []),
+      { id: 'system', label: t('System') },
       // REQ: API-005 (ADR-121) — how queries are handled (cache, rate limit, what's kept out of
       // the log, simulation), apart from the node's own housekeeping.
-      { id: 'queries', label: 'Query handling' },
+      { id: 'queries', label: t('Query handling') },
       // REQ: CLU-013 — staged rollouts are an admin's.
-      ...(can('admin') ? [{ id: 'cluster', label: 'Cluster' }] : []),
+      ...(can('admin') ? [{ id: 'cluster', label: t('Cluster') }] : []),
     ],
   );
   // REQ: DNS-014 (review 01 q1) — the fields of `[ratelimit]`.
   const rateLimitFields: Field[] = [
-    { key: 'enabled', label: 'Limit queries per client', type: 'bool', initial: true },
-    { key: 'queries', label: 'Queries allowed per window', type: 'number', placeholder: '1000',
-      help: 'Per client; short bursts up to this are fine. A client over it gets the action below until its allowance refills.' },
-    { key: 'window_secs', label: 'Window (seconds)', type: 'number', placeholder: '60' },
-    { key: 'action', label: 'When over the limit', type: 'select', options: ['refused', 'drop'],
-      help: 'refused answers REFUSED; drop answers nothing.' },
-    { key: 'exempt', label: 'Never limited', type: 'lines', placeholder: '127.0.0.0/8\n192.168.1.1/32',
-      help: 'Addresses or networks, one per line (a router that forwards for the whole network, say). Replaces the list from the config file, so keep 127.0.0.0/8 and ::1/128.' },
-    { key: 'ipv4_prefix', label: 'IPv4: count clients per /N', type: 'number', advanced: true, placeholder: '32',
-      help: '32 counts each address on its own.' },
-    { key: 'ipv6_prefix', label: 'IPv6: count clients per /N', type: 'number', advanced: true, placeholder: '64',
-      help: '64 groups a device\'s rotating privacy addresses.' },
+    { key: 'enabled', label: t('Limit queries per client'), type: 'bool', initial: true },
+    { key: 'queries', label: t('Queries allowed per window'), type: 'number', placeholder: '1000',
+      help: t('Per client; short bursts up to this are fine. A client over it gets the action below until its allowance refills.') },
+    { key: 'window_secs', label: t('Window (seconds)'), type: 'number', placeholder: '60' },
+    { key: 'action', label: t('When over the limit'), type: 'select', options: ['refused', 'drop'],
+      help: t('refused answers REFUSED; drop answers nothing.') },
+    { key: 'exempt', label: t('Never limited'), type: 'lines', placeholder: '127.0.0.0/8\n192.168.1.1/32',
+      help: t('Addresses or networks, one per line (a router that forwards for the whole network, say). Replaces the list from the config file, so keep 127.0.0.0/8 and ::1/128.') },
+    { key: 'ipv4_prefix', label: t('IPv4: count clients per /N'), type: 'number', advanced: true, placeholder: '32',
+      help: t('32 counts each address on its own.') },
+    { key: 'ipv6_prefix', label: t('IPv6: count clients per /N'), type: 'number', advanced: true, placeholder: '64',
+      help: t('64 groups a device\'s rotating privacy addresses.') },
   ];
   // REQ: OBS-022 (T12.1) — the fields of `[exclusions]`.
   const exclusionFields: Field[] = [
-    { key: 'enabled', label: 'Leave these out of the log and stats', type: 'bool', initial: true,
-      help: 'Off keeps the lists below but logs everything again.' },
-    { key: 'names', label: 'Names', type: 'lines', placeholder: 'connectivitycheck.gstatic.com\nntp.org',
-      help: 'One per line; each covers its subdomains too. Noise like connectivity checks, time servers, or a monitoring probe.' },
-    { key: 'clients', label: 'Devices', type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
-      help: 'Addresses or networks, one per line (a monitoring host, say).' },
+    { key: 'enabled', label: t('Leave these out of the log and stats'), type: 'bool', initial: true,
+      help: t('Off keeps the lists below but logs everything again.') },
+    { key: 'names', label: t('Names'), type: 'lines', placeholder: t('connectivitycheck.gstatic.com\nntp.org', null, 'an example of two names, one per line'),
+      help: t('One per line; each covers its subdomains too. Noise like connectivity checks, time servers, or a monitoring probe.') },
+    { key: 'clients', label: t('Devices'), type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
+      help: t('Addresses or networks, one per line (a monitoring host, say).') },
   ];
   // REQ: OBS-024 (T13.1) — the fields of `[simulate]`.
   const simulateFields: Field[] = [
-    { key: 'enabled', label: 'Allow change simulations', type: 'bool', initial: true,
-      help: 'The "What would this have done?" button, the simulate parameter of dry runs, and simulate_change for agents.' },
-    { key: 'plans_by_default', label: "Agents' plans simulate by default", type: 'bool', initial: false,
-      help: 'Off: a plan simulates only when the agent asks (simulate: "24h"). On: every plan replays the query log, which costs CPU on each node.' },
-    { key: 'default_window', label: 'Default window', type: 'text', placeholder: '24h',
-      help: 'How far back a simulation replays when no window is given: 30m, 24h, up to 7d.' },
-    { key: 'max_secs', label: 'Time limit per node (seconds)', type: 'number', placeholder: '20', advanced: true,
-      help: '1 to 300. A node that runs out of time answers with what it read so far (partial).' },
-    { key: 'max_rows', label: 'Most logged queries read per node', type: 'number', placeholder: '2000000', advanced: true,
-      help: 'At least 1,000. Newest first.' },
+    { key: 'enabled', label: t('Allow change simulations'), type: 'bool', initial: true,
+      help: t('The "What would this have done?" button, the simulate parameter of dry runs, and simulate_change for agents.') },
+    { key: 'plans_by_default', label: t("Agents' plans simulate by default"), type: 'bool', initial: false,
+      help: t('Off: a plan simulates only when the agent asks (simulate: "24h"). On: every plan replays the query log, which costs CPU on each node.') },
+    { key: 'default_window', label: t('Default window'), type: 'text', placeholder: '24h',
+      help: t('How far back a simulation replays when no window is given: 30m, 24h, up to 7d.') },
+    { key: 'max_secs', label: t('Time limit per node (seconds)'), type: 'number', placeholder: '20', advanced: true,
+      help: t('1 to 300. A node that runs out of time answers with what it read so far (partial).') },
+    { key: 'max_rows', label: t('Most logged queries read per node'), type: 'number', placeholder: '2000000', advanced: true,
+      help: t('At least 1,000. Newest first.') },
   ];
   // REQ: CLU-013 (T13.2) — `[cluster.rollout]`: a canary picker over the cluster's nodes, sites,
   // and its resolver pods, the bake, and the guard.
@@ -77,31 +92,33 @@
     const sites = [...new Set(nodes.filter((n) => !n.witness).map((n) => n.site))].sort();
     const options = [...fixed.map((n) => n.nodeId), ...sites.map((s) => `site:${s}`), 'ephemeral'];
     const optionLabels: Record<string, string> = {
-      ephemeral: 'resolver pods (Kubernetes)',
+      ephemeral: t('resolver pods (Kubernetes)'),
       ...Object.fromEntries(fixed.map((n) => [n.nodeId, `${n.site} (${n.nodeId.slice(0, 8)})`])),
-      ...Object.fromEntries(sites.map((s) => [`site:${s}`, `every node at site ${s}`])),
+      ...Object.fromEntries(sites.map((s) => [`site:${s}`, t('every node at site {site}', { site: s })])),
     };
     return [
-      { key: 'canaries', label: 'Canary nodes', type: 'multi', options, optionLabels,
-        help: 'They (and the primary) get each change first. None: changes reach every node at once.' },
-      { key: 'bake_secs', label: 'Bake time (seconds)', type: 'number', placeholder: '300',
-        help: 'How long a change runs on the canaries before everyone gets it. At least 5.' },
-      { key: 'servfail_pct', label: 'Fail above this SERVFAIL share (%)', type: 'number', placeholder: '5',
-        help: "Or 2 points over the canaries' share before the change, whichever is higher; judged from 50 answers." },
-      { key: 'require_traffic', label: 'Wait for 50 answers before judging', type: 'bool', advanced: true,
-        help: 'Off: a quiet bake passes. On: keep baking until the canaries answered 50 queries (or the longest bake), then judge.' },
-      { key: 'max_bake_secs', label: 'Longest bake (seconds)', type: 'number', placeholder: '3600', advanced: true },
-      { key: 'fail_on_disconnect', label: 'Fail when a canary disconnects for a minute', type: 'bool', advanced: true, initial: true,
-        help: 'It might have crashed on the change. A pod rescheduled mid-bake fails the rollout too; unpin to try again.' },
-      { key: 'history', label: 'Versions kept for pinning', type: 'number', placeholder: '20', advanced: true },
+      { key: 'canaries', label: t('Canary nodes'), type: 'multi', options, optionLabels,
+        help: t('They (and the primary) get each change first. None: changes reach every node at once.') },
+      { key: 'bake_secs', label: t('Bake time (seconds)'), type: 'number', placeholder: '300',
+        help: t('How long a change runs on the canaries before everyone gets it. At least 5.') },
+      { key: 'servfail_pct', label: t('Fail above this SERVFAIL share (%)'), type: 'number', placeholder: '5',
+        help: t("Or 2 points over the canaries' share before the change, whichever is higher; judged from 50 answers.") },
+      { key: 'require_traffic', label: t('Wait for 50 answers before judging'), type: 'bool', advanced: true,
+        help: t('Off: a quiet bake passes. On: keep baking until the canaries answered 50 queries (or the longest bake), then judge.') },
+      { key: 'max_bake_secs', label: t('Longest bake (seconds)'), type: 'number', placeholder: '3600', advanced: true },
+      { key: 'fail_on_disconnect', label: t('Fail when a canary disconnects for a minute'), type: 'bool', advanced: true, initial: true,
+        help: t('It might have crashed on the change. A pod rescheduled mid-bake fails the rollout too; unpin to try again.') },
+      { key: 'history', label: t('Versions kept for pinning'), type: 'number', placeholder: '20', advanced: true },
     ];
   });
   const rolloutNote = (v: Record<string, unknown>) => {
     const c = (v.canaries as string[] | undefined) ?? [];
-    if (!c.length) return 'No canaries: a change reaches every node at once.';
+    if (!c.length) return t('No canaries: a change reaches every node at once.');
     const named = c.map((x) => rolloutFields[0].optionLabels?.[x] ?? x).join(', ');
     const secs = Number(v.bake_secs ?? 300);
-    return `Changes reach ${named} (and the primary) first, and the rest after ${secs >= 120 ? `${Math.round(secs / 60)} minutes` : `${secs} s`} if nothing fails.`;
+    return secs >= 120
+      ? t('Changes reach {named} (and the primary) first, and the rest after {n} minutes if nothing fails.', { named, n: Math.round(secs / 60) })
+      : t('Changes reach {named} (and the primary) first, and the rest after {n} s if nothing fails.', { named, n: secs });
   };
   const tab = $derived(activeTab(tabs));
 
@@ -117,7 +134,7 @@
     try {
       await api.changePassword({ currentPassword: current, newPassword: next });
       current = next = '';
-      pwMsg = 'Password changed. Your other sessions were signed out.';
+      pwMsg = t('Password changed. Your other sessions were signed out.');
     } catch (err) {
       pwError = err;
     }
@@ -169,14 +186,14 @@
   // REQ: AGT-004 — agent tokens: scopes instead of a role, optional group, rate limit.
   let tokenKind = $state<'user' | 'agent'>('user');
   const agentScopes: [string, string][] = [
-    ['analytics:read', 'Statistics, top lists, anomalies, explain'],
-    ['querylog:read', 'The query log (who asked for what)'],
-    ['config:read', 'Lists, groups, devices, names, upstreams'],
-    ['config:write:clients', 'Name and regroup devices'],
-    ['config:write:records', 'Change names on my network'],
-    ['config:write:forwards', 'Send domains to other servers'],
-    ['cluster:admin', 'Promote a node; staged rollouts and pins'],
-    ['cluster:upgrade', 'Install newer TelltaleDNS versions on nodes'],
+    ['analytics:read', t('Statistics, top lists, anomalies, explain')],
+    ['querylog:read', t('The query log (who asked for what)')],
+    ['config:read', t('Lists, groups, devices, names, upstreams')],
+    ['config:write:clients', t('Name and regroup devices')],
+    ['config:write:records', t('Change names on my network')],
+    ['config:write:forwards', t('Send domains to other servers')],
+    ['cluster:admin', t('Promote a node; staged rollouts and pins')],
+    ['cluster:upgrade', t('Install newer TelltaleDNS versions on nodes')],
   ];
   let tokenScopes = $state<string[]>(['analytics:read', 'config:read']);
   let tokenGroup = $state('');
@@ -193,7 +210,7 @@
     e.preventDefault();
     tokenError = null;
     try {
-      const t = await api.createToken(
+      const made = await api.createToken(
         tokenKind === 'agent'
           ? {
               name: tokenName.trim(),
@@ -208,7 +225,7 @@
               expiresInDays: tokenDays ? Number(tokenDays) : undefined,
             },
       );
-      newToken = t.token;
+      newToken = made.token;
       tokenName = '';
       await loadTokens();
     } catch (err) {
@@ -403,10 +420,10 @@
     p.certDaysLeft == null
       ? (p.certError ?? '')
       : p.certSelfSigned && p.certDaysLeft > 36_500
-        ? 'self-signed certificate (doesn\'t expire)'
+        ? selfSigned
         : p.certDaysLeft < 0
-          ? `certificate expired ${-p.certDaysLeft} day(s) ago`
-          : `certificate expires in ${p.certDaysLeft} day(s)`;
+          ? t('certificate expired {n} day(s) ago', { n: -p.certDaysLeft })
+          : t('certificate expires in {n} day(s)', { n: p.certDaysLeft });
 
   // REQ: OPS-004 — check the release index now instead of at the daily check.
   let checking = $state(false);
@@ -425,168 +442,192 @@
   }
 </script>
 
+{#snippet strong(x: string)}<strong>{x}</strong>{/snippet}
+{#snippet strongdata(x: string)}<strong translate="no">{x}</strong>{/snippet}
+{#snippet mono(x: string)}<code class="mono" translate="no">{x}</code>{/snippet}
+{#snippet monospan(x: string)}<span class="mono" translate="no">{x}</span>{/snippet}
+{#snippet code(x: string)}<code translate="no">{x}</code>{/snippet}
+{#snippet app(x: string)}<a href={totp?.otpauthUrl}>{x}</a>{/snippet}
+{#snippet guide(x: string)}<a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#users-and-sign-in" target="_blank" rel="noreferrer">{x}</a>{/snippet}
+{#snippet cachepage(x: string)}<a href="#/cache">{x}</a>{/snippet}
+{#snippet authheader()}<code translate="no">Authorization: Bearer &lt;token&gt;</code>{/snippet}
+{#snippet agentname()}<code translate="no">agent:&lt;name&gt;</code>{/snippet}
+{#snippet agentsoff()}<code translate="no">[agents] enabled = false</code>{/snippet}
+{#snippet singleaddr()}<code translate="no">192.168.1.10/32</code>{/snippet}
+{#snippet loopbackaddr()}<code translate="no">127.0.0.1/32</code>{/snippet}
+{#snippet trustedproxies()}<code translate="no">trusted_proxies</code>{/snippet}
+{#snippet apisection()}<code translate="no">[api]</code>{/snippet}
+{#snippet adminnets()}<code translate="no">allowed_admin_networks</code>{/snippet}
+{#snippet authoidc()}<code translate="no">[auth.oidc]</code>{/snippet}
+{#snippet openapi()}<a href="/api/v1/openapi.json" target="_blank" rel="noreferrer" translate="no">/api/v1/openapi.json</a>{/snippet}
+{#snippet probesoff()}<code translate="no">[probe] enabled = false</code>{/snippet}
+{#snippet apitls()}<code translate="no">[api] tls</code>{/snippet}
+{#snippet updatescheck()}<code translate="no">[updates] check = false</code>{/snippet}
+{#snippet restorecmd()}<code translate="no">telltale backup restore FILE</code>{/snippet}
+{#snippet createcmd()}<code translate="no">telltale backup create --include-qlog</code>{/snippet}
+{#snippet metrics()}<code translate="no">/metrics</code>{/snippet}
+
 <div class="page">
-  <h1>Settings</h1>
-  <Tabs {tabs} active={tab} label="Settings" />
+  <h1>{t('Settings')}</h1>
+  <Tabs {tabs} active={tab} label={t('Settings')} />
 
   <TabPanel active={tab}>
   {#if tab === 'account' && session.user}
     <div class="grid-2">
       <section class="card">
-        <h2>Account<HelpButton id="account" /></h2>
-        <p><strong>{session.user.username}</strong> · <span class="badge">{session.user.role}</span></p>
+        <h2>{t('Account')}<HelpButton id="account" /></h2>
+        <p><strong translate="no">{session.user.username}</strong> · <span class="badge" translate="no">{session.user.role}</span></p>
         <form class="stack" onsubmit={changePassword}>
-          <h3>Change password</h3>
-          <label class="field">Current password
+          <h3>{t('Change password')}</h3>
+          <label class="field">{t('Current password')}
             <input type="password" autocomplete="current-password" required bind:value={current} />
           </label>
-          <label class="field">New password (at least 10 characters)
+          <label class="field">{t('New password (at least 10 characters)')}
             <input type="password" autocomplete="new-password" minlength="10" required bind:value={next} />
           </label>
           <ErrorNote error={pwError} />
           {#if pwMsg}<div class="notice ok">{pwMsg}</div>{/if}
-          <div><button class="primary" type="submit">Change password</button></div>
+          <div><button class="primary" type="submit">{t('Change password')}</button></div>
         </form>
       </section>
 
       <section class="card stack-card">
-        <h2>Two-factor sign-in<HelpButton id="two-factor" /></h2>
+        <h2>{t('Two-factor sign-in')}<HelpButton id="two-factor" /></h2>
         <ErrorNote error={totpError} />
         {#if recovery.length}
           <div class="notice warn">
-            <strong>Save these recovery codes now.</strong> Each works once if you lose your phone; they won't be shown again.
-            <ul class="codes mono">{#each recovery as c (c)}<li>{c}</li>{/each}</ul>
+            <T ctx="settings" msg={"<strong>Save these recovery codes now.</strong> Each works once if you lose your phone; they won't be shown again."} {strong} />
+            <ul class="codes mono" translate="no">{#each recovery as c (c)}<li>{c}</li>{/each}</ul>
           </div>
         {/if}
         {#if session.user.totpEnabled}
-          <p><span class="badge ok">on</span> {session.user.recoveryCodesLeft} recovery codes left.</p>
+          <p><span class="badge ok">{t('on')}</span> {t('{n} recovery codes left.', { n: session.user.recoveryCodesLeft })}</p>
           <form class="stack" onsubmit={disableTotp}>
-            <label class="field">Password, to turn it off
+            <label class="field">{t('Password, to turn it off')}
               <input type="password" autocomplete="current-password" required bind:value={totpPassword} />
             </label>
-            <div><button class="danger" type="submit">Turn off two-factor</button></div>
+            <div><button class="danger" type="submit">{t('Turn off two-factor')}</button></div>
           </form>
         {:else if totp}
           <ol class="steps">
-            <li>Add this account to an authenticator app: on a phone, <a href={totp.otpauthUrl}>open it in the app</a>, or enter the key by hand:
-              <div class="mono key">{totp.secretBase32.replace(/(.{4})/g, '$1 ').trim()}</div>
+            <li><T ctx="settings" msg={'Add this account to an authenticator app: on a phone, <app>open it in the app</app>, or enter the key by hand:'} {app} />
+              <div class="mono key" translate="no">{totp.secretBase32.replace(/(.{4})/g, '$1 ').trim()}</div>
             </li>
-            <li>Enter the 6-digit code it shows.</li>
+            <li>{t('Enter the 6-digit code it shows.')}</li>
           </ol>
           <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
           <form class="row" onsubmit={enableTotp}>
-            <input aria-label="6-digit code" title="6 digits" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={'[0-9]{6}'} required placeholder="123456" bind:value={totpCode} />
-            <button class="primary" type="submit">Turn on</button>
-            <button type="button" onclick={() => (totp = null)}>Cancel</button>
+            <input aria-label={t('6-digit code')} title={t('6 digits')} inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={'[0-9]{6}'} required placeholder="123456" bind:value={totpCode} />
+            <button class="primary" type="submit">{t('Turn on')}</button>
+            <button type="button" onclick={() => (totp = null)}>{t('Cancel')}</button>
           </form>
         {:else}
-          <p class="muted">Ask for a code from an authenticator app when signing in, on top of the password.</p>
-          <div><button onclick={startTotp}>Set up two-factor sign-in</button></div>
+          <p class="muted">{t('Ask for a code from an authenticator app when signing in, on top of the password.')}</p>
+          <div><button onclick={startTotp}>{t('Set up two-factor sign-in')}</button></div>
         {/if}
       </section>
 
       <!-- REQ: OBS-039 (ADR-167) — how this browser draws the mark left of a domain name. -->
       <section class="card stack-card" data-testid="icons-card">
-        <h2>Domain icons<HelpButton id="domain-icons" /></h2>
+        <h2>{t('Domain icons')}<HelpButton id="domain-icons" /></h2>
         <p class="muted">
-          The small mark left of a domain name in the dashboard's lists and the query log. It's drawn from what TelltaleDNS already
-          knows, so nothing about your queries is sent to anyone. Remembered for you in this browser.
+          {t('The small mark left of a domain name in the dashboard\'s lists and the query log. It\'s drawn from what TelltaleDNS already knows, so nothing about your queries is sent to anyone. Remembered for you in this browser.')}
         </p>
         <div class="icon-row">
-          <span class="icon-lbl" id="icons-style-lbl">Style</span>
+          <span class="icon-lbl" id="icons-style-lbl">{t('Style')}</span>
           <span class="seg small" role="group" aria-labelledby="icons-style-lbl">
-            <button aria-pressed={iconPrefs.style === 'brand'} onclick={() => setIconPrefs({ style: 'brand' })}>Brand and monogram</button>
-            <button aria-pressed={iconPrefs.style === 'mono'} onclick={() => setIconPrefs({ style: 'mono' })}>Monogram only</button>
-            <button aria-pressed={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ style: 'off' })}>Off</button>
+            <button aria-pressed={iconPrefs.style === 'brand'} onclick={() => setIconPrefs({ style: 'brand' })}>{t('Brand and monogram')}</button>
+            <button aria-pressed={iconPrefs.style === 'mono'} onclick={() => setIconPrefs({ style: 'mono' })}>{t('Monogram only')}</button>
+            <button aria-pressed={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ style: 'off' })}>{t('Off')}</button>
           </span>
         </div>
         <div class="icon-row">
-          <span class="icon-lbl" id="icons-size-lbl">Size</span>
+          <span class="icon-lbl" id="icons-size-lbl">{t('Size')}</span>
           <span class="seg small" role="group" aria-labelledby="icons-size-lbl">
-            <button aria-pressed={iconPrefs.size === 'default'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'default' })}>Default</button>
-            <button aria-pressed={iconPrefs.size === 'small'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'small' })}>Small</button>
+            <button aria-pressed={iconPrefs.size === 'default'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'default' })}>{t('Default')}</button>
+            <button aria-pressed={iconPrefs.size === 'small'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'small' })}>{t('Small')}</button>
           </span>
         </div>
-        <ul class="icon-preview" aria-label="Preview">
+        <ul class="icon-preview" aria-label={t('Preview')}>
           {#each ICON_PREVIEW as n (n)}
-            <li><DomainIcon name={n} /><span class="mono small">{n}</span></li>
+            <li><DomainIcon name={n} /><span class="mono small" translate="no">{n}</span></li>
           {/each}
         </ul>
       </section>
+      <!-- REQ: API-013 (ADR-190) — test a language pack (Advanced view, or while one is in this browser). -->
+      <DevPackStub />
     </div>
   {:else if tab === 'tokens'}
     <section class="card">
-      <h2>API tokens<HelpButton id="api-tokens" /></h2>
+      <h2>{t('API tokens')}<HelpButton id="api-tokens" /></h2>
       <p class="muted">
-        For scripts, dashboards, and AI agents: send <code>Authorization: Bearer &lt;token&gt;</code>.
-        A token never has more rights than you.
+        <T ctx="settings" msg={'For scripts, dashboards, and AI agents: send <authheader/>. A token never has more rights than you.'} {authheader} />
       </p>
       <form class="row" onsubmit={createToken}>
-        <input aria-label="Token name" required placeholder="name, e.g. grafana" bind:value={tokenName} />
-        <select aria-label="Kind" bind:value={tokenKind}>
-          <option value="user">for my scripts</option>
-          <option value="agent">for an AI agent</option>
+        <input aria-label={t('Token name')} required placeholder={t('name, e.g. grafana')} bind:value={tokenName} />
+        <select aria-label={t('Kind')} bind:value={tokenKind}>
+          <option value="user">{t('for my scripts')}</option>
+          <option value="agent">{t('for an AI agent')}</option>
         </select>
         {#if tokenKind === 'user'}
-          <select aria-label="Scope" bind:value={tokenScope}>
-            <option value="read">read (viewer)</option>
-            <option value="write">write (operator)</option>
-            <option value="admin">admin</option>
+          <select aria-label={t('Scope')} bind:value={tokenScope}>
+            <option value="read">{t('read (viewer)')}</option>
+            <option value="write">{t('write (operator)')}</option>
+            <option value="admin">{t('admin')}</option>
           </select>
         {/if}
-        <select aria-label="Expires" bind:value={tokenDays}>
-          <option value="">never expires</option>
-          <option value="7">7 days</option>
-          <option value="30">30 days</option>
-          <option value="90">90 days</option>
-          <option value="365">1 year</option>
+        <select aria-label={t('Expires')} bind:value={tokenDays}>
+          <option value="">{t('never expires')}</option>
+          <option value="7">{t('7 days')}</option>
+          <option value="30">{t('30 days')}</option>
+          <option value="90">{t('90 days')}</option>
+          <option value="365">{t('1 year')}</option>
         </select>
         <HelpButton id="token-scope" />
-        <button class="primary" type="submit">Create token</button>
+        <button class="primary" type="submit">{t('Create token')}</button>
       </form>
       {#if tokenKind === 'agent'}
         <fieldset class="agent-scopes">
-          <legend>What the agent may do<HelpButton id="agent-tokens" /></legend>
+          <legend>{t('What the agent may do')}<HelpButton id="agent-tokens" /></legend>
           {#each agentScopes as [id, label] (id)}
-            <label><input type="checkbox" value={id} bind:group={tokenScopes} /> {label} <code class="small">{id}</code></label>
+            <label><input type="checkbox" value={id} bind:group={tokenScopes} /> {label} <code class="small" translate="no">{id}</code></label>
           {/each}
-          <label>Only this group's devices and queries (optional):
-            <input aria-label="Group" placeholder="e.g. kids" bind:value={tokenGroup} /></label>
+          <label>{t('Only this group\'s devices and queries (optional):')}
+            <input aria-label={t('Group')} placeholder={t('e.g. kids')} bind:value={tokenGroup} /></label>
           <p class="muted small">
-            Agents must give a reason for every change, are limited to 120 requests a minute, show as
-            <code>agent:&lt;name&gt;</code> in the audit log, and stop at once with <code>[agents] enabled = false</code>.
+            <T ctx="settings" msg={'Agents must give a reason for every change, are limited to 120 requests a minute, show as <agentname/> in the audit log, and stop at once with <agentsoff/>.'} {agentname} {agentsoff} />
           </p>
         </fieldset>
       {/if}
       <ErrorNote error={tokenError} />
       {#if newToken}
         <div class="notice ok new-token">
-          <strong>Copy the token now; it won't be shown again.</strong>
-          <div class="row"><code class="token">{newToken}</code><button onclick={() => copy(newToken)}>Copy</button><button class="link" onclick={() => (newToken = '')}>Done</button></div>
+          <strong>{t('Copy the token now; it won\'t be shown again.')}</strong>
+          <div class="row"><code class="token" translate="no">{newToken}</code><button onclick={() => copy(newToken)}>{t('Copy')}</button><button class="link" onclick={() => (newToken = '')}>{t('Done')}</button></div>
         </div>
       {/if}
       {#if tokens.length === 0}
-        <p class="empty">No tokens yet.</p>
+        <p class="empty">{t('No tokens yet.')}</p>
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Scope</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+            <thead><tr><th>{t('Name')}</th><th>{t('Scope')}</th><th>{t('Created')}</th><th>{t('Last used')}</th><th>{t('Expires')}</th><th></th></tr></thead>
             <tbody>
-              {#each tokens as t (t.id)}
+              {#each tokens as tok (tok.id)}
                 <tr>
-                  <td><strong>{t.name}</strong><div class="muted small mono">tt_{t.id}_…</div></td>
+                  <td><strong translate="no">{tok.name}</strong><div class="muted small mono" translate="no">tt_{tok.id}_…</div></td>
                   <td>
-                    {#if t.kind === 'agent'}
-                      <span class="badge">agent</span>
-                      <div class="muted small">{(t.scopes ?? []).join(', ')}{t.group ? ` · group ${t.group}` : ''}</div>
+                    {#if tok.kind === 'agent'}
+                      <span class="badge">{words.agent}</span>
+                      <div class="muted small"><span translate="no">{(tok.scopes ?? []).join(', ')}</span>{tok.group ? ` ${t('· group {group}', { group: tok.group })}` : ''}</div>
                     {:else}
-                      <span class="badge">{t.scope}</span>
+                      <span class="badge" translate="no">{tok.scope}</span>
                     {/if}
                   </td>
-                  <td class="small">{ago(t.createdUnixSeconds)}</td>
-                  <td class="small">{ago(t.lastUsedUnixSeconds)}</td>
-                  <td class="small">{t.expiresUnixSeconds ? dateTime(t.expiresUnixSeconds) : 'never'}</td>
-                  <td class="num"><button class="danger" onclick={() => revoke(t.id)}>Revoke</button></td>
+                  <td class="small">{ago(tok.createdUnixSeconds)}</td>
+                  <td class="small">{ago(tok.lastUsedUnixSeconds)}</td>
+                  <td class="small">{tok.expiresUnixSeconds ? dateTime(tok.expiresUnixSeconds) : words.never}</td>
+                  <td class="num"><button class="danger" onclick={() => revoke(tok.id)}>{words.revoke}</button></td>
                 </tr>
               {/each}
             </tbody>
@@ -598,58 +639,58 @@
     <!-- REQ: API-004 (ADR-175) — where password sign-in is allowed, when `disable_local_login` limits it. -->
     {#if passwordLogin?.restricted}
       <section class="card" data-testid="password-sign-in">
-        <h2>Password sign-in</h2>
+        <h2>{t('Password sign-in')}</h2>
         {#if passwordLogin.networks.length}
-          <p>Password sign-in is limited to admins on these networks:</p>
-          <ul class="nets mono">
+          <p>{t('Password sign-in is limited to admins on these networks:')}</p>
+          <ul class="nets mono" translate="no">
             <!-- Not keyed on `n`: allowed_admin_networks may repeat an entry, and Svelte throws on a duplicate key. -->
             {#each passwordLogin.networks as n}<li>{n}</li>{/each}
           </ul>
           {#if passwordLogin.coversWholeNetworks}
-            <p class="small"><span class="badge warn">Includes whole networks</span> Anyone on these networks is still shown the sign-in form, not just the machines you name. To limit it to the machines you manage from, list each as a single address, such as <code>192.168.1.10/32</code>.</p>
+            <p class="small"><span class="badge warn">{t('Includes whole networks')}</span> <T ctx="settings" msg={'Anyone on these networks is still shown the sign-in form, not just the machines you name. To limit it to the machines you manage from, list each as a single address, such as <singleaddr/>.'} {singleaddr} /></p>
           {:else}
-            <p class="muted small">Only the machines listed are shown the sign-in form.</p>
+            <p class="muted small">{t('Only the machines listed are shown the sign-in form.')}</p>
             {#if passwordLogin.includesLoopback && !passwordLogin.loopbackIsTrustedProxy}
-              <p class="muted small">If a reverse proxy on this machine serves this page, add <code>127.0.0.1/32</code> to <code>trusted_proxies</code> under <code>[api]</code>. Until then everyone it serves looks like this machine and can use a password.</p>
+              <p class="muted small"><T ctx="settings" msg={'If a reverse proxy on this machine serves this page, add <loopbackaddr/> to <trustedproxies/> under <apisection/>. Until then everyone it serves looks like this machine and can use a password.'} {loopbackaddr} {trustedproxies} {apisection} /></p>
             {/if}
           {/if}
         {:else}
-          <p>Password sign-in is limited to admins on no network, so if your sign-in provider is down, nobody can sign in with a password.</p>
+          <p>{t('Password sign-in is limited to admins on no network, so if your sign-in provider is down, nobody can sign in with a password.')}</p>
         {/if}
-        <p class="muted small">Change it with <code>allowed_admin_networks</code> under <code>[auth.oidc]</code> in the configuration file, then restart. See <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#users-and-sign-in" target="_blank" rel="noreferrer">Users and sign-in</a> in the guide.</p>
+        <p class="muted small"><T ctx="settings" msg={'Change it with <adminnets/> under <authoidc/> in the configuration file, then restart. See <guide>Users and sign-in</guide> in the guide.'} {adminnets} {authoidc} {guide} /></p>
       </section>
     {/if}
     <section class="card">
-      <h2>Users<HelpButton id="users" /></h2>
+      <h2>{t('Users')}<HelpButton id="users" /></h2>
       <ErrorNote error={userError} />
       <div class="table-wrap">
         <table>
-          <thead><tr><th>User</th><th>Role</th><th>Two-factor</th><th>HTTP Basic</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>{t('User')}</th><th>{t('Role')}</th><th>{t('Two-factor')}</th><th>{t('HTTP Basic')}</th><th>{t('Status')}</th><th></th></tr></thead>
           <tbody>
             {#each users as u (u.id)}
               <tr>
                 <td>
-                  <strong>{u.username}</strong>{#if u.id === session.user?.id} <span class="muted small">(you)</span>{/if}
-                  {#if u.oidcProvider}<div class="muted small">signs in with {u.oidcProvider}</div>{/if}
+                  <strong translate="no">{u.username}</strong>{#if u.id === session.user?.id} <span class="muted small">{words.you}</span>{/if}
+                  {#if u.oidcProvider}<div class="muted small">{t('signs in with {provider}', { provider: u.oidcProvider })}</div>{/if}
                 </td>
                 <td>
-                  <select aria-label={`Role of ${u.username}`} value={u.role} onchange={(e) => patchUser(u, { role: e.currentTarget.value as S['Role'] })}>
-                    <option value="viewer">viewer</option>
-                    <option value="operator">operator</option>
-                    <option value="admin">admin</option>
+                  <select aria-label={t('Role of {name}', { name: u.username })} value={u.role} onchange={(e) => patchUser(u, { role: e.currentTarget.value as S['Role'] })}>
+                    <option value="viewer">{words.viewer}</option>
+                    <option value="operator">{words.operator}</option>
+                    <option value="admin">{words.admin}</option>
                   </select>
                 </td>
                 <td>
-                  {#if u.totpEnabled}<span class="badge ok">on</span> <button class="link small" onclick={() => patchUser(u, { resetTotp: true })}>Reset</button>{:else}<span class="muted">off</span>{/if}
+                  {#if u.totpEnabled}<span class="badge ok">{words.on}</span> <button class="link small" onclick={() => patchUser(u, { resetTotp: true })}>{words.reset}</button>{:else}<span class="muted">{words.off}</span>{/if}
                 </td>
-                <td><input type="checkbox" role="switch" aria-label={`HTTP Basic for ${u.username}`} checked={u.allowBasicApi} onchange={(e) => patchUser(u, { allowBasicApi: e.currentTarget.checked })} /></td>
+                <td><input type="checkbox" role="switch" aria-label={t('HTTP Basic for {name}', { name: u.username })} checked={u.allowBasicApi} onchange={(e) => patchUser(u, { allowBasicApi: e.currentTarget.checked })} /></td>
                 <td>
-                  <button class="link" onclick={() => patchUser(u, { disabled: !u.disabled })}>{u.disabled ? 'Disabled · enable' : 'Active · disable'}</button>
+                  <button class="link" onclick={() => patchUser(u, { disabled: !u.disabled })}>{u.disabled ? words.disabled : words.active}</button>
                 </td>
                 <td class="num">
-                  <button class="link" aria-expanded={tokensOf === u.id} onclick={() => showTokens(u)}>Tokens</button>
+                  <button class="link" aria-expanded={tokensOf === u.id} onclick={() => showTokens(u)}>{words.tokens}</button>
                   {#if u.id !== session.user?.id}
-                    <button class="danger" onclick={() => removeUser(u)}>{armed === u.id ? 'Really delete?' : 'Delete'}</button>
+                    <button class="danger" onclick={() => removeUser(u)}>{armed === u.id ? words.reallyDelete : words.delete}</button>
                   {/if}
                 </td>
               </tr>
@@ -657,18 +698,18 @@
                 <tr class="user-tokens">
                   <td colspan="6">
                     {#if userTokens.length === 0}
-                      <span class="muted small">{u.username} has no API tokens.</span>
+                      <span class="muted small">{t('{name} has no API tokens.', { name: u.username })}</span>
                     {:else}
                       <table>
-                        <thead><tr><th>{u.username}'s token</th><th>Scope</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+                        <thead><tr><th>{t('{name}\'s token', { name: u.username })}</th><th>{t('Scope')}</th><th>{t('Last used')}</th><th>{t('Expires')}</th><th></th></tr></thead>
                         <tbody>
-                          {#each userTokens as t (t.id)}
+                          {#each userTokens as tok (tok.id)}
                             <tr>
-                              <td><strong>{t.name}</strong><div class="muted small mono">tt_{t.id}_…</div></td>
-                              <td>{#if t.kind === 'agent'}<span class="badge">agent</span>{:else}<span class="badge">{t.scope}</span>{/if}</td>
-                              <td class="small">{ago(t.lastUsedUnixSeconds)}</td>
-                              <td class="small">{t.expiresUnixSeconds ? dateTime(t.expiresUnixSeconds) : 'never'}</td>
-                              <td class="num"><button class="danger" onclick={() => revokeUserToken(u, t.id)}>Revoke</button></td>
+                              <td><strong translate="no">{tok.name}</strong><div class="muted small mono" translate="no">tt_{tok.id}_…</div></td>
+                              <td>{#if tok.kind === 'agent'}<span class="badge">{words.userAgent}</span>{:else}<span class="badge" translate="no">{tok.scope}</span>{/if}</td>
+                              <td class="small">{ago(tok.lastUsedUnixSeconds)}</td>
+                              <td class="small">{tok.expiresUnixSeconds ? dateTime(tok.expiresUnixSeconds) : words.userNever}</td>
+                              <td class="num"><button class="danger" onclick={() => revokeUserToken(u, tok.id)}>{words.userRevoke}</button></td>
                             </tr>
                           {/each}
                         </tbody>
@@ -682,19 +723,19 @@
         </table>
       </div>
       <form class="stack add-user" onsubmit={addUser}>
-        <h3>Add a user</h3>
+        <h3>{t('Add a user')}</h3>
         <div class="row">
-          <input aria-label="Username" required placeholder="username" autocomplete="off" bind:value={nu.username} />
-          <input aria-label="Password" required type="password" minlength="10" placeholder="password (10+ characters)" autocomplete="new-password" bind:value={nu.password} />
-          <select aria-label="Role" bind:value={nu.role}>
-            <option value="viewer">viewer</option>
-            <option value="operator">operator</option>
-            <option value="admin">admin</option>
+          <input aria-label={t('Username')} required placeholder={t('username')} autocomplete="off" bind:value={nu.username} />
+          <input aria-label={t('Password')} required type="password" minlength="10" placeholder={t('password (10+ characters)')} autocomplete="new-password" bind:value={nu.password} />
+          <select aria-label={t('Role')} bind:value={nu.role}>
+            <option value="viewer">{t('viewer')}</option>
+            <option value="operator">{t('operator')}</option>
+            <option value="admin">{t('admin')}</option>
           </select>
-          <label class="switch small"><input type="checkbox" role="switch" bind:checked={nu.allowBasicApi} />HTTP Basic</label><HelpButton id="http-basic" />
-          <button class="primary" type="submit">Add</button>
+          <label class="switch small"><input type="checkbox" role="switch" bind:checked={nu.allowBasicApi} />{t('HTTP Basic')}</label><HelpButton id="http-basic" />
+          <button class="primary" type="submit">{t('Add')}</button>
         </div>
-        <p class="muted small">Viewers see dashboards and the query log; operators can also pause blocking and manage lists, clients, and groups; admins can do everything.</p>
+        <p class="muted small">{t('Viewers see dashboards and the query log; operators can also pause blocking and manage lists, clients, and groups; admins can do everything.')}</p>
       </form>
     </section>
     <!-- REQ: OBS-035 (T14.13) — wall displays. -->
@@ -702,53 +743,52 @@
   {:else if tab === 'audit' && can('admin')}
     <section class="card">
       <div class="card-head">
-        <h2>Audit log<HelpButton id="audit-log" /></h2>
+        <h2>{t('Audit log')}<HelpButton id="audit-log" /></h2>
         <div class="row">
           <span class="pill-field bare">
-            <select aria-label="Action" bind:value={auditAction} onchange={() => loadAudit()}>
-              <option value="">All changes</option>
-              <option value="user.">Users</option>
-              <option value="token.">API tokens</option>
-              <option value="auth.">Sign-ins and lockouts</option>
-              <option value="config.">Configuration</option>
+            <select aria-label={t('Action')} bind:value={auditAction} onchange={() => loadAudit()}>
+              <option value="">{t('All changes')}</option>
+              <option value="user.">{t('Users')}</option>
+              <option value="token.">{t('API tokens')}</option>
+              <option value="auth.">{t('Sign-ins and lockouts')}</option>
+              <option value="config.">{t('Configuration')}</option>
             </select>
           </span>
-          <button onclick={verifyAudit}>Verify chain</button>
+          <button onclick={verifyAudit}>{t('Verify chain')}</button>
         </div>
       </div>
       <p class="muted small">
-        Every change to users, passwords, two-factor sign-in, and API tokens, plus sign-ins, lockouts, and configuration
-        reloads. Entries can't be edited, and each one is chained to the one before it, so tampering is detectable.
+        {t('Every change to users, passwords, two-factor sign-in, and API tokens, plus sign-ins, lockouts, and configuration reloads. Entries can\'t be edited, and each one is chained to the one before it, so tampering is detectable.')}
       </p>
       {#if verified}
         <div class="notice {verified.ok ? 'ok' : 'bad'} verify-result" role="status">
           {#if verified.ok}
-            Chain intact: {verified.entries} entries. Head <code class="mono">{verified.headHash.slice(0, 16)}…</code>
+            <T ctx="settings" msg={'Chain intact: {entries} entries. Head <mono>{hash}…</mono>'} params={{ entries: verified.entries, hash: verified.headHash.slice(0, 16) }} {mono} />
           {:else}
-            <strong>Chain broken at entry {verified.firstBadSeq}</strong>: the log was changed outside TelltaleDNS.
+            <T ctx="settings" msg={'<strong>Chain broken at entry {seq}</strong>: the log was changed outside TelltaleDNS.'} params={{ seq: verified.firstBadSeq }} {strong} />
           {/if}
         </div>
       {/if}
       <ErrorNote error={auditError} />
       {#if audit.length === 0}
-        <p class="empty">No entries.</p>
+        <p class="empty">{t('No entries.')}</p>
       {:else}
         <div class="table-wrap">
           <table class="audit">
-            <thead><tr><th class="num">#</th><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead>
+            <thead><tr><th class="num">#</th><th>{t('When')}</th><th>{t('Who')}</th><th>{t('What')}</th><th>{t('Details')}</th></tr></thead>
             <tbody>
               {#each audit as e (e.seq)}
                 <tr>
                   <td class="num muted">{e.seq}</td>
                   <td class="small nowrap" title={e.time}>{dateTime(e.tsUnixSeconds)}</td>
-                  <td>
+                  <td translate="no">
                     {e.actor} <span class="badge">{e.actorKind}</span>
                     {#if e.remote}<div class="muted small mono">{e.remote}</div>{/if}
                   </td>
-                  <td><code>{e.action}</code><div class="small">{e.target}</div></td>
+                  <td translate="no"><code>{e.action}</code><div class="small">{e.target}</div></td>
                   <td class="small">
-                    {summary(e)}
-                    {#if e.reason}<div class="muted">Reason: {e.reason}</div>{/if}
+                    <span translate="no">{summary(e)}</span>
+                    {#if e.reason}<div class="muted">{t('Reason: {reason}', { reason: e.reason })}</div>{/if}
                   </td>
                 </tr>
               {/each}
@@ -756,74 +796,75 @@
           </table>
         </div>
         {#if auditCursor}
-          <div class="row foot"><span class="spacer"></span><button onclick={() => loadAudit(true)}>Older</button></div>
+          <div class="row foot"><span class="spacer"></span><button onclick={() => loadAudit(true)}>{t('Older')}</button></div>
         {/if}
       {/if}
     </section>
   {:else if tab === 'cluster' && can('admin')}
     {#if clusterView && !clusterView.enabled}
-      <section class="card"><p class="empty">This node runs on its own: staged rollouts need a cluster (see the Cluster page).</p></section>
+      <section class="card"><p class="empty">{t('This node runs on its own: staged rollouts need a cluster (see the Cluster page).')}</p></section>
     {:else}
       <!-- REQ: CLU-013 (T13.2) — staged rollouts: who gets a change first, and the guard. -->
-      <ConfigEditor kind="rollout" path="cluster/rollout-settings" singleton role="admin" title="Staged rollouts" noun="rollout settings"
+      <ConfigEditor kind="rollout" path="cluster/rollout-settings" singleton role="admin" title={t('Staged rollouts')} noun={t('rollout settings')}
         fields={rolloutFields} help="rollouts" note={rolloutNote}
         summary={(d) => {
           const c = Array.isArray(d.canaries) ? (d.canaries as string[]) : [];
-          return c.length ? `${c.length} canary entr${c.length === 1 ? 'y' : 'ies'}; bake ${String(d.bake_secs ?? 300)} s` : 'off: changes reach every node at once';
+          return c.length
+            ? tn('{n} canary entry; bake {secs} s', '{n} canary entries; bake {secs} s', c.length, { n: c.length, secs: String(d.bake_secs ?? 300) })
+            : t('off: changes reach every node at once');
         }} />
       <p class="muted small">
-        A change to these settings reaches every node at once (it's never staged itself). The Cluster page shows the version
-        baking, the guard's readings, and the versions you can pin back to.
+        {t('A change to these settings reaches every node at once (it\'s never staged itself). The Cluster page shows the version baking, the guard\'s readings, and the versions you can pin back to.')}
       </p>
     {/if}
   {:else if tab === 'system'}
     <section class="card">
-      <h2>System<HelpButton id="system" /></h2>
+      <h2>{t('System')}<HelpButton id="system" /></h2>
       {#if info}
         <dl class="sys">
-          <dt>Version</dt><dd>{info.version}</dd>
-          <dt>Node</dt><dd>{info.node} ({info.role})</dd>
-          <dt>Started</dt><dd>{dateTime(Date.parse(info.startedAt) / 1000)} · up {duration(info.uptimeSeconds)}</dd>
+          <dt>{t('Version')}</dt><dd translate="no">{info.version}</dd>
+          <dt>{t('Node')}</dt><dd translate="no">{info.node} ({info.role})</dd>
+          <dt>{t('Started')}</dt><dd>{t('{since} · up {uptime}', { since: dateTime(Date.parse(info.startedAt) / 1000), uptime: duration(info.uptimeSeconds) })}</dd>
           <!-- REQ: OBS-002 (T9.13) -->
           {#if info.starts > 1}
-            <dt>Restarts</dt><dd data-testid="restarts">{info.starts - 1}{#if info.uncleanStarts} ({info.uncleanStarts} after a crash or a kill){/if}</dd>
+            <dt>{t('Restarts')}</dt><dd data-testid="restarts">{info.starts - 1}{#if info.uncleanStarts}{t('({n} after a crash or a kill)', { n: info.uncleanStarts })}{/if}</dd>
           {/if}
-          <dt>DNS listeners</dt><dd class="mono">{info.listeners.join(', ')}</dd>
-          <dt>Query log</dt><dd>{info.queryLog ? 'on' : 'off'}</dd>
-          <dt>Filter snapshot</dt><dd>{info.filterSnapshot ?? 'none yet'} · {info.filterNames.toLocaleString()} names</dd>
+          <dt>{t('DNS listeners')}</dt><dd class="mono" translate="no">{info.listeners.join(', ')}</dd>
+          <dt>{t('Query log')}</dt><dd>{info.queryLog ? t('on') : t('off')}</dd>
+          <dt>{t('Filter snapshot')}</dt><dd>{info.filterSnapshot != null ? t('{snapshot} · {n} names', { snapshot: info.filterSnapshot, n: num(info.filterNames) }) : t('none yet · {n} names', { n: num(info.filterNames) })}</dd>
         </dl>
       {/if}
-      <p class="muted small">API reference: <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
+      <p class="muted small"><T ctx="settings" msg={'API reference: <openapi/> (OpenAPI 3.1).'} {openapi} /></p>
     </section>
     <!-- REQ: OBS-020 (ADR-107) — can clients reach each listener? -->
     <section class="card" data-testid="probes">
-      <h2>Listener checks<HelpButton id="probes" /></h2>
+      <h2>{t('Listener checks')}<HelpButton id="probes" /></h2>
       {#if probes == null}
-        <p class="empty">Loading…</p>
+        <p class="empty">{t('Loading…')}</p>
       {:else if probes.length === 0}
-        <p class="empty">No results yet (the first round runs a few seconds after start), or probes are off (<code>[probe] enabled = false</code>).</p>
+        <p class="empty"><T ctx="settings" msg={'No results yet (the first round runs a few seconds after start), or probes are off (<probesoff/>).'} {probesoff} /></p>
       {:else}
         <div class="table-wrap">
           <table class="compact">
-            <thead><tr>{#if probes.some((p) => p.node)}<th>Node</th>{/if}<th>Asked</th><th>Result</th><th class="num">Time</th><th>Notes</th></tr></thead>
+            <thead><tr>{#if probes.some((p) => p.node)}<th>{t('Node')}</th>{/if}<th>{t('Asked')}</th><th>{t('Result')}</th><th class="num">{t('Time')}</th><th>{t('Notes')}</th></tr></thead>
             <tbody>
-              {#each probes as p (`${p.node ?? ''}|${p.target}`)}
+              {#each probes as p, i (i)}
                 <tr>
-                  {#if probes.some((x) => x.node)}<td>{p.node ?? ''}</td>{/if}
-                  <td>{#if p.proto === 'api'}<div class="web-ui">Web UI and API</div>{/if}<span class="mono">{p.target}</span>{#if !p.listener}<span class="muted small"> (extra target)</span>{/if}</td>
+                  {#if probes.some((x) => x.node)}<td translate="no">{p.node ?? ''}</td>{/if}
+                  <td>{#if p.proto === 'api'}<div class="web-ui">{words.webUi}</div>{/if}<span class="mono" translate="no">{p.target}</span>{#if !p.listener}<span class="muted small"> {words.extraTarget}</span>{/if}</td>
                   <td>
-                    {#if p.skipped}<span class="badge">skipped</span>
-                    {:else if p.ok}<span class="badge ok">answers</span>
-                    {:else if p.consecutiveFailures >= 2}<span class="badge bad">not answering</span>
-                    {:else}<span class="badge warn">missed once</span>{/if}
+                    {#if p.skipped}<span class="badge">{words.skipped}</span>
+                    {:else if p.ok}<span class="badge ok">{words.answers}</span>
+                    {:else if p.consecutiveFailures >= 2}<span class="badge bad">{words.notAnswering}</span>
+                    {:else}<span class="badge warn">{words.missedOnce}</span>{/if}
                   </td>
-                  <td class="num">{p.latencyMs != null ? `${p.latencyMs.toFixed(1)} ms` : '–'}</td>
+                  <td class="num">{p.latencyMs != null ? t('{ms} ms', { ms: p.latencyMs.toFixed(1) }) : '–'}</td>
                   <td class="small">
-                    {p.skipped ?? p.error ?? ''}
+                    <span translate="no">{p.skipped ?? p.error ?? ''}</span>
                     {#if certText(p)}<span class:cert-soon={(p.certDaysLeft ?? 99) < 14}>{certText(p)}</span>{/if}
                     <!-- REQ: API-003 (ADR-149) — what the certificate covers, and its fingerprint to compare with the browser's. -->
-                    {#if p.certNames?.length}<div class="muted" data-testid="cert-names">for {p.certNames.join(', ')}</div>{/if}
-                    {#if p.certSha256}<div class="muted fingerprint" data-testid="cert-sha256">SHA-256 <span class="mono">{p.certSha256}</span></div>{/if}
+                    {#if p.certNames?.length}<div class="muted" data-testid="cert-names">{t('for {names}', { names: p.certNames.join(', ') })}</div>{/if}
+                    {#if p.certSha256}<div class="muted fingerprint" data-testid="cert-sha256"><T ctx="settings" msg={'SHA-256 <mono>{sha}</mono>'} params={{ sha: p.certSha256 }} mono={monospan} /></div>{/if}
                   </td>
                 </tr>
               {/each}
@@ -831,100 +872,98 @@
           </table>
         </div>
       {/if}
-      <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would. With HTTPS on the web UI (<code>[api] tls</code>), it's checked too: compare its SHA-256 fingerprint with the one your browser shows before trusting a self-signed certificate.</p>
+      <p class="muted small"><T ctx="settings" msg={"Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would. With HTTPS on the web UI (<apitls/>), it's checked too: compare its SHA-256 fingerprint with the one your browser shows before trusting a self-signed certificate."} {apitls} /></p>
     </section>
     <section class="card" data-testid="changes-list">
-      <h2>Changes<HelpButton id="change-markers" /></h2>
+      <h2>{t('Changes')}<HelpButton id="change-markers" /></h2>
       <div class="change-filters">
         <label class="pill-field">
-          Kind
-          <select bind:value={changeKind} aria-label="Kind of change">
-            <option value="">every kind</option>
-            <option value="config.applied">configuration applied</option>
-            <option value="note">notes</option>
-            <option value="lists.refreshed">list refreshes</option>
-            <option value="rollout.stage">rollouts</option>
-            <option value="build.started,node.restarted">builds and restarts</option>
-            <option value="maintenance.entered,maintenance.left">maintenance</option>
-            <option value="blocking.paused,blocking.resumed">pauses</option>
-            <option value="cache.flushed">cache flushes</option>
-            <option value="upstream.breaker">upstreams benched or recovered</option>
+          {t('Kind')}
+          <select bind:value={changeKind} aria-label={t('Kind of change')}>
+            <option value="">{t('every kind')}</option>
+            <option value="config.applied">{t('configuration applied')}</option>
+            <option value="note">{t('notes')}</option>
+            <option value="lists.refreshed">{t('list refreshes')}</option>
+            <option value="rollout.stage">{t('rollouts')}</option>
+            <option value="build.started,node.restarted">{t('builds and restarts')}</option>
+            <option value="maintenance.entered,maintenance.left">{t('maintenance')}</option>
+            <option value="blocking.paused,blocking.resumed">{t('pauses')}</option>
+            <option value="cache.flushed">{t('cache flushes')}</option>
+            <option value="upstream.breaker">{t('upstreams benched or recovered')}</option>
           </select>
         </label>
-        <input class="small" type="search" placeholder="Filter" bind:value={changeText} aria-label="Filter changes" />
+        <input class="small" type="search" placeholder={t('Filter')} bind:value={changeText} aria-label={t('Filter changes')} />
       </div>
       <ErrorNote error={changeError} />
       {#if changeList == null}
-        <p class="empty">Loading…</p>
+        <p class="empty">{t('Loading…')}</p>
       {:else if shownChanges.length === 0}
-        <p class="empty">No changes recorded{changeKind || changeText ? ' that match' : ''} in the last 90 days.</p>
+        <p class="empty">{changeKind || changeText ? t('No changes recorded that match in the last 90 days.') : t('No changes recorded in the last 90 days.')}</p>
       {:else}
         <div class="table-wrap">
           <table class="compact">
-            <thead><tr><th>When</th>{#if shownChanges.some((a) => a.node)}<th>Node</th>{/if}<th>What</th><th>Who</th></tr></thead>
+            <thead><tr><th>{t('When')}</th>{#if shownChanges.some((a) => a.node)}<th>{t('Node')}</th>{/if}<th>{t('What')}</th><th>{t('Who')}</th></tr></thead>
             <tbody>
               {#each shownChanges as a, i (i)}
                 <tr>
                   <td class="nowrap">{dateTime(a.tUnixMs / 1000)}</td>
-                  {#if shownChanges.some((x) => x.node)}<td>{a.node ?? ''}</td>{/if}
-                  <td>{#if a.href}<a href={a.href}>{a.summary}</a>{:else}{a.summary}{/if}</td>
-                  <td class="small">{a.actor ?? a.source ?? ''}</td>
+                  {#if shownChanges.some((x) => x.node)}<td translate="no">{a.node ?? ''}</td>{/if}
+                  <td translate="no">{#if a.href}<a href={a.href}>{a.summary}</a>{:else}{a.summary}{/if}</td>
+                  <td class="small" translate="no">{a.actor ?? a.source ?? ''}</td>
                 </tr>
               {/each}
             </tbody>
           </table>
         </div>
       {/if}
-      {#if changeList?.missingNodes?.length}<p class="muted small">Not answering: {changeList.missingNodes.join(', ')}.</p>{/if}
-      <p class="muted small">The last 200 configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, upstreams benched or recovered, and notes, from every node. Each node keeps 90 days.</p>
+      {#if changeList?.missingNodes?.length}<p class="muted small">{t('Not answering: {nodes}.', { nodes: changeList.missingNodes.join(', ') })}</p>{/if}
+      <p class="muted small">{t('The last 200 configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, upstreams benched or recovered, and notes, from every node. Each node keeps 90 days.')}</p>
     </section>
     {#if info}
       <!-- REQ: OPS-004 (ADR-046) -->
       <section class="card" data-testid="updates">
-        <h2>Version and updates<HelpButton id="updates" /></h2>
+        <h2>{t('Version and updates')}<HelpButton id="updates" /></h2>
         <dl class="sys">
-          <dt>This build</dt><dd><strong>{info.build.version}</strong> · commit <code>{info.build.commit}</code> · {info.build.channel} channel</dd>
-          <dt>Built</dt><dd>{info.build.date} · {info.build.target} · {info.build.install} install</dd>
-          <dt>Status</dt>
+          <dt>{t('This build')}</dt><dd><T ctx="settings" msg={'<strong>{version}</strong> · commit <code>{commit}</code> · {channel} channel'} params={{ version: info.build.version, commit: info.build.commit, channel: info.build.channel }} strong={strongdata} {code} /></dd>
+          <dt>{t('Built')}</dt><dd>{t('{date} · {target} · {install} install', { date: info.build.date, target: info.build.target, install: info.build.install })}</dd>
+          <dt>{t('Status')}</dt>
           <dd>
             {#if info.update.state === 'available'}
-              <span class="badge warn">Update available</span> {info.update.latest}{info.update.latestDate ? ` (${info.update.latestDate})` : ''}
-              {#if info.update.notesUrl}<a href={info.update.notesUrl} target="_blank" rel="noreferrer">What's new</a>{/if}
+              <span class="badge warn">{t('Update available')}</span> <span translate="no">{info.update.latest}{info.update.latestDate ? ` (${info.update.latestDate})` : ''}</span>
+              {#if info.update.notesUrl}<a href={info.update.notesUrl} target="_blank" rel="noreferrer">{t("What's new")}</a>{/if}
             {:else if info.update.state === 'up_to_date'}
-              Up to date
+              {t('Up to date')}
             {:else if info.update.state === 'newer'}
-              Newer than the published {info.build.channel} build{info.update.latest ? ` (${info.update.latest})` : ''}
+              {info.update.latest ? t('Newer than the published {channel} build ({version})', { channel: info.build.channel, version: info.update.latest }) : t('Newer than the published {channel} build', { channel: info.build.channel })}
             {:else if info.update.state === 'off'}
-              Not checked (<code>[updates] check = false</code>)
+              <T ctx="settings" msg={'Not checked (<updatescheck/>)'} {updatescheck} />
             {:else}
-              Not known yet{info.update.error ? `: ${info.update.error}` : ''}
+              {info.update.error ? t('Not known yet: {error}', { error: info.update.error }) : t('Not known yet')}
             {/if}
             <div class="muted small">
-              {#if info.update.checkedUnixSeconds}Checked {ago(info.update.checkedUnixSeconds)}{/if}
+              {#if info.update.checkedUnixSeconds}{t('Checked {when}', { when: ago(info.update.checkedUnixSeconds) })}{/if}
               {#if can('admin') && info.update.state !== 'off'}
                 <button class="link small" disabled={checking} onclick={checkNow} data-testid="check-updates"
-                  >{checking ? 'Checking…' : 'Check now'}</button
+                  >{checking ? t('Checking…') : t('Check now')}</button
                 >
               {/if}
             </div>
             <ErrorNote error={checkError} />
           </dd>
         </dl>
-        <p class="small">{info.update.how}</p>
+        <p class="small" translate="no">{info.update.how}</p>
       </section>
     {/if}
     {#if can('admin')}
       <!-- REQ: API-007 (T6.7) -->
       <section class="card">
-        <h2>Backup<HelpButton id="backup" /></h2>
+        <h2>{t('Backup')}<HelpButton id="backup" /></h2>
         <p>
-          One file with your settings, users and API tokens, the devices and names you added here, the audit log, and
-          statistics history. Restore it on a new machine with <code>telltale backup restore FILE</code>.
+          <T ctx="settings" msg={'One file with your settings, users and API tokens, the devices and names you added here, the audit log, and statistics history. Restore it on a new machine with <restorecmd/>.'} {restorecmd} />
         </p>
-        <p><a class="button" href="/api/v1/backup" download>Download a backup</a></p>
+        <p><a class="button" href="/api/v1/backup" download>{t('Download a backup')}</a></p>
         <p class="muted small">
-          It holds password hashes, so keep it private. The query log isn't included; for that, run
-          <code>telltale backup create --include-qlog</code> on the server.
+          <T ctx="settings" msg={"It holds password hashes, so keep it private. The query log isn't included; for that, run <createcmd/> on the server."} {createcmd} />
         </p>
       </section>
       <!-- REQ: OPS-011 (ADR-156) — one redacted file for a bug report. -->
@@ -933,37 +972,38 @@
   {:else if tab === 'queries'}
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
     <section class="card">
-      <h2>Cache</h2>
-      <p class="small">Hit rates, what's cached, settings, lookups, and flushing are on the <a href="#/cache">Cache page</a>.</p>
+      <h2>{t('Cache')}</h2>
+      <p class="small"><T ctx="settings" msg={"Hit rates, what's cached, settings, lookups, and flushing are on the <cachepage>Cache page</cachepage>."} {cachepage} /></p>
     </section>
     <!-- REQ: DNS-014 (review 01 q1) — the per-client rate limit, adjustable here and in the config file. -->
-    <ConfigEditor kind="ratelimit" path="ratelimit" singleton title="Rate limit" noun="rate limit" fields={rateLimitFields}
-      summary={(d) => (d.enabled === false ? 'off' : `${String(d.queries)} queries per ${String(d.window_secs)} s per client, then ${String(d.action)}`)} />
+    <ConfigEditor kind="ratelimit" path="ratelimit" singleton title={t('Rate limit')} noun={t('rate limit')} fields={rateLimitFields}
+      summary={(d) => (d.enabled === false ? t('off') : t('{queries} queries per {secs} s per client, then {action}', { queries: String(d.queries), secs: String(d.window_secs), action: String(d.action) }))} />
     <p class="muted small">
-      One client is one address (IPv6: one /64). A router or proxy that forwards for a whole network looks like one client:
-      add it to "Never limited", or raise the number. A change applies at once and every client's count starts over.
+      {t('One client is one address (IPv6: one /64). A router or proxy that forwards for a whole network looks like one client: add it to "Never limited", or raise the number. A change applies at once and every client\'s count starts over.')}
     </p>
     <!-- REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics. -->
-    <ConfigEditor kind="exclusions" path="exclusions" singleton title="Kept out of the log" noun="exclusions" fields={exclusionFields}
+    <ConfigEditor kind="exclusions" path="exclusions" singleton title={t('Kept out of the log')} noun={t('exclusions')} fields={exclusionFields}
       summary={(d) => {
         const n = (k: string) => (Array.isArray(d[k]) ? (d[k] as unknown[]).length : 0);
-        if (n('names') + n('clients') === 0) return 'nothing excluded';
-        return `${d.enabled === false ? 'off: ' : ''}${n('names')} names, ${n('clients')} devices`;
+        if (n('names') + n('clients') === 0) return t('nothing excluded');
+        return d.enabled === false
+          ? t('off: {names} names, {devices} devices', { names: n('names'), devices: n('clients') })
+          : t('{names} names, {devices} devices', { names: n('names'), devices: n('clients') });
       }} />
     <p class="muted small">
-      Their queries are still answered and still counted in <code>/metrics</code>, but left out of the query log, the live view,
-      the dashboard and top lists, anomalies, and exports, on every node. Queries logged before stay.<HelpButton id="exclusions" />
+      <T ctx="settings" msg={'Their queries are still answered and still counted in <metrics/>, but left out of the query log, the live view, the dashboard and top lists, anomalies, and exports, on every node. Queries logged before stay.'} {metrics} /><HelpButton id="exclusions" />
     </p>
     <!-- REQ: OBS-024 (T13.1) — change simulation's switches and bounds. -->
-    <ConfigEditor kind="simulate" path="simulate-settings" singleton title="Change simulation" noun="simulation settings" fields={simulateFields}
+    <ConfigEditor kind="simulate" path="simulate-settings" singleton title={t('Change simulation')} noun={t('simulation settings')} fields={simulateFields}
       help="simulate"
       summary={(d) =>
         d.enabled === false
-          ? 'off'
-          : `on, ${String(d.default_window ?? '24h')} by default; agents' plans ${d.plans_by_default ? 'always simulate' : 'simulate when asked'}`} />
+          ? t('off')
+          : d.plans_by_default
+            ? t("on, {window} by default; agents' plans always simulate", { window: String(d.default_window ?? '24h') })
+            : t("on, {window} by default; agents' plans simulate when asked", { window: String(d.default_window ?? '24h') })} />
     <p class="muted small">
-      A simulation replays the query log with and without a change and shows what would have been answered differently. It never
-      touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
+      {t('A simulation replays the query log with and without a change and shows what would have been answered differently. It never touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can\'t be replayed.')}
     </p>
   {/if}
   </TabPanel>

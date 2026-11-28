@@ -53,7 +53,7 @@ docker run -d --name telltale --restart unless-stopped \
   echo 'net.ipv4.ip_unprivileged_port_start=53' | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system
   ```
   Alternatively, run the container as root with only that one capability: `--user 0:0 --cap-drop ALL --cap-add NET_BIND_SERVICE`. Adding `NET_BIND_SERVICE` while running as `65532` doesn't work, because Docker doesn't pass added capabilities to non-root users.
-- Reload with `docker kill -s HUP telltale`; stop with `docker stop` (a graceful drain, see [Stop](#stop)).
+- Reload with `sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' telltale)"` (not `docker kill -s HUP`, see [Reload in Docker](#reload-in-docker)); stop with `docker stop` (a graceful drain, see [Stop](#stop)).
 
 Build it yourself with `docker buildx build -t telltale:dev .` (add `--platform linux/amd64,linux/arm64,linux/arm/v7` for all three). The build cross-compiles, so it doesn't need QEMU.
 
@@ -96,9 +96,26 @@ curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deplo
 docker compose up -d
 docker compose exec telltale telltale auth setup-token     # then open http://<host>:8053/
 ```
-The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: `docker compose kill -s HUP`.
+The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: see [Reload in Docker](#reload-in-docker).
 
-**Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` turns it off with the recommended settings of a new install in a terminal, asks in the walk-through (step 5), and asks `[Y/n]` on a re-run or with `--yes` in a terminal; without a terminal it leaves it as it is, unless `--interactive` feeds the answers of a new install; `--disable-resolved-stub` turns it off without asking (the walk-through still asks, and its answer wins). The machine then resolves through TelltaleDNS. After turning it off the installer waits up to 15 seconds for port 53 to be free before it starts the service; if something still holds it, the installer prints what (the `ss` line, with the process) and the next step; for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
+**Port 53 already in use:** the default listeners are on `0.0.0.0` and `[::]`, and on Linux a program that listens on port 53 on any one address of the machine is enough to block them (always for TCP; for UDP, a program that also sets `SO_REUSEPORT` and runs as the same user doesn't block the bind, and then shares the port with TelltaleDNS). The start then stops with, for example, `telltale: Udp 0.0.0.0:53: Address already in use (os error 98)`, followed on the same line by what to do. To see which program holds the port (`sudo` shows the processes of every user):
+```sh
+sudo ss -lunp 'sport = :53'    # UDP
+sudo ss -ltnp 'sport = :53'    # TCP
+```
+The usual ones are systemd-resolved's stub listener on `127.0.0.53` (below), `dnsmasq` (including the one libvirt starts for its virtual machine network, on the bridge's address, often `192.168.122.1` on `virbr0`), another resolver or ad blocker, and the built-in DNS service of a NAS or router. Stop the program if TelltaleDNS replaces it. To run beside it with a native install or host networking (the Compose bundle), listen on this machine's own address instead of on every address:
+```toml
+[[listen]]
+proto = "udp"
+addr = "192.168.1.2:53"   # this machine's LAN address
+
+[[listen]]
+proto = "tcp"
+addr = "192.168.1.2:53"
+```
+With Docker Compose this goes into the bundle's `telltale.toml`, which `compose.yaml` mounts as `/etc/telltale/telltale.toml` and which has this example commented out. With `[[listen]]` set, only the listed addresses answer: the machine itself on `127.0.0.1` and a device that reaches the machine on another of its addresses (a second network, a VPN, a virtual machine network) get no answer, so list every address that should answer, IPv6 ones included. Each listed address must exist when TelltaleDNS starts (a static address, or a DHCP reservation in the router); if it isn't there yet, the start fails and systemd (`Restart=on-failure`) or Docker (`restart: unless-stopped`) tries again. With published ports (`docker run -p`, as in "Container image") the address doesn't exist inside the container, so leave `[[listen]]` as it is and publish on the one address instead: `-p 192.168.1.2:53:53/udp -p 192.168.1.2:53:53/tcp`. A reload applies listener changes, binding the new listeners before it closes the old ones; a listener other than plain UDP (tcp, dot, doh, doq, doh3) that moves between the wildcard address and one address on the same port therefore needs a restart, because the old listener still holds the port. After a failed start, a restart is the simplest way anyway (`sudo systemctl restart telltale`, `docker compose restart`).
+
+On Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` turns it off with the recommended settings of a new install in a terminal, asks in the walk-through (step 5), and asks `[Y/n]` on a re-run or with `--yes` in a terminal; without a terminal it leaves it as it is, unless `--interactive` feeds the answers of a new install; `--disable-resolved-stub` turns it off without asking (the walk-through still asks, and its answer wins). The machine then resolves through TelltaleDNS. After turning it off the installer waits up to 15 seconds for port 53 to be free before it starts the service; if something still holds it, the installer prints what (the `ss` line, with the process) and the next step; for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`.
 
 **Small Pis and SD cards:** the query log writes continuously; keep `[telemetry.qlog] retention_days` short (the starter config uses 7) or put `/var/lib/telltale` on a USB SSD. On a Pi Zero 2 W (512 MB) also set `[node] workers = 2` and `[cache] max_bytes = "16MiB"`, and prefer smaller blocklists.
 
@@ -269,7 +286,7 @@ In every level **secrets are removed**: passwords and hashes, API and session to
 **Who can, and the record.** Admins only. Each package is recorded in the audit log as `support.package` (the level and counts, never the content) and each map download as `support.package.map`. One package at a time per node (a second request gets 409).
 
 ## When a node stops answering (the watchdog)
-Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits.
+Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits. With `unless-stopped`, Docker doesn't start a container again once it has marked it as manually stopped, and a reload signaled through Docker sets that mark: see [Reload in Docker](#reload-in-docker).
 
 ```toml
 [watchdog]                  # restart-only; each node has its own
@@ -594,7 +611,8 @@ tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
 - **Certificate:** a PEM chain (leaf first) and key, valid for the name devices use, e.g. `dns.example.com` from Let's Encrypt (DNS-01 works for internal names). Both files are re-read within 10 seconds of changing, so renewals (certbot, cert-manager) need no restart; a broken renewal keeps the old certificate and logs a warning.
 - **DoH** speaks HTTP/2 and HTTP/1.1, `GET ?dns=` and `POST application/dns-message`, and answers with `Cache-Control: max-age` set to the answer's smallest TTL. DoT uses ALPN `dot` with RFC 7766 pipelining, like plain TCP. With a `doh3` listener, DoH also speaks HTTP/3 (ALPN `h3`, the same paths and client IDs), and HTTP/2 answers carry `Alt-Svc: h3=":443"` so browsers and apps that support it switch. DoQ uses ALPN `doq`: each query has its own QUIC stream, so a slow answer never holds up the others, and an idle connection closes after 30 s. 0-RTT is off (an early query could be replayed).
 - **Devices identify themselves:** with a wildcard certificate (`dns.example.com` and `*.dns.example.com`), a device configured with `kids-tablet.dns.example.com` (Android Private DNS, DoT, DoH, or DoQ) or the URL `https://dns.example.com/dns-query/kids-tablet` gets the client ID `kids-tablet`, which `[[client]] match = ["id:kids-tablet"]` recognizes wherever the device is, even on mobile data. The path wins over the name.
-- **Behind a load balancer:** `proxy_protocol = true` on a `tcp`, `dot`, or `doh` listener makes it read the client's address from a PROXY protocol v2 header (HAProxy, Traefik, AWS NLB, ...). Every connection must then start with one, so only enable it when the balancer sends it, and don't let clients reach the listener directly. `LOCAL` connections (the balancer's health checks) keep the socket address.
+- **Behind a load balancer:** `proxy_protocol = true` on a `tcp`, `dot`, or `doh` listener makes it read the client's address from a PROXY protocol v2 header (HAProxy, Traefik, AWS NLB, ...). Every connection must then start with one, so only enable it when the balancer sends it, and don't let clients reach the listener directly. `LOCAL` connections (the balancer's health checks) keep the socket address, and so do headers whose address family is `AF_UNSPEC` or `AF_UNIX` (no client address). Those connections are counted in `telltale_proxy_protocol_no_address_total{kind="local"|"unspec"|"unix"}`. When the socket address is loopback (a proxy on the same host), the log also says so, at most once a minute per listener (at info for `AF_UNSPEC` and `AF_UNIX`; for `LOCAL`, the health checks, at debug). Such a connection keeps the socket address, and the settings for that address apply. A `doh` listener with `trusted_proxies` refuses such headers instead (below).
+- **Behind a reverse proxy** (Caddy, nginx, Traefik, HAProxy) in front of a `doh` listener: list the proxies in `trusted_proxies`, and the listener takes each client's address from them, from the PROXY header or from `X-Forwarded-For`. See [Behind a reverse proxy](#behind-a-reverse-proxy).
 - **Slow and silent clients:** on `tcp` and `dot` listeners a connection that sends nothing for the idle timeout (10 s) is closed, and so is one whose client stops reading answers, so a stalled client can't hold one of the 1,024 connection slots. A query longer than 4,096 bytes (the UDP receive buffer's size; real queries are a few dozen bytes) closes the connection. Closures are counted in `telltale_tcp_idle_closed_total` and `telltale_tcp_stalled_closed_total`.
 - **Connection limits, per listener** (`tcp`, `dot`, `doh`, `doh3`, `doq`): `max_connections` (default 1,024) is how many connections it holds open at once, and `max_connections_per_address` (default 32, `0` = no limit) is how many one client address may hold, so a single host can't take every slot. An IPv6 client counts per /64, and with `proxy_protocol = true` the client's address is the one in the PROXY header. Connections over a limit are refused (counted in `telltale_tcp_rejected_per_address_total`, `telltale_doh_rejected_per_address_total`, `telltale_doq_rejected_per_address_total`, next to the `*_rejected_total` counters for the overall limit). **Behind a load balancer that hides client addresses** (no PROXY protocol, source NAT, or Kubernetes `externalTrafficPolicy: Cluster`), every client looks like the balancer, so raise `max_connections_per_address` or set it to `0`. Changing a limit restarts that listener (open connections finish first).
   ```toml
@@ -605,8 +623,46 @@ tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
   max_connections = 2048
   max_connections_per_address = 64
   ```
-- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_rejected_total` and `telltale_doh_rejected_total` (connections refused at the 1,024 cap, which `doq` and `doh3` enforce like `tcp`, `dot`, and `doh`), `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
+- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_rejected_total` and `telltale_doh_rejected_total` (connections refused at the 1,024 cap, which `doq` and `doh3` enforce like `tcp`, `dot`, and `doh`), `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, `telltale_proxy_protocol_rejected_total`, `telltale_proxy_protocol_no_address_total{kind}`, and `telltale_doh_forwarded_refused_total` (behind a reverse proxy, below).
 - In Kubernetes, enable `encrypted.dot` / `encrypted.doh` (plus `encrypted.doh.http3`) / `encrypted.doq` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
+
+### Behind a reverse proxy
+A reverse proxy in front of a `doh` listener (to share port 443 with other sites, to handle certificates, or to rewrite the path) makes every query look like it comes from the proxy: one client for the access list, the rate limit, groups and device statistics. List the proxies on the listener, and it takes each client's address from them (ADR-194, GitHub issue #91). The listener keeps its TLS: the proxy re-encrypts to it, on this host or across your network.
+
+**A proxy that sends `X-Forwarded-For`** (nginx, Caddy, Traefik, HAProxy, on this host or on other machines):
+```toml
+[[listen]]
+proto = "doh"
+addr = "0.0.0.0:443"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+x_forwarded_for = true
+trusted_proxies = ["10.0.5.20/32", "10.0.5.21/32"]   # the proxies' own addresses
+max_connections_per_address = 0                       # every connection is a proxy's
+```
+The client is the rightmost `X-Forwarded-For` entry that isn't one of the listed proxies, as for the web UI's `[api] trusted_proxies`; proxies in front of proxies work when each is listed. `X-Real-IP` and `Forwarded` are not read. The proxy must append the address it sees, not pass on what the client sent: in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`, never `$http_x_forwarded_for`.
+
+**A proxy or balancer that sends a PROXY protocol v2 header** (TLS passed through, or re-encrypted as Caddy's `reverse_proxy https://127.0.0.1:8443` with `transport http { proxy_protocol v2 }` does): keep `proxy_protocol = true` and add `trusted_proxies`, so that only that proxy connects:
+```toml
+[[listen]]
+proto = "doh"
+addr = "127.0.0.1:8443"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+proxy_protocol = true
+trusted_proxies = ["127.0.0.1/32"]
+```
+A proxy that sends PROXY headers on pooled connections must keep a connection per client (Caddy does), since the header names the connection's client. `X-Forwarded-For` names each request, so pooling and HTTP/2 are fine there.
+
+What changes once `trusted_proxies` (or `x_forwarded_for`) is set:
+- **Only the listed proxies connect.** A connection from any other address is closed at once, before anything is read.
+- **Nothing is answered without a client's address.** A PROXY header that is `LOCAL` or carries no address, an `X-Forwarded-For` that is missing or unreadable where the client should be (a port, brackets or a word such as `unknown` in that entry, only listed proxies, more than 16 entries), and an unspecified or loopback client (`0.0.0.0`, `::`, `127.0.0.0/8`, `::1`) are refused: the connection is closed, or the request gets `403` (on HTTP/1.1 its connection is closed; an HTTP/2 connection, which carries the proxy's other clients, stays). So a device on the proxy's own host can't use DoH through the proxy (it can use the local listeners), and a health check that sends `LOCAL` or asks the DoH path fails: point the proxy's health check at a TCP connect, or at the web UI's `/livez`.
+- **The real client is the client everywhere:** `[access] allowed_networks`, the rate limit, groups and devices, the query log, analytics and dnstap. Clients outside your allowed networks are refused (EDE 18), where before they shared the proxy's address.
+- **List only your proxies, never a whole network:** each listed address can name any client, so it chooses whose policy and rate budget a request uses. `config check` refuses a prefix of 0 (`0.0.0.0/0`) and warns about a network wider than one address, about an address a loopback listener can never see, and about `max_connections_per_address` left at 32 with `x_forwarded_for` (every connection is a proxy's; raise it or set 0).
+- **Behind `x_forwarded_for`** the listener sends no `Alt-Svc` (clients reach the proxy, not this node), takes client IDs from the URL path only (the name in the TLS handshake is the proxy's), and isn't probed: add the proxy's public URL to `[probe] targets` instead, which tests the whole path. `https://dns.example.com/dns-query/kids-tablet` still identifies the device through a proxy that keeps the path.
+- **Refusals** are counted in `telltale_doh_forwarded_refused_total{reason="unlisted_peer"|"no_client_address"}` and logged at most once a minute per listener and reason (the line names the kind of PROXY header refused), without the header's contents. A refused PROXY header is not counted in `telltale_proxy_protocol_no_address_total`, which counts only the connections that keep the socket address.
+- **In a cluster,** listener settings stay on each node and are never shared: set `trusted_proxies` on every node's `[[listen]]`. An older version refuses a configuration file that has these keys (at start it doesn't run; on a reload it keeps the running configuration), so remove them before going back to one, including through the cluster's upgrades.
+- **In Kubernetes,** passing TLS through with PROXY protocol v2 stays the recommended way. An HTTP ingress that re-encrypts needs the ingress controller's addresses in `trusted_proxies`; they change with its pods, so list them only with a NetworkPolicy that lets nothing but the ingress reach the listener.
+
+A listener without these keys behaves exactly as before. Plain HTTP for a proxy on the same host (no second TLS hop, or a Unix socket) is not available yet.
 
 ## Recursive resolution (no forwarder)
 TelltaleDNS can resolve names itself, from the root servers down, like `unbound` next to a Pi-hole, so no public resolver sees your lookups:
@@ -712,6 +768,40 @@ ecs = "client"                    # each client's /24 (IPv4) or /56 (IPv6)
 - Answers from an upstream group with a `"client"` member are cached per subnet, so one subnet's answer never reaches another. They're also left out of the cache file kept across restarts.
 - The subnet comes from the client's address (after PROXY protocol, if enabled). ECS options your clients send are still never forwarded.
 
+### Forwarding loops
+Every query TelltaleDNS forwards to an upstream carries an EDNS option (code 65429, from the range RFC 6891 keeps for local use) with a random tag the node picks when it starts. A query that arrives with the node's own tag has come back through an upstream that forwards to TelltaleDNS: it's dropped and an error is logged (`forwarding loop detected`), so it doesn't go round until it times out. If the log reports one, fix the upstream that sends queries back. The tag doesn't catch two TelltaleDNS nodes that forward to each other (directly, or through forwarders in between): a node never passes a client's EDNS options on, so a query that one node forwards reaches the other and comes back carrying only the other node's tag, and neither node recognizes it as its own; don't make two nodes each other's upstream.
+
+A few resolvers drop every query that carries an EDNS option they don't know (RFC 6891 asks them to ignore it), so every query to them times out (over DoH, fails with an HTTP error) and their breaker stays open, while `dig` from the same host gets answers. Leave the option out for such an upstream:
+```toml
+[[upstream]]
+name = "strict-resolver"
+url = "udp://198.51.100.53"
+loop_tag = false                  # default: true
+```
+- Its queries and health checks go without the option, and so do the lookups of its host name through its own `bootstrap` servers. The system resolvers that look up host names for upstreams without `bootstrap` are shared, and keep it: if they drop it too, give the upstream its own `bootstrap`.
+- **`loop_tag = false` doesn't fix a loop, it hides one**: a query that comes back is no longer dropped, and goes round. Keep the option on for any upstream that can reach this node: a router or another resolver that forwards to TelltaleDNS, or this node's own address. Don't turn it off to quiet `forwarding loop detected`.
+- The configuration refuses `loop_tag = false` toward this node, as far as it can tell, when a URL or a `bootstrap` server is:
+  - a loopback address (127.0.0.0/8, `::1`, or one mapped into IPv6);
+  - an unspecified address (`0.0.0.0`, `::`);
+  - the name `localhost`, or a name under it;
+  - or an address a `[[listen]]` entry uses, **on any port**, so a forwarder on another port of this host (say `127.0.0.1:5353`) is refused too.
+
+  It's also refused on a `recursive://` upstream, which never sends the option.
+- It still accepts, because it doesn't check them:
+  - a DNS stamp (`sdns://`) whose address is this node;
+  - this node's `[api]`, `[metrics]` and `[cluster]` addresses;
+  - the machine's other addresses (a node listening on `0.0.0.0` doesn't name its LAN address, and nothing reads them from the host);
+  - another name for this node;
+  - a resolver that forwards back.
+
+  **Test it** (`POST /api/v1/checks/upstream`) asks a draft without these checks, so it can say "Works" for an upstream that saving refuses. In a cluster each node checks against its own listeners: see [Setting `loop_tag` in a cluster](#setting-loop_tag-in-a-cluster).
+- A domain forwarded in the UI or the API keeps the option. To forward a domain to such a resolver, define an `[[upstream]]` with `loop_tag = false`, an `[[upstream_group]]` for it, and a `[[route]]` with its `match_suffix`.
+
+#### Setting `loop_tag` in a cluster
+- **Upgrade every node before you set `loop_tag` on a shared upstream.** A node on an earlier version can't read a shared configuration that has the key (only `false` is written there). It refuses that version and keeps serving the configuration it has. It refuses every later version too while the key is in it, so it stops following the cluster's changes until it's upgraded or the key is removed. An earlier build also refuses the key in its own file, so don't write it, `true` or `false`, in a file such a build reads. An upstream that doesn't set the key is shared exactly as before.
+- **Each node checks the shared upstreams against its own listeners.** The primary accepts `loop_tag = false` on an upstream at a replica's `[[listen]]` address. That replica refuses the version in the same way, and every later one while the upstream stays.
+- **A node that refuses a version** logs `cluster configuration not applied`, shows the error in its sync status, and adds a `sync_failed` event to the cluster's timeline. After setting the key, check on [the Cluster page](#clusters) that every node is on the new version.
+
 ### Through a proxy (Tor)
 Send an upstream's traffic through a SOCKS5 or HTTP proxy, for example Tor, so the resolver never sees your address:
 ```toml
@@ -758,6 +848,7 @@ args = ["--datacenter", "home"]
 ```
 - With `exec://`, TelltaleDNS starts the program and tells it where to listen in `TELLTALE_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `TELLTALE_UPSTREAM` has the upstream's name). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to TelltaleDNS's log. It's stopped when the configuration changes or TelltaleDNS stops.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
+- **The health check asks a plugin the root's NS records (`. NS`)** about once a minute while no query uses it, so a plugin passes it only by answering that question with NOERROR (no records needed) or NXDOMAIN: a REFUSED or SERVFAIL counts as a failure, and on a node that sends it few queries the plugin then stays benched for longer (a plain server that refuses `. NS`, such as an authoritative-only one, belongs in a [stub zone](#stub-zones-the-zones-own-servers) instead, `"stub": true` through the API).
 - **Plugin upstreams are defined in the config file** (`telltale.toml`, the Helm values, or Git), since they name a program the node starts or a socket it connects to. The UI and the API refuse an upstream with `exec://`, `unix://` or `args`, and a forwarded domain with such a server, for every role, an administrator included (422, saying which field), and **Test it** (`POST /api/v1/checks/upstream`) refuses such a draft before anything is started (ADR-180).
 - **After upgrading,** a plugin upstream made earlier in the UI or the API isn't used: nothing is started for it, and an upstream of the same name in the config files is the one in effect. A forwarded domain made there keeps its other servers, under the same names (`forward:<domain>#<n>` counts a server's place among the domain's servers); with none left it isn't used, and its names go to the `default` upstream group (or a route that matches them). What named such an upstream is adjusted, so everything else made in the UI or the API stays in effect: an upstream group made there loses it as a member (left with none, the group isn't used, and the config files' group of that name, if any, is back; a `parallel` group races the members it has left, or with one uses `failover`), and a client group made there that sent its queries to a group that isn't used now goes to the config files' choice or the default. The node logs one warning for each of these, naming it, and a new change that names one of them (an upstream group's member, a client group's upstream group) is refused (422). The entries stay until you remove them (`DELETE /api/v1/upstreams/{name}` or `/api/v1/forwards/{domain}`); define the plugin in the config file instead. In a cluster, **upgrade the primary first**: a replica can't tell an entry an older primary made through the API from one in that primary's config files. On a primary that was promoted from a replica, such an entry can come with the configuration it was promoted with; `DELETE` answers 404 there, and you replace the upstream with a plain one of the same name instead (`PUT /api/v1/upstreams/{name}` with, say, a `udp://` URL).
 
@@ -774,7 +865,8 @@ flowchart LR
   U -- all failed --> SF[SERVFAIL + EDE 22]
 ```
 - **Cache:** answers are cached for their TTL (clamped by `[cache] min_ttl`/`max_ttl`). Negative answers are cached when the upstream includes an SOA. SERVFAIL is cached for 5 seconds, and never served stale afterwards: an expired failure is asked again. Hot entries are refreshed in the background just before they expire.
-- **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. The last healthy upstream left to try (the only one, in a group of one) may wait for its answer for the rest of the query's 2 s (not just `timeout_ms`, 400 ms by default), so a name the upstream has to look up itself (often several hundred milliseconds) isn't cut short and answered SERVFAIL. With `strategy = "parallel"`, each healthy upstream asked at once may wait the same way, so the faster one's answer isn't thrown away. The price: one of them that stops answering is benched only after about 2 s (three timeouts) instead of almost at once, and until then a client whose other upstream answered SERVFAIL waits for it, up to the same 2 s (then up to its `timeout_ms`). An upstream that never answers costs each query up to those 2 s until three timeouts in a row bench it (in a group of one: the first three queries when they come one after another; every query started in the 2 s before those timeouts land waits the full 2 s), and then up to its `timeout_ms` for each query for as long as it still doesn't answer. Attempts still running when the client gets its answer finish in the background, each within its own timeout, so that their failures are counted: how many are in flight depends on the cache-miss rate and the 2 s budget. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. A SERVFAIL or REFUSED answer counts toward "more than half the time" but not toward "3 in a row", so a client retrying one broken domain can't bench a healthy upstream. A name an upstream takes longer than the 2 s to answer does count as a timeout, though: three of those in a row, with no other answer from it in between, bench even a healthy upstream for 10 seconds, and while it's benched, names it takes longer than its `timeout_ms` to look up get SERVFAIL until it's probed successfully. (Before 0.8.0 every attempt was cut at the shortest of `timeout_ms`, 3 × the upstream's usual time + 50 ms, and 1 s, often about 70 ms, so slower names counted the same way.) Identical concurrent questions share one upstream request.
+- **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. The last healthy upstream left to try (the only one, in a group of one) may wait for its answer for the rest of the query's 2 s (not just `timeout_ms`, 400 ms by default), so a name the upstream has to look up itself (often several hundred milliseconds) isn't cut short and answered SERVFAIL. With `strategy = "parallel"`, each healthy upstream asked at once may wait the same way, so the faster one's answer isn't thrown away. The price: one of them that stops answering is benched only after about 2 s (three timeouts) instead of almost at once, and until then a client whose other upstream answered SERVFAIL waits for it, up to the same 2 s (then up to its `timeout_ms`). An upstream that never answers costs each query up to those 2 s until three timeouts in a row bench it (in a group of one: the first three queries when they come one after another; every query started in the 2 s before those timeouts land waits the full 2 s), and then up to its `timeout_ms` for each query for as long as it still doesn't answer. Attempts still running when the client gets its answer finish in the background, each within its own timeout, so that their failures are counted: how many are in flight depends on the cache-miss rate and the 2 s budget. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again (by the next query, or on a node without queries by the next health check). A SERVFAIL or REFUSED answer counts toward "more than half the time" but not toward "3 in a row", so a client retrying one broken domain can't bench a healthy upstream. A name an upstream takes longer than the 2 s to answer does count as a timeout, though: three of those in a row, with no other answer from it in between, bench even a healthy upstream for 10 seconds, and while it's benched, names it takes longer than its `timeout_ms` to look up get SERVFAIL until it's probed successfully. (Before 0.8.0 every attempt was cut at the shortest of `timeout_ms`, 3 × the upstream's usual time + 50 ms, and 1 s, often about 70 ms, so slower names counted the same way.) Identical concurrent questions share one upstream request.
+- **When a shared request gets no answer,** every question waiting on it gets what a failure gets (a stale answer where one may be served, otherwise SERVFAIL). If one of them still has at least 100 ms left (its 2 s plus the 100 ms a client waits beyond it, counted from when it arrived), the request is tried once more within that time, and a question that arrives meanwhile gets that try's outcome. A request is never tried a third time.
 - **Serve-stale:** if upstreams don't answer within 1.8 s (`[cache] stale_answer_client_timeout_ms`) and an expired answer is still in the cache (up to a day old by default), it's served with TTL 30 and Extended DNS Error 3 ("Stale Answer"), while the refresh continues in the background.
 - **Answering recently expired names at once:** devices keep answers themselves, so most repeat questions reach the resolver just after the answer expired, and a plain cache misses them. With `stale_answer_client_timeout_ms = 0` an expired answer is given at once (TTL 30, EDE 3) while it's refreshed in the background, the way Pi-hole's cache optimizer works by default. `stale_max_age` bounds how old it may be (an hour matches Pi-hole), and `min_ttl` keeps short-lived answers a little longer (Technitium's default is 10 s):
   ```toml
@@ -786,7 +878,7 @@ flowchart LR
   These answers have the status `refreshed`, so `stale` keeps meaning "upstreams failed or were slow" (or the resolver was too busy to start the refresh). They cost about as much as a fresh cache hit. The trade-off is that a name whose address changed within the hour is answered once with the old address (for 30 s) while the new one is fetched. `[cache]` is per node: set it on every node of a cluster.
 - **What the dashboard counts:** the **Cache hits** tile is every answer given from the cache: fresh, `refreshed`, or `stale`, out of the answers that weren't blocked or local. In the Advanced view its second line splits it ("41% fresh · 22% refreshed") and the status chart shows `refreshed` on its own. The Cache page's "Answered from the cache" is the same number per node, with the fresh share beside it. Prometheus counts a refreshed or stale answer as a cache miss plus one `telltale_cache_stale_served_total`; the Grafana dashboard's **Answered from cache** panel shows both lines.
 - **Privacy:** queries to upstreams carry a fresh random ID and source port, and none of the client's EDNS options (no client subnet, cookies, or MAC addresses are forwarded).
-- **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to TelltaleDNS), it's dropped and an error is logged instead of looping forever.
+- **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to TelltaleDNS), it's dropped and an error is logged instead of looping forever. An upstream that drops queries carrying it can go without it: see [Forwarding loops](#forwarding-loops).
 
 ## Local records
 Names on your network, answered by TelltaleDNS itself (authoritatively, before cache and upstreams):
@@ -881,7 +973,7 @@ allow_link_local_urls = false           # true: allow list URLs on 169.254.0.0/1
 - List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
 - Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.
 - Adding, removing, or editing lists applies on reload (`SIGHUP`). `[filter]` changes need a restart.
-- To refresh every list now instead of waiting for `refresh_secs` (like `pihole -g`), send `SIGUSR1` (`kill -USR1 <pid>`, or `docker kill -s USR1 telltale`). Unchanged lists cost one conditional request each, and the filter is recompiled only if something changed.
+- To refresh every list now instead of waiting for `refresh_secs` (like `pihole -g`), send `SIGUSR1` (`kill -USR1 <pid>`, in Docker the same way as a [reload](#reload-in-docker), with `-USR1`). Unchanged lists cost one conditional request each, and the filter is recompiled only if something changed.
 
 Fetch now, outside the server (same config and data directory):
 ```sh
@@ -1241,6 +1333,49 @@ answer = "cdn.example.net"           # answered as a CNAME to that name, with it
 - An address rewrite answers the other address family and other record types with no data.
 - Blocks still win: a blocked name isn't rewritten. For a name everyone should get, use [local records](#local-records) instead.
 
+### Different answers per network (split horizon)
+The same name can get a different answer depending on the network a device is on: the LAN gets a server's LAN address, the VPN its VPN address. Three settings join up: a group per network ([`[[group]] networks`](#groups-for-your-networks-vlans)), the group's [rewrites](#rewrites) for single names and wildcards, and a [zone](#local-zones) that only some groups see (`[[zone]] groups`) for a whole domain of their own:
+```toml
+# A group per network: every device on it belongs to the group.
+[[group]]
+name = "lan"
+networks = ["192.168.2.0/24"]
+
+[[group.rewrite]]                    # belongs to the group above
+domain = "*.internal.example.org"    # every name under internal.example.org...
+answer = "192.168.2.177"             # ...answered with the reverse proxy's LAN address
+
+[[group]]
+name = "vpn"
+networks = ["10.10.0.0/24"]
+
+[[group.rewrite]]
+domain = "*.internal.example.org"
+answer = "10.10.0.132"               # the same names, the proxy's VPN address
+
+# A whole domain only the LAN sees: its records, and "no such name" for the rest.
+[[zone]]
+name = "lab.example.org"
+groups = ["lan"]
+
+[[zone.record]]
+name = "printer.lab.example.org"
+type = "A"
+value = "192.168.2.20"
+
+[[zone.record]]
+name = "_ipp._tcp.lab.example.org"
+type = "SRV"
+value = "0 5 631 printer.lab.example.org"
+```
+- **Devices on other networks** get the public answer for `internal.example.org` names, and resolve `lab.example.org` normally.
+- **A rewrite or a zone?** A rewrite answers with an address (A, or AAAA for an IPv6 address) or a CNAME, and leaves every other name to the upstreams. A zone holds any type local records support (A, AAAA, CNAME, PTR, TXT, MX, SRV), and answers "no such name" for names it doesn't have, so the groups that see it never send that domain to a public resolver.
+- **One domain for several networks, as a zone:** one `[[zone]]` with the same `name` per group, each with its own records. A zone without `groups` for the same domain answers everyone else (the groups' own zones are used first); without one, devices outside those groups resolve the domain normally. The same zone twice for the same groups is a configuration error.
+- **What answers first,** for one question: [local records](#local-records) (`[[record]]`, and names added in **Names on my network**), for every device; then the zones the device's groups see; then quick rules and blocking; then the rewrites of the device's highest-priority group. So don't also give a per-network name a local record, which every network would get, and remember that a blocked name isn't rewritten while a name in a zone is answered before blocking. A device in several groups sees the zones of all of them.
+- **Devices must reach TelltaleDNS with their own addresses** for their network to count: a VPN that is routed, not hidden behind one address, and no forwarder that rewrites the sender (see [Seeing real client IPs](#seeing-real-client-ips)).
+- **Check it** with `telltale explain nas.internal.example.org --client 10.10.0.5 -c telltale.toml`, or **Explain** in the UI, from an address on each network.
+- **Where they are set:** zones in the configuration file (or Git); rewrites there too, or through `PUT /api/v1/groups/{name}` (its body is the whole group, with the same fields as `[[group]]`, `networks` and `rewrite` included, and it replaces a file's group of that name). The UI doesn't edit either yet: the Groups page shows each group's rewrites, and **Names on my network** lists the zones and the groups that see them. File changes apply on reload (`SIGHUP`).
+
 ### DNS64
 For IPv6-only devices behind a NAT64 gateway: names without an IPv6 address get one made from their IPv4 address (RFC 6147), so the gateway can reach them.
 ```toml
@@ -1416,6 +1551,8 @@ Click a device's address anywhere (the dashboard's top clients, the query log, t
 
 Devices named this way are stored in `state.db` (next to users and the audit log) and merged with `[[client]]` entries from the config files. The files win: a device defined in a file is read-only in the UI, and the UI can't reuse its name. If a stored device stops being valid (say its group was removed from the file), TelltaleDNS logs why and runs with the file config alone until it's fixed. Operators and admins can name devices; viewers see the names.
 
+A change is checked against the configuration this node applies: its config files (on a primary promoted after a failover, the cluster version it continues from: see [Clusters](#clusters)), everything stored in the UI, and the change. One that would stop the stored devices from applying, such as a rename that keeps an address another device still has, is refused with the reason, and nothing is stored. A stored device that isn't in effect (the files have a device of its name, or the stored devices don't apply until something is fixed) can still be deleted, with `DELETE /api/v1/clients/{name}`, and one that a device of the files hides can be renamed to a free name and address; while the stored devices don't apply, a delete is the one change accepted that doesn't fix them, and its answer says what still stops them. The log says which rows those are: after the reasons (which give places in a list, such as `client[3]`), the line `ignoring config made in the UI until this is fixed` names the stored devices they point at, and a change refused meanwhile names them too, to whoever may read every device.
+
 **Recognize it by its MAC address, or by this address.** When the node knows the MAC address of the address you clicked (from your router, or from its own neighbor table), the dialog asks how to recognize the device:
 - **Its MAC address** follows the device when its address changes: its name, groups and rules stay with it, for as long as your router (or, for a MAC only this server sees, its neighbor table) keeps reporting that MAC at one address. A router's MAC is followed for IPv4 addresses only; a MAC that is shared by several addresses, or that changes, or a router that has gone silent, is not followed, and the device falls back to its address, network or `default`. The dialog offers a router's MAC only while that router has been read within the last 15 minutes: while a device is named by its MAC the router is read at least every 10 minutes, but before any device is named by a MAC, with `interval_secs` above 900, the first naming may have to wait for a fresh read (the dialog offers the address until then). The device is saved with the MAC address alone, not the address it has now: an address key would name whoever gets that address next. For a new device it is what the dialog starts with when the MAC comes from a router (every node that hears it can use it) and isn't shared.
 - **This address** stops matching if the device gets another address (a DHCP reservation in your router keeps it). It is what the dialog starts with for a device that already exists (re-saving it to change a group must not strip its address: the MAC is offered, not preselected), when only this node's own neighbor table knows the MAC (other servers in a cluster, or one in Docker or Kubernetes, won't recognize the device by it), or when the MAC is at more than one address (a range extender or bridge may share it, so it can't tell those devices apart: the router's list, or this server's neighbor table, says so). The dialog says which, and the MAC is still offered.
@@ -1436,7 +1573,7 @@ curl -X PUT 'https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=tr
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"match": ["192.168.1.42"], "groups": ["default"]}'   # what would change; nothing is saved
 ```
-Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours, and a retry sent while the first request is still running gets 409 with `Retry-After` (retry after it for the first answer) instead of making the change twice. At most 32 changes run at once; one more gets 503 with `Retry-After`. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
+Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours, and a retry sent while the first request is still running gets 409 with `Retry-After` (retry after it for the first answer) instead of making the change twice. A key belongs to whoever sent it: a person's sessions and API tokens share theirs, and an agent token has its own. At most 32 changes run at once; one more gets 503 with `Retry-After`. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
 
 ### What is this device?
 TelltaleDNS guesses what each address is, so a new one isn't just a number. It uses what it already sees:
@@ -1494,6 +1631,8 @@ The name the query log shows for a device nobody named here (for example `LGwebO
 A rule for an address stops matching when the address changes (a new lease, a phone's private Wi-Fi address). Two ways to keep it:
 - give the device a fixed address in your router (a DHCP reservation);
 - **name the device** (click its address, then **Name this device…**) and make the rule for the name. Naming recognizes the device by the address it has now, so the name alone doesn't survive an address change, unless you name it by its MAC address, which follows the device when your router or the neighbor table sees it (**Name this device…** offers it when it knows the MAC: see [Naming devices in the UI](#naming-devices-in-the-ui)). What the name saves otherwise is the rules: change the device's `match` list once (in the config file, or `PUT /api/v1/clients/{name}`) instead of every rule. A device recognized by its MAC address (`match = ["aa:bb:cc:dd:ee:ff"]`) keeps its rules when its address changes, where TelltaleDNS can see MAC addresses (see **How a query's device is recognized** under Groups and devices).
+
+In the **Why?** drawer, when the form holds an address and your router reports one MAC address for it (this node's router, or another full cluster member's), the form says so: name the device by its MAC address to make rules follow it. Its **Name this device…** opens the naming dialog with that MAC chosen, and once the device is named, the rule is for its name. There's no such hint for a MAC only this server's neighbor table holds (other servers, and a node in Docker or Kubernetes, don't see it), for a MAC reported at more than one address, or where the MAC isn't shown (query-log privacy level 2 and above).
 
 **Changing one:** press **Edit** on the rule. The form opens filled in, with the same preview as for a new rule, and **Save changes** replaces the rule under the same ID, so it applies on the next query. The rule keeps who made it and when (the audit log records who changed it, with the rule before and after). The end time stays as it was (**Keep the current end**) unless you pick a new duration, which counts from now. There is no Edit for rules in a config file (change the file), or for a rule made through the API for several devices or groups (use `PUT /api/v1/rules/{id}`).
 
@@ -1825,8 +1964,9 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   In `permissive` mode each bogus answer is also logged at INFO with its name, type, and
   EDE code (`DNSSEC: bogus answer served (permissive mode)`), so a trial shows which names
   `validate` would refuse.
-- **Indeterminate** (validation couldn't finish, such as the validator's depth limit): the
-  answer is fetched again without validation and served without AD, in both modes.
+- **Indeterminate** (validation couldn't finish, such as the validator's depth limit, or an
+  answer that doesn't reach its question, below): served without AD, in both modes; when
+  validation left nothing to serve, the answer is fetched again without validation.
 - **Unsigned zones:** before refusing an answer, TelltaleDNS proves whether its zone is
   simply unsigned, and if so serves it as insecure. The proof is the parent's signed denial
   of the zone's DS, made only of records of the parent zone (or of an unsigned top-level
@@ -1834,8 +1974,9 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   NS and neither SOA nor DS; or, in an NSEC3 Opt-Out zone such as `.com` or `.org`, the
   record of the name's parent (which must not itself be a delegation) and an Opt-Out record
   covering the name. This corrects the validation library's verdict on CNAME chains in
-  unsigned zones (`www.netflix.com`, `www.amazon.com`) and on names below parked domains
-  whose servers answer an SOA for every name (`www.smithsonianmag.org`). From v0.3.0 to
+  unsigned zones (`www.netflix.com`, `www.amazon.com`). Names below parked domains whose
+  servers answer an SOA for every name (`www.smithsonianmag.org`) were corrected the same
+  way; since hickory-net 0.26.4 the library judges them insecure itself. From v0.3.0 to
   v0.7.0 the proof didn't succeed under NSEC3 Opt-Out parents. Proven zones are remembered
   per upstream group, as long as the proof's records' TTL allows and at most 15 minutes
   (ADR-098, ADR-184). A name queried while TelltaleDNS hasn't cached its parent zone's keys
@@ -1847,6 +1988,9 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   at most 8 proofs run at once, and a name that couldn't be proven isn't tried again for a
   minute: when it can't be proven, the answer stays bogus (or, with no answer at all, stale
   or SERVFAIL as for any upstream failure).
+- **Memory:** each upstream group's validation cache keeps at most 8,192 record-set proofs,
+  about 13 MiB at most; the least recently used go first (ADR-196). A record set validated
+  again while its proof is still kept costs no key lookups.
 - **Denials behind a CNAME:** the validation library checks a "no such record" or "no such
   name" proof against the name that was asked, but after a CNAME the proof is about the chain's
   last name (`www.paypal.com AAAA`). Before refusing such an answer, TelltaleDNS validates it
@@ -1858,6 +2002,13 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   validations at once, within the same deadline. A link that doesn't validate, or gets no
   answer in time, leaves the answer bogus, and that question isn't validated this way again
   for a minute (ADR-188).
+- **Answers that reach their question:** an answer with records is secure only when it holds
+  the asked type at the name, or at the end of its CNAME chain, or a signed proof that that
+  name has none (for a CNAME, DS or ANY question: a CNAME, a DS or CNAME, or any record at the
+  name); otherwise it's served as it came, without AD, counted as indeterminate, and kept 300 s
+  at most (its answer records' TTLs are lowered to 300 s; `[cache] min_ttl` above that, or
+  serving stale answers, can keep it longer), in both modes. When validating link by link, a
+  last link that holds neither leaves the answer bogus (ADR-195).
 - **Wildcard answers:** every wildcard answer in a zone signed with NSEC is checked against
   RFC 4035 §5.3.4 before it is served: the zone's signed NSEC must show that no closer name
   exists, otherwise the answer is bogus and handled as any bogus answer (the unsigned-zone
@@ -1868,7 +2019,10 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   that isn't verified (during a key or algorithm rollover) is served without AD, as elsewhere.
   The check reads only the answer itself, on cache misses, in both modes. Zones signed with
   NSEC3 are left to the validation library: the check is skipped only beside a verified NSEC3
-  record of the zone that signed the answer (ADR-188).
+  record of the zone that signed the answer (ADR-188). In every zone, an answer with a record
+  of another name made from a wildcard is validated link by link, each name for its own
+  question; in a zone signed with NSEC3, a wildcard's record set at the name needs the zone's
+  NSEC3 record covering its own next closer name, otherwise the answer is bogus (ADR-195).
 - **Before switching to `validate`:** run `permissive` for a while and read the log; only
   names that are really broken (like `dnssec-failed.org`) should show up.
 - **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `telltale_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
@@ -2078,7 +2232,15 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
 - **What happens:**
   - the node takes a new *epoch* and continues from the last version it applied;
   - every node follows it;
-  - an old primary that comes back steps down by itself when it sees the newer epoch.
+  - an old primary that comes back steps down by itself when it sees the newer epoch;
+  - for changes made in the UI or the API, the version it continues from counts as its config
+    files: its devices, local names, forwarded domains and quick rules are read-only there (409),
+    and every change is checked against that version plus what the UI stored, and refused with
+    the reason when the result wouldn't apply (a renamed device that keeps an address the version
+    still gives another device, say). A device stored on this node before (made in the UI while it
+    was primary earlier) that the version also has isn't in effect, the version's is:
+    `DELETE /api/v1/clients/{name}` removes the stored copy, or rename it to a free name and
+    address to keep it as a device of its own.
 - **Changes the old primary made in the meantime aren't applied anywhere.** They're listed under
   **Conflicts** on that node's Cluster page, with the settings they touched, so you can make them
   again on the current primary.
@@ -2926,12 +3088,18 @@ Main metrics:
 | `telltale_list_entries{list}`, `telltale_list_regex_skipped{list}`, `telltale_filter_*` | list sizes, regex rules a list ships that the snapshot leaves out (over `max_regexes`), snapshot version, rule count, compile time, and `telltale_filter_lookup_mode{mode="indexed"|"walk"}` (1 for the lookup in use; `walk` is the slower fallback when a snapshot has more distinct list combinations than the index holds, 65,536, which is also logged as a warning) |
 | `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
 | `telltale_udp_*`, `telltale_tcp_*` | listener counters |
+| `telltale_proxy_protocol_rejected_total`, `telltale_proxy_protocol_no_address_total{kind}` | `tcp`, `dot`, and `doh` listeners with `proxy_protocol = true`: connections closed for a missing or malformed PROXY header, and connections whose header named no client address (`kind` = `local`, `unspec`, `unix`), which keep the socket address |
+| `telltale_doh_forwarded_refused_total{reason}` | `doh` listeners with `trusted_proxies` or `x_forwarded_for` ([Behind a reverse proxy](#behind-a-reverse-proxy)): connections from an address `trusted_proxies` doesn't list, closed at accept (`reason` = `unlisted_peer`), and PROXY headers or `X-Forwarded-For` headers that name no usable client, refused (`no_client_address`) |
 | `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |
 | `telltale_config_seq`, `telltale_annotations_total{kind}`, `telltale_annotation_write_failures_total` | the configuration sequence this node applied; [change markers](#change-markers) written, and those that couldn't be |
 | `telltale_process_starts_total`, `telltale_process_unclean_starts_total` | starts on this data directory, and those after a run that didn't stop cleanly (a crash, an OOM kill, a power cut); kept in `<data_dir>/runs.json`, so they count across restarts (a new pod with an empty volume starts from 1). Settings → System shows them too. |
 | `telltale_host_*`, `telltale_cgroup_*`, `telltale_data_*`, `telltale_open_fds` | the machine it runs on: see [Host resources](#host-resources) |
 
 Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory. The per-upstream, per-list, and per-client series are built by the analytics thread from query events, off the query path.
+
+The per-group series, `telltale_group_queries_total` and `telltale_blocked_total`, follow the group's name across a reload: a group you add starts at zero, the others keep their counts wherever the new configuration puts them, and a group you remove has its series end (renaming a group removes one name and adds another). Two limits: a few queries answered at the moment of the reload can count under the previous numbering; and with more than 64 groups, the 64th and later share one row, shown under the 64th group's name, so a reload that moves groups across that line can move a whole total to another name. The built-in live views (the per-second and per-minute counts by group and upstream, the traffic flows, and each group's top lists for the hour) are still counted by position: after a reload that renumbers the groups or upstreams they can disagree with `/metrics` until those minutes and hours age out, and the stored minute that spans the reload is kept under the new names.
+
+`telltale_upstream_duration_seconds` follows the upstream's name the same way. The router's own per-upstream counters (`telltale_upstream_requests_total` and the others) start again from zero when a reload rebuilds the router, and an upstream that keeps its name but changes protocol carries its history into its new `protocol` series.
 
 ### Traffic map
 **Monitor → Traffic map** answers "what is the network reaching right now?" in one picture, which suits a wall screen:
@@ -3364,6 +3532,7 @@ Rules watch:
 
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
 - A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.
+- **`upstream_down` follows the open state only:** while a benched upstream is probed again (by a query, or on a node without queries by a health check) it shows as half-open for that one attempt, so a check of the rules that lands then resolves the alert, and it fires again `for_secs` later if the upstream is still down.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`. `webhook` and `slack` send no token, so they don't read a `token_file`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
@@ -3402,17 +3571,27 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Query log | search by name (contains, exact, subdomains, wildcard, regex, or none of these), client, status, type, response code (each can be turned around: "not"), slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (Healthy, Benched, or Probing: the circuit breaker's closed, open, and half-open), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |
-| Settings | your password and two-factor sign-in, how domain names are drawn ([Domain icons](#domain-icons)), API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
+| Settings | your password and two-factor sign-in, how domain names are drawn ([Domain icons](#domain-icons)), testing a translation of the UI ([Language packs](#language-packs-for-translators)), API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Upstreams, lists, and groups can be added and changed on their pages ([Changing the configuration in the UI](#changing-the-configuration-in-the-ui)).
 
 The menu ends with the health icon ([Health](#health)), links to the project on GitHub and its site (plain links: the UI fetches nothing from the internet), then this node's name and version.
+
+The UI is in English. For developers, `?lang=en-XA` before the `#` (`http://<server>:8053/?lang=en-XA#/`) shows it with accented, longer text for that one page load, to find text that does not go through the translation layer; nothing is stored.
 
 ### Domain icons
 A small mark sits left of each name in the dashboard's **Top domains** and **Top blocked** lists and in the query log. The page draws it from data it already has, so nothing is fetched and nothing about your queries is sent to anyone: no favicon service is involved, and the page's content security policy still allows images only from itself.
 - A **brand** TelltaleDNS knows gets its colour and logo mark: `netflix.com`, `www.youtube.com`, and a CDN name such as `nflxso.net` (Netflix). About a hundred and twenty brands are known, from two packs: [Simple Icons](https://simpleicons.org) (CC0) first, and [Bootstrap Icons](https://icons.getbootstrap.com) (MIT) for the marks Simple Icons has dropped (Microsoft and Teams, Amazon, LinkedIn, Slack, OpenAI, Xbox, Bing, Skype, Windows, Nintendo); see the [third-party notices](third-party-notices.md). A few large companies' marks are in neither (Disney+, Hulu, Minecraft, Adobe, the BBC, Walmart, AWS): their names get a monogram.
 - Every other name gets a **monogram**: its owner's first letter, in a colour that is always the same for that owner. A name of your own network (`.arpa`, `.lan`, `.local`, Kubernetes) gets a small house. A blocked name's mark is drained of most of its colour. When a privacy level hides names, there are no icons.
 - **Settings → Account → Domain icons** picks the style (**Brand and monogram**, **Monogram only**, or **Off**) and the size (**Default**, 20 px, or **Small**, 16 px). The choice is kept for you in this browser. With **Monogram only** or **Off**, the brand marks aren't even downloaded.
+
+### Language packs (for translators)
+**Settings → Account → Test a language pack** (in the Advanced view) lets someone translating TelltaleDNS see their translation in this web UI before sending it to the project: type a language tag (`de`, `pt-BR`, `zh-Hant`), download the template (`<tag>.json`, every English text of this build) and the notes for translators, fill in the translations, choose the file, and the card checks it with the same rules the project's check applies: what breaks a rule (shown in English), what is missing, what is left over. **Use this pack…** then shows the UI in that language in this browser, and **Download for a pull request** gives the file in the exact form the project keeps. The project site's page [Write a language pack](https://paimonsoror.github.io/telltaledns/dev-languages.html) is the whole path, with examples, from the template to the pull request.
+- The file stays in this browser, for this TelltaleDNS address. Nothing about it is sent to TelltaleDNS, kept on a node, copied to other nodes, backed up or written to the audit log.
+- It is yours: it shows only while you are signed in. Someone else who signs in at the same browser sees their usual language, and a banner that says another user of this browser loaded a test pack.
+- It is removed at the next page load after any upgrade (of the web UI or the server, a rollback or a downgrade included; after an upgrade of the server alone, at the first page after you sign in), 7 days after you loaded it (sooner if this computer's clock is set back to before that time), when the copy kept in the browser can't be read, when it could not be checked twice in a row (an error in the check itself, not a finding about your file), when a page can't be drawn with it (the page then loads once more without it), or with **Remove** in the banner or the card. A tab left open never removes or replaces a pack you loaded in another tab since.
+- While it is in use, an English banner above every page names the file and its fingerprint. The sign-in, setup and two-factor screens stay in your usual language unless you choose **Show the test pack on this page** (one page load). When you sign out, or your session ends, the page reloads in your usual language (if you signed in with a sign-in provider, signing out takes you to the provider's sign-out first, and the page it sends you back to, or the one Back returns to, is in your usual language), and the pack is back when you sign in again. While a sign-out is still waiting for the server's answer, a sign-in page drawn meanwhile can show the pack's text until the answer comes, and a further click on **Sign out** waits for the same answer. `?lang=en` before the `#` shows real English for one page load.
+- A pack can make a label say something other than what a button does: load only a pack you made, or one from someone you trust, and load other people's packs only on a test installation.
 
 ### Health
 The icon at the bottom of the menu says how TelltaleDNS is doing, for every node of a cluster, and changes shape as well as color:
@@ -3437,7 +3616,7 @@ The Upstreams page (servers and upstream groups), the Lists page, and the Groups
 | overrides the file | the UI's version replaces the file's entry of that name; **Revert to the file** brings the file's version back |
 | hidden | the file's entry is left out; **Revert to the file** brings it back |
 
-Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. For upstreams and lists, **Test it** also tries the draft from this node: an upstream is asked for the root's NS records (it shows the answer and the time, or the error: a bad URL, a TLS name that doesn't match, a timeout), and a list is downloaded and parsed (how many rules, and the first lines it can't use). The API calls are `POST /api/v1/checks/upstream` and `POST /api/v1/checks/list`, with the same body as saving; agents use the MCP tools `check_upstream` and `check_list`. An agent's list check says how many lines couldn't be used and why, but not their text, since that is whatever the URL served; people see the lines in the UI. When a TLS file an upstream draft names (`tls_ca`, `tls_client_cert`, `tls_client_key`) can't be used, an administrator is told why and anyone else only that it couldn't be, not what the file holds or why (the node's log has the detail). A valid certificate file builds, so the check then answers as for any upstream. A change that would leave the configuration invalid is refused with the reason. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
+Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. For upstreams and lists, **Test it** also tries the draft from this node: an upstream is asked for the root's NS records (it shows the answer and the time, or the error: a bad URL, a TLS name that doesn't match, a timeout), and a list is downloaded and parsed (how many rules, and the first lines it can't use). The API calls are `POST /api/v1/checks/upstream` and `POST /api/v1/checks/list`, with the same body as saving; agents use the MCP tools `check_upstream` and `check_list`. An agent's list check says how many lines couldn't be used and why, but not their text, since that is whatever the URL served; people see the lines in the UI. When a TLS file an upstream draft names (`tls_ca`, `tls_client_cert`, `tls_client_key`) can't be used, an administrator is told why and anyone else only that it couldn't be, not what the file holds or why (the node's log has the detail). A valid certificate file builds, so the check then answers as for any upstream. A change that would leave the configuration invalid is refused with the reason, and nothing is saved: it is checked against the configuration this node applies, its config files (on a primary promoted after a failover, the cluster version it continues from) plus everything made in the UI, with the change. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
 
 Changes are stored in `state.db`, next to named devices and local names. **The config files are never rewritten**: what's in the files stays as written, and `telltale config check` on the files alone still shows the file configuration. Simple view shows the common fields; switch to Advanced for timeouts, TLS names, refresh intervals, blocked-answer modes, priorities, and colors.
 
@@ -3524,6 +3703,11 @@ The default is `analytics:read` and `config:read`: read-only, without the query 
 **What an agent can't do:**
 - Anything not listed above is refused. That covers users, tokens, passwords, backups, and the audit log.
 - With `group`, it sees and changes only that group's devices and queries, and other views are refused.
+- An agent limited to a group, or without `querylog:read`, doesn't get what it couldn't read otherwise:
+  - Deleting a copy stored in the UI that isn't in effect (a device of the config files, or of the cluster version a promoted primary builds on, has its name, or the devices made in the UI don't apply) answers that copy by its name only; the audit log keeps it whole.
+  - A refused device change whose reasons can name devices it can't read says, instead of them, that the change conflicts with another device, which the answer doesn't name (the hint says what to do), or that the devices made through the API don't apply now; an operator sees why when making the change in the UI.
+  - A delete it makes while the devices made through the API don't apply says that, without the reasons.
+  - On a pinned cluster, a change it sends is refused with the pin and the sections it holds back, without the diff.
 
 **Every change from an agent:**
 - needs an `X-Telltale-Reason` header (refused with 400 without one);
@@ -3764,7 +3948,7 @@ tls = { self_signed = true }                 # a certificate made on first start
 [api]
 trusted_proxies = ["10.42.0.5/32"]   # your ingress controller's address
 ```
-The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) counts for that header without being listed, but not for `X-Forwarded-For`: to have the client address from it, list `127.0.0.1/32`. List only the proxies themselves, never your LAN, or any machine on it can forge the header. How this matters for break-glass sign-in is under **Break-glass sign-in** above.
+The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) counts for that header without being listed, but not for `X-Forwarded-For`: to have the client address from it, list `127.0.0.1/32`. List only the proxies themselves, never your LAN, or any machine on it can forge the header. The client is the rightmost `X-Forwarded-For` entry that isn't a listed proxy. An entry that isn't a bare IPv4 or IPv6 address (one with a port, in brackets, a word such as `unknown`, an empty entry, or one that isn't text) stops the search there, and the client is then the address the request came from, the proxy's: make the proxy write bare addresses. How this matters for break-glass sign-in is under **Break-glass sign-in** above.
 
 **Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 
@@ -3779,11 +3963,22 @@ curl -s -H "Authorization: Bearer $TOKEN" http://dns.lan:8053/api/v1/audit/verif
 Keep the `head` hash somewhere else from time to time: a later `verify` with a different head and fewer entries means entries were removed from the end.
 
 ## Reload without restarting
-Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`). A `SIGHUP` sent while the node is still starting is kept, and the reload runs once it is up:
+Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`; with Docker see [Reload in Docker](#reload-in-docker)). A `SIGHUP` sent while the node is still starting is kept, and the reload runs once it is up:
 - The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.
-- Applied immediately, with no dropped queries: upstreams, groups, routes, local records and hosts files, `[access]`, `[ratelimit]`, `[special]`, and `[[listen]]` (new listeners are bound before removed ones are closed).
+- Applied immediately, with no dropped queries: upstreams, groups, routes, local records and hosts files, `[access]`, `[ratelimit]`, `[special]`, and `[[listen]]` (new listeners are bound before removed ones are closed, so a listener other than plain UDP (tcp, dot, doh, doq, doh3) that moves between the wildcard address and one address on the same port needs a restart; see "Port 53 already in use").
 - Applied at the next restart (a warning names them): `[cache]`, `[telemetry]`, `[node]`. The cache is kept across reloads, so warm answers aren't lost.
 - Upstream health starts fresh after a reload and is re-learned within a few queries.
+
+### Reload in Docker
+Signal the process from the host (Linux):
+```sh
+sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' telltale)"
+# with Compose, in the folder of compose.yaml:
+sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' $(docker compose ps -q telltale))"
+```
+The template prints the process ID only when there is one. For a container that is stopped, not started yet, or restarting, it prints nothing, and `kill` fails without signaling anything: a container that is restarting has nothing to reload yet, and reads the file when it starts.
+
+**Not `docker kill -s HUP` or `docker compose kill -s HUP`:** Docker marks a container signaled that way as manually stopped, whatever the signal. It keeps running, but with `restart: unless-stopped` Docker then doesn't start it after a reboot, a Docker restart, or a crash. To see whether that has happened (as root): `grep -o '"HasBeenManuallyStopped":[a-z]*' /var/lib/docker/containers/$(docker inspect -f '{{.Id}}' telltale)/config.v2.json`. `docker restart telltale` (or stopping and starting it) clears the mark. Where the host can't signal the process (Docker Desktop), use `docker restart telltale`: that is a restart, not a reload, so the node stops answering while it restarts.
 
 ## Stop
 `SIGTERM` or `SIGINT` (Ctrl-C) shuts down gracefully, also when it arrives while the node is still starting (it is kept, and the shutdown below runs once the node is up). A stop during a cluster join ends the join and stops the node at once (exit 0): it isn't ready yet, so there is nothing to drain. Otherwise:

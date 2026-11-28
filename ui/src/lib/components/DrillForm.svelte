@@ -5,6 +5,9 @@
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  import { tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t } = tr('drillForm');
 
   let {
     node,
@@ -20,11 +23,11 @@
   } = $props();
 
   const presets: [string, number][] = [
-    ['15 s', 15],
-    ['30 s', 30],
-    ['1 min', 60],
-    ['2 min', 120],
-    ['5 min', 300],
+    [t('15 s'), 15],
+    [t('30 s'), 30],
+    [t('1 min'), 60],
+    [t('2 min'), 120],
+    [t('5 min'), 300],
   ];
   let secs = $state(30);
   let who = $state<'all' | 'group' | 'clients'>('clients');
@@ -75,40 +78,41 @@
   }
 </script>
 
-<div class="notice drill-form" role="dialog" aria-label={`Failover drill on ${label}`} data-testid="drill-form">
+<div class="notice drill-form" role="dialog" aria-label={t('Failover drill on {label}', { label })} data-testid="drill-form">
   <p>
-    <strong>Run a failover drill on {label}?</strong> For a short time it stops answering the devices you choose, while the
-    other nodes keep serving. Devices with a working second DNS server switch to it; a report then shows who followed and who
-    was stuck.<HelpButton id="failover-drill" />
+    <T
+      ctx="drillForm"
+      msg={'<strong>Run a failover drill on {label}?</strong> For a short time it stops answering the devices you choose, while the other nodes keep serving. Devices with a working second DNS server switch to it; a report then shows who followed and who was stuck.'}
+      params={{ label }}>{#snippet strong(text: string)}<strong>{text}</strong>{/snippet}</T
+    ><HelpButton id="failover-drill" />
   </p>
-  <div class="row presets" role="radiogroup" aria-label="How long">
+  <div class="row presets" role="radiogroup" aria-label={t('How long')}>
     {#each presets as [text, s] (s)}
       <label class="seg-item"><input type="radio" name="drill-for" value={s} bind:group={secs} /> {text}</label>
     {/each}
   </div>
-  <div class="row presets" role="radiogroup" aria-label="Whom">
-    <label class="seg-item"><input type="radio" name="drill-who" value="clients" bind:group={who} /> some devices</label>
-    <label class="seg-item"><input type="radio" name="drill-who" value="group" bind:group={who} /> a group</label>
-    <label class="seg-item"><input type="radio" name="drill-who" value="all" bind:group={who} /> everyone</label>
+  <div class="row presets" role="radiogroup" aria-label={t('Whom')}>
+    <label class="seg-item"><input type="radio" name="drill-who" value="clients" bind:group={who} /> {t('some devices')}</label>
+    <label class="seg-item"><input type="radio" name="drill-who" value="group" bind:group={who} /> {t('a group')}</label>
+    <label class="seg-item"><input type="radio" name="drill-who" value="all" bind:group={who} /> {t('everyone')}</label>
   </div>
   {#if who === 'clients'}
     <label class="field"
-      >Devices <input bind:value={clients} placeholder="192.168.1.20, laptop" data-testid="drill-clients" />
-      <span class="muted small">Addresses, device names, or Kubernetes workloads. Start with your own device.</span></label
+      >{t('Devices')} <input bind:value={clients} placeholder={t('192.168.1.20, laptop')} data-testid="drill-clients" />
+      <span class="muted small">{t('Addresses, device names, or Kubernetes workloads. Start with your own device.')}</span></label
     >
   {:else if who === 'group'}
     <label class="field"
-      >Group
+      >{t('Group')}
       <select bind:value={group} data-testid="drill-group">
-        <option value="">Choose…</option>
-        {#each groups as g (g)}<option value={g}>{g}</option>{/each}
+        <option value="">{t('Choose…')}</option>
+        {#each groups as g (g)}<option value={g} translate="no">{g}</option>{/each}
       </select></label
     >
   {/if}
-  <label class="field">Why <input bind:value={reason} maxlength="200" placeholder="does the second server work?" data-testid="drill-reason" /></label>
+  <label class="field">{t('Why')} <input bind:value={reason} maxlength="200" placeholder={t('does the second server work?')} data-testid="drill-reason" /></label>
   <label class="check"
-    ><input type="checkbox" bind:checked={refused} data-testid="drill-refused" /> Answer REFUSED at once instead of nothing (faster, less
-    realistic: some devices don't try their next server on REFUSED)</label
+    ><input type="checkbox" bind:checked={refused} data-testid="drill-refused" /> {t('Answer REFUSED at once instead of nothing (faster, less realistic: some devices don\'t try their next server on REFUSED)')}</label
   >
   {#if preview}
     <div class="preview" data-testid="drill-preview">
@@ -120,11 +124,15 @@
       </ul>
       {#if (preview.devices ?? []).length}
         <p class="small muted">
-          {preview.targetsResolved} of the {preview.baseline} devices that used this node in the last hour:
-          {(preview.devices ?? [])
-            .slice(0, 8)
-            .map((d) => d.name ?? d.client)
-            .join(', ')}{(preview.devices ?? []).length > 8 ? ', …' : ''}
+          {t('{n} of the {baseline} devices that used this node in the last hour: {devices}{more}', {
+            n: preview.targetsResolved,
+            baseline: preview.baseline,
+            devices: (preview.devices ?? [])
+              .slice(0, 8)
+              .map((d) => d.name ?? d.client)
+              .join(', '),
+            more: (preview.devices ?? []).length > 8 ? ', …' : '',
+          })}
         </p>
       {/if}
     </div>
@@ -132,11 +140,11 @@
   <ErrorNote {error} />
   <div class="row">
     {#if !preview}
-      <button class="primary" onclick={() => send(true)} disabled={busy || !valid} data-testid="drill-preview-button">{busy ? 'Checking…' : 'Preview'}</button>
+      <button class="primary" onclick={() => send(true)} disabled={busy || !valid} data-testid="drill-preview-button">{busy ? t('Checking…') : t('Preview')}</button>
     {:else}
-      <button class="primary" onclick={() => send(false)} disabled={busy || !ready} data-testid="drill-start">{busy ? 'Starting…' : 'Start drill'}</button>
+      <button class="primary" onclick={() => send(false)} disabled={busy || !ready} data-testid="drill-start">{busy ? t('Starting…') : t('Start drill')}</button>
     {/if}
-    <button onclick={onclose}>Cancel</button>
+    <button onclick={onclose}>{t('Cancel')}</button>
   </div>
 </div>
 

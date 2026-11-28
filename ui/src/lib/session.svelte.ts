@@ -1,6 +1,7 @@
 // Who is signed in. Loaded from GET /auth/status on start and after sign-in/out.
 
 import { api, setCsrf, whenSignedOut, type S } from './api';
+import { devpack } from './i18n/devpack';
 
 export const session = $state({
   loaded: false,
@@ -40,14 +41,29 @@ export function signedIn(r: S['LoginResponse']) {
   session.setupRequired = false;
 }
 
-export async function signOut() {
+let out: Promise<void> | undefined;
+
+/** REQ: API-013 (ADR-190) — one sign-out at a time: a call while one is under way (a second click before the answer)
+ * gets that one's promise and does nothing else, so it never undoes where the first one sends the page. */
+export function signOut() {
+  return (out ??= leave().finally(() => (out = undefined)));
+}
+
+async function leave() {
   let next: string | undefined;
+  // REQ: API-013 (ADR-190) — a sign-out under way: a test pack's code reloads no page until the answer says whether
+  // the page leaves for the provider.
+  devpack.leaving = true;
   try {
     // REQ: API-004 — OIDC sessions also sign out at the provider.
     next = (await api.logout())?.logoutUrl ?? undefined;
   } finally {
     setCsrf(undefined);
+    // Set before the user is cleared: a test pack's code never reloads a page that leaves for the provider, and
+    // reloads one now that it held back meanwhile.
+    devpack.leaving = !!next;
     session.user = null;
+    if (!next) devpack.settled?.();
   }
   if (next) location.href = next;
 }

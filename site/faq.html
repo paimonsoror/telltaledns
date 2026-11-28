@@ -19,6 +19,7 @@
   <p class="lede">Short answers, each with a link to the details. Missing yours? <a href="https://github.com/paimonsoror/telltaledns/issues">Open an issue</a> and it may end up here.</p>
   <ul class="toc">
     <li><a href="#fit">Is it right for me?</a></li>
+    <li><a href="#running">Installing and running</a></li>
     <li><a href="#resolving">Resolving names</a></li>
     <li><a href="#blocking">Blocking</a></li>
     <li><a href="#devices">Devices and encrypted DNS</a></li>
@@ -69,6 +70,39 @@
   </dl>
 </section>
 
+<section id="running">
+  <h2>Installing and running</h2>
+  <dl class="faq">
+    <dt id="q-router">Can it run on my router or firewall?</dt>
+    <dd>
+      <p><b>OpenWrt:</b> yes, on a router with a 64-bit x86 processor, a 64-bit ARM one, or an ARMv7 one with a hardware floating-point unit. TelltaleDNS is one static binary for each of those, so there are no libraries to install; routers with MIPS processors, or with older ARM ones, are out of reach for now. Check what the router has to spare:</p>
+      <ul>
+        <li><b>Storage:</b> about 30 MB for the binary, plus room for its data. The query log keeps up to 2 GiB by default, so keep it small (<code>[telemetry.qlog] retention_bytes = "64MiB"</code>, say) or put the data folder on a USB drive. Either way, set <code>[node] data_dir</code> on purpose, to a folder on the USB drive or on the router's flash: the default, <code>/var/lib/telltale</code>, is in memory on OpenWrt (<code>/var</code> is part of <code>/tmp</code> there), so a reboot would lose everything in it, from users and devices named in the web UI to the compiled lists and the query log.</li>
+        <li><b>Memory:</b> it idles at about 14 MiB, but compiling the blocklists briefly needs much more than serving them: about 110 MiB for three common lists (430,000 names), and leave 256 MiB or more for a million names. On a router with too little memory, the system can kill the process mid-compile, and DNS stops with it.</li>
+        <li><b>The WAN side:</b> TelltaleDNS listens on every address by default, and on a router that includes the WAN address. Keep ports 53, 8053, and 9153 closed on the WAN side (OpenWrt's default firewall rejects connections from there), or listen on the LAN address only, for all three: <code>[[listen]]</code> for DNS, <code>[api] listen</code> for the web UI and API, and <code>[telemetry.metrics] listen</code> for the metrics (it serves <code>0.0.0.0:9153</code> by default).</li>
+        <li><b>Time zones:</b> a schedule that names a time zone (<code>tz = "Europe/Berlin"</code>) needs a time-zone database on the router (in <code>/usr/share/zoneinfo</code>, or the folder <code>TZDIR</code> names). Without one, the whole configuration is refused: TelltaleDNS doesn't start with it (on a reload, the previous configuration keeps serving), and on a router that hands out its own address for DNS, that means no DNS for the network. Install the router's time-zone data, or leave <code>tz</code> out: a schedule then uses the time zone in <code>TZ</code> or <code>/etc/localtime</code>, else UTC. <code>telltale config check</code> shows the problem before you start.</li>
+      </ul>
+      <p>There is no package, so it's set up by hand: copy the binary, add a start script and a <code>telltale.toml</code>. DHCP stays on the router's dnsmasq, with its DNS port turned off and the router's address handed out as the DNS server, so TelltaleDNS answers on port 53. This setup is community-supported: the project doesn't test it on routers, and notes from people who run it are welcome.</p>
+      <p><b>OPNsense or pfSense:</b> run TelltaleDNS on a small Linux box or virtual machine beside the firewall, and hand out its address as the DNS server in the firewall's DHCP settings. With OPNsense, also add the firewall under <b>Clients → Discovered → Routers</b>, so devices keep the names from its leases; with pfSense, devices get their names from mDNS or from the names you give them. Both firewalls run on FreeBSD, and TelltaleDNS is built for Linux only. A FreeBSD build, or an OPNsense or pfSense package, isn't planned for now; it is on the list of possible future work. See <a href="#q-naming">how devices get their names</a>.</p>
+    </dd>
+
+    <dt id="q-port53">The container exits at start with "Address already in use". What now?</dt>
+    <dd>
+      <p>Another program already listens on port 53. TelltaleDNS listens on every address by default (<code>0.0.0.0</code> and <code>[::]</code>), and on Linux a program that listens on port 53 on just one address of the machine is enough to block that. The error names the listener and the port, and says on the same line what to do: <code>telltale: Udp 0.0.0.0:53: Address already in use (os error 98); another program on this machine already uses port 53 …</code></p>
+      <p>See which program it is, on the machine itself: <code>sudo ss -lunp 'sport = :53'</code> for UDP and <code>sudo ss -ltnp 'sport = :53'</code> for TCP. The usual ones are systemd-resolved's stub listener on <code>127.0.0.53</code>, <code>dnsmasq</code> (including the one libvirt starts for its virtual machine network, often on <code>192.168.122.1</code>), another resolver or ad blocker, and the built-in DNS service of a NAS or router. Stop it if TelltaleDNS replaces it. To run beside it with host networking (the Compose bundle) or a native install, listen on this machine's own address: put these in the <code>telltale.toml</code> that TelltaleDNS reads (the Compose bundle's file has them commented out), then start it again.</p>
+<pre><code>[[listen]]
+proto = "udp"
+addr = "192.168.1.2:53"   # this machine's LAN address
+
+[[listen]]
+proto = "tcp"
+addr = "192.168.1.2:53"</code></pre>
+      <p>Only the listed addresses answer then. The machine itself on <code>127.0.0.1</code>, and a device that reaches the machine on another of its addresses, such as a virtual machine network, get no answer, so list every address that should answer. The address must exist when TelltaleDNS starts (a static address, or a DHCP reservation in your router).</p>
+      <p>With published ports (<code>docker run -p</code>) instead of host networking, that address doesn't exist inside the container: leave <code>[[listen]]</code> as it is and publish on the one address instead, <code>-p 192.168.1.2:53:53/udp -p 192.168.1.2:53:53/tcp</code>. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#raspberry-pi-and-linux">Details</a>.</p>
+    </dd>
+  </dl>
+</section>
+
 <section id="resolving">
   <h2>Resolving names</h2>
   <dl class="faq">
@@ -93,8 +127,8 @@ members = ["recursive"]</code></pre>
 
     <dt id="q-zones">Can it serve my own names and zones?</dt>
     <dd>
-      <p>Yes, at two levels. <b>Local records</b> answer single names (A, AAAA, CNAME, PTR, TXT, MX, SRV, with wildcards), and PTR records for your A and AAAA records are made for you. <b>Local zones</b> make TelltaleDNS the authority for a whole domain, from an RFC 1035 zone file or written inline, and a zone can be limited to some groups for split-horizon DNS. Manage them in the web UI or the API, or import a zone export with <code>telltale import zone</code>.</p>
-      <p>It is built for home and office zones, not as a public authoritative server: there are no zone transfers or secondary zones. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#local-records">local records and zones</a>.</p>
+      <p>Yes, at two levels. <b>Local records</b> answer single names (A, AAAA, CNAME, PTR, TXT, MX, SRV, with wildcards), and PTR records for your A and AAAA records are made for you. <b>Local zones</b> make TelltaleDNS the authority for a whole domain, from an RFC 1035 zone file or written inline, and a zone can be limited to some groups for split-horizon DNS. Manage local records in the web UI or the API, or import a zone export with <code>telltale import zone</code>; zones are set in the configuration file, and the web UI lists them.</p>
+      <p>It is built for home and office zones, not as a public authoritative server: there are no zone transfers or secondary zones. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#local-records">local records and zones</a>, and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#different-answers-per-network-split-horizon">different answers per network</a>.</p>
     </dd>
 
     <dt id="q-ptr">How do reverse (PTR) lookups of my LAN addresses work?</dt>
@@ -222,7 +256,7 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-hang">What if the service says it's running but nothing answers?</dt>
     <dd>
-      <p>A built-in <b>watchdog</b> looks for exactly that. Every 5 seconds a thread of its own checks that the node can still run a task and that its own listener answers a probe question. If neither has worked for a minute, it writes a <b>dump</b> (which check failed, every thread and what it waits on, where each one is stuck, and the last log lines) under <code>&lt;data_dir&gt;/watchdog/</code> and ends the process, so systemd, Docker, or Kubernetes starts it again. That's a restart of a few seconds instead of an outage until someone notices. It has limits: it restarts a node at most six times an hour (after that a node that is still stuck stays stuck, and the watchdog says so in its dump and its log: <code>restart cap reached; not restarting</code>), it doesn't see a partial stall where one worker is blocked and the rest still run, and it takes about a minute to act.</p>
+      <p>A built-in <b>watchdog</b> looks for exactly that. Every 5 seconds a thread of its own checks that the node can still run a task and that its own listener answers a probe question. If either one hasn't worked for a minute (<code>[watchdog] stall_secs</code>, 60 seconds by default), it writes a <b>dump</b> (which check failed, every thread and what it waits on, where each one is stuck, and the last log lines) under <code>&lt;data_dir&gt;/watchdog/</code> and ends the process, so systemd, Docker, or Kubernetes starts it again. That's a restart of a few seconds instead of an outage until someone notices. It has limits: it restarts a node at most six times an hour (after that a node that is still stuck stays stuck, and the watchdog says so in its dump and its log: <code>restart cap reached; not restarting</code>), it doesn't see a partial stall where one worker is blocked and the rest still run, and it takes about a minute to act.</p>
       <p>The dump holds no client data. Every release publishes the matching debug file, so the stacks in it can be turned into function names. Attach the dump, or a support package (which includes it), to an issue. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#when-a-node-stops-answering-the-watchdog">Details</a>.</p>
     </dd>
 

@@ -2,13 +2,7 @@
   // T6.8 — a donut: the total in the middle, one rounded segment per part, and a breakdown
   // grid below (the grid is the accessible view: every number is there as text).
   import { num } from '../format';
-
-  export interface Part {
-    label: string;
-    value: number;
-    /** A CSS variable name (`--s-blocked`). */
-    color: string;
-  }
+  import { partKey, type Part } from '../donut';
 
   let { parts, center = 'total', format = num }: { parts: Part[]; center?: string; format?: (n: number) => string } = $props();
 
@@ -37,7 +31,7 @@
 <div class="donut">
   <svg viewBox="0 0 100 100" aria-hidden="true">
     <circle cx="50" cy="50" r={R} class="track" />
-    {#each arcs as a (a.label)}
+    {#each arcs as a (partKey(a))}
       <circle
         cx="50"
         cy="50"
@@ -53,7 +47,7 @@
     <text x="50" y="62" class="label">{center}</text>
   </svg>
   <ul class="breakdown">
-    {#each parts as p (p.label)}
+    {#each parts as p (partKey(p))}
       <li>
         <span class="dot" style:background={`var(${p.color})`}></span>
         <span class="name">{p.label}</span>

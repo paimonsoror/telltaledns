@@ -9,7 +9,9 @@
 pub mod doh;
 pub mod doh3;
 pub mod doq;
+pub mod forwarded;
 pub mod handler;
+mod log_line;
 pub mod neigh;
 pub mod peer_limit;
 pub mod proxy;

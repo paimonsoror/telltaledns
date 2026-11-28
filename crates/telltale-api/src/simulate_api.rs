@@ -91,6 +91,13 @@ pub(crate) async fn simulate(
     Ok(Json(s))
 }
 
+/// REQ: FLT-005, AGT-004 (GitHub issue #73) — whether `p` may read every device: a person, or an
+/// agent that may simulate (`querylog:read`, not limited to a group). A lookup over every device is
+/// like reading the query log, so the fuller hints go to such callers only.
+pub(crate) fn may_read_every_device(p: &crate::auth::Principal) -> bool {
+    p.agent.is_none() || agent_may_simulate(p, None).is_ok()
+}
+
 /// REQ: OBS-024, AGT-009 — what an agent sees of a simulation that couldn't download a list:
 /// that it couldn't, not why (the node would otherwise probe URLs on the agent's behalf).
 pub(crate) fn sanitize_problem(p: &crate::auth::Principal, mut e: Problem) -> Problem {
@@ -100,7 +107,7 @@ pub(crate) fn sanitize_problem(p: &crate::auth::Principal, mut e: Problem) -> Pr
     // shows the plain one; this node (the one that answers the caller) upgrades it for everyone but
     // an agent that may not simulate (no `querylog:read`, or limited to a group).
     if let Some(fuller) = e.fuller_hint.take()
-        && (p.agent.is_none() || agent_may_simulate(p, None).is_ok())
+        && may_read_every_device(p)
     {
         e.hint = Some(*fuller);
     }

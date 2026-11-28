@@ -282,7 +282,7 @@ totp_required_roles = ["admin"]
 session_ttl_hours = 168
 session_idle_hours = 24
 allow_insecure_basic = false</code></pre>
-  <div class="callout warn"><p><b>Behind a reverse proxy or ingress,</b> list the proxies, or everyone looks like the proxy and one person's failed sign-ins lock out everyone. The same list lets HTTP Basic work and marks the cookie <code>Secure</code> behind a TLS-terminating proxy. A proxy on the same host (<code>127.0.0.1</code>) counts for that header without being listed, but not for <code>X-Forwarded-For</code>: to have the client address from it, list <code>127.0.0.1/32</code>. List only the proxies themselves, never your LAN, or any machine on it can forge the header.</p></div>
+  <div class="callout warn"><p><b>Behind a reverse proxy or ingress,</b> list the proxies, or everyone looks like the proxy and one person's failed sign-ins lock out everyone. The same list lets HTTP Basic work and marks the cookie <code>Secure</code> behind a TLS-terminating proxy. A proxy on the same host (<code>127.0.0.1</code>) counts for that header without being listed, but not for <code>X-Forwarded-For</code>: to have the client address from it, list <code>127.0.0.1/32</code>. List only the proxies themselves, never your LAN, or any machine on it can forge the header. An <code>X-Forwarded-For</code> entry that isn't a bare address (with a port, in brackets, <code>unknown</code>, empty, or not text) stops the search for the client at the proxy's own address, so make the proxy write bare addresses.</p></div>
 <pre><code>[api]
 trusted_proxies = ["10.42.0.5/32"]   # your ingress controller's address</code></pre>
 </section>

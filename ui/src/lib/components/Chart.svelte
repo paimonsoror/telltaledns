@@ -3,9 +3,13 @@
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
   import { onDestroy, untrack } from 'svelte';
-  import { clock, num } from '../format';
+  import { clock, monthDay, num } from '../format';
   import type { Marker } from '../annotations.svelte';
-  import { visibleMarkers } from '../markers';
+  import { markerColumns, visibleMarkers, type MarkerColumn } from '../markers';
+  import { tr } from '../i18n';
+  // REQ: API-012 — a series' label is shown as given (the caller's text), never a key: the table
+  // keys its columns by place, so two labels that read alike in a language cannot collide.
+  const { t: tx } = tr('chart');
 
   export interface Series {
     label: string;
@@ -42,9 +46,8 @@
   // REQ: OBS-033 — markers sit over the plot as small buttons (keyboard and screen readers
   // reach them; the canvas stays untouched). Past 40 in view, those within 8 px share one, with
   // a count.
-  const MAX_SINGLE = 40;
   let wrap = $state<HTMLDivElement | undefined>();
-  let placed = $state<{ x: number; marks: Marker[] }[]>([]);
+  let placed = $state<MarkerColumn<Marker>[]>([]);
   let box = $state({ left: 0, top: 0, width: 0, height: 0 });
   let tip = $state<{ x: number; marks: Marker[] } | null>(null);
 
@@ -63,16 +66,7 @@
     // turned has no bucket yet; GitHub issue #39).
     const step = times.length > 1 ? times[times.length - 1] - times[times.length - 2] : 60;
     const shown = visibleMarkers(markers, min, max + step, Date.now() / 1000);
-    const col = shown.length > MAX_SINGLE ? 8 : 1;
-    const cols = new Map<number, { x: number; marks: Marker[] }>();
-    for (const m of shown) {
-      const x = Math.min(u.valToPos(Math.min(m.time, max), 'x'), o.width - 1);
-      const k = Math.round(x / col);
-      const c = cols.get(k);
-      if (c) c.marks.push(m);
-      else cols.set(k, { x: Math.round(x), marks: [m] });
-    }
-    placed = [...cols.values()].sort((a, b) => a.x - b.x);
+    placed = markerColumns(shown, (m) => Math.min(u.valToPos(Math.min(m.time, max), 'x'), o.width - 1));
   }
 
   const markLabel = (marks: Marker[]) =>
@@ -152,7 +146,7 @@
     late.setHours(22, 22, 22, 0);
     // In legend order (after the stacked reverse).
     legendChars = [
-      Math.max('total'.length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
+      Math.max(tx('total').length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
       ...order.map((i) => format(series[i].values.reduce((a, v) => a + (v ?? 0), 0)).length),
     ];
     const opts: uPlot.Options = {
@@ -180,7 +174,7 @@
           values: (_u, vals) =>
             vals.map((v) =>
               times.length > 1 && times[times.length - 1] - times[0] > 172_800
-                ? new Date(v * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                ? monthDay(v)
                 : clock(v, seconds && times[times.length - 1] - times[0] < 180),
             ),
         },
@@ -193,7 +187,7 @@
         },
       ],
       series: [
-        { value: (_u, v) => (v == null ? 'total' : clock(v, true)) },
+        { label: tx('Time'), value: (_u, v) => (v == null ? tx('total') : clock(v, true)) },
         ...order.map((i) => {
           const c = color(series[i].color);
           return {
@@ -238,25 +232,25 @@
   <div class="card-head">
     <h2>{title}</h2>
     <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>
-      {showTable ? 'Chart' : 'Table'}
+      {showTable ? tx('Chart') : tx('Table')}
     </button>
   </div>
   {#if times.length === 0}
-    <p class="empty">No data yet.</p>
+    <p class="empty">{tx('No data yet.')}</p>
   {:else if showTable}
     <div class="table-wrap table-view">
       <table>
         <thead>
           <tr>
-            <th>Time</th>
-            {#each series as s (s.label)}<th class="num">{s.label}</th>{/each}
+            <th>{tx('Time')}</th>
+            {#each series as s}<th class="num">{s.label}</th>{/each}
           </tr>
         </thead>
         <tbody>
           {#each times as t, i (t)}
             <tr>
               <td>{clock(t, seconds)}</td>
-              {#each series as s (s.label)}<td class="num">{format(s.values[i] ?? 0)}</td>{/each}
+              {#each series as s}<td class="num">{format(s.values[i] ?? 0)}</td>{/each}
             </tr>
           {/each}
         </tbody>
@@ -264,7 +258,7 @@
       {#if inRange.length}
         <!-- REQ: OBS-033 — the markers in this range, as rows. -->
         <table class="compact changes-table">
-          <thead><tr><th>Changed</th><th>What</th></tr></thead>
+          <thead><tr><th>{tx('Changed')}</th><th>{tx('What')}</th></tr></thead>
           <tbody>
             {#each inRange as m, i (i)}
               <tr><td>{clock(m.time)}</td><td>{m.summary}{#if m.actor} · {m.actor}{/if}{#if m.nodes.length} · {m.nodes.join(', ')}{/if}</td></tr>
@@ -285,7 +279,7 @@
         style:width={`${box.width}px`}
         style:height={`${box.height}px`}
       >
-        {#each placed as p (p.x)}
+        {#each placed as p (p.k)}
           <button
             type="button"
             class="mk"
@@ -293,6 +287,7 @@
             data-kind={p.marks[0].kind}
             style:left={`${p.x}px`}
             aria-label={markLabel(p.marks)}
+            translate="no"
             onmouseenter={() => (tip = p)}
             onmouseleave={() => (tip = null)}
             onfocus={() => (tip = p)}
@@ -312,7 +307,7 @@
                 {#if m.nodes.length}<span class="muted"> · {m.nodes.join(', ')}</span>{/if}
               </div>
             {/each}
-            {#if tip.marks.length > 5}<div class="muted">and {tip.marks.length - 5} more</div>{/if}
+            {#if tip.marks.length > 5}<div class="muted">{tx('and {n} more', { n: tip.marks.length - 5 })}</div>{/if}
           </div>
         {/if}
       </div>

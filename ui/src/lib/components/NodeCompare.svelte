@@ -1,10 +1,11 @@
 <script lang="ts" module>
+  // The windows' ids and what each asks the API for; the words shown for them are in the component.
   export const COMPARE_WINDOWS = [
-    { id: '1h', label: '1 h', from: '-1h' },
-    { id: '6h', label: '6 h', from: '-6h' },
-    { id: '24h', label: '24 h', from: '-24h' },
-    { id: '7d', label: '7 d', from: '-7d' },
-    { id: '30d', label: '30 d', from: '-30d' },
+    { id: '1h', from: '-1h' },
+    { id: '6h', from: '-6h' },
+    { id: '24h', from: '-24h' },
+    { id: '7d', from: '-7d' },
+    { id: '30d', from: '-30d' },
   ];
 </script>
 
@@ -14,10 +15,12 @@
   // outlined with its finding, a grey note where a node only looks worse on a smaller base, and
   // the same numbers as a table with their intervals. Phones show one metric at a time.
   import type { S } from '../api';
-  import { ms, num } from '../format';
+  import { ms, num, weekdayTime } from '../format';
   import { navigate } from '../router.svelte';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  import { tr } from '../i18n';
+  const { t } = tr('nodeCompare');
 
   let {
     data,
@@ -29,22 +32,25 @@
   type Key = 'qps' | 'servfailPct' | 'slowPct' | 'fromCachePct' | 'upstreamFailPct' | 'p50Us' | 'p99Us';
   type Node = S['NodeNumbers'];
   const METRICS: { key: Key; label: string; series?: keyof S['NodeSeries'] }[] = [
-    { key: 'qps', label: 'Queries/s', series: 'qps' },
-    { key: 'servfailPct', label: 'SERVFAIL', series: 'servfailPct' },
-    { key: 'slowPct', label: 'Slow', series: 'slowPct' },
-    { key: 'fromCachePct', label: 'From cache', series: 'fromCachePct' },
-    { key: 'upstreamFailPct', label: 'Upstream failures', series: 'upstreamFailPct' },
-    { key: 'p50Us', label: 'p50' },
-    { key: 'p99Us', label: 'p99', series: 'p99Us' },
+    { key: 'qps', label: t('Queries/s'), series: 'qps' },
+    { key: 'servfailPct', label: t('SERVFAIL'), series: 'servfailPct' },
+    { key: 'slowPct', label: t('Slow'), series: 'slowPct' },
+    { key: 'fromCachePct', label: t('From cache'), series: 'fromCachePct' },
+    { key: 'upstreamFailPct', label: t('Upstream failures'), series: 'upstreamFailPct' },
+    { key: 'p50Us', label: t('p50') },
+    { key: 'p99Us', label: t('p99'), series: 'p99Us' },
   ];
+  // The window buttons' words, by id.
+  const WINDOW_LABEL: Record<string, string> = { '1h': t('1 h'), '6h': t('6 h'), '24h': t('24 h'), '7d': t('7 d'), '30d': t('30 d') };
 
   let table = $state(false);
   let width = $state(0);
   const narrow = $derived(width > 0 && width < 560);
   let phoneMetric = $state<Key>('servfailPct');
 
-  const percent = (v: number | null | undefined) =>
-    v == null ? '–' : v >= 10 ? `${v.toFixed(1)} %` : v >= 0.1 ? `${v.toFixed(2)} %` : `${v.toFixed(3)} %`;
+  // A percentage: two decimals under 10, one from 10, three under 0.1; the unit is part of the message.
+  const digits = (v: number) => (v >= 10 ? v.toFixed(1) : v >= 0.1 ? v.toFixed(2) : v.toFixed(3));
+  const percent = (v: number | null | undefined) => (v == null ? '–' : t('{n} %', { n: digits(v) }));
   function value(n: Node, k: Key): string {
     if (k === 'qps') return n.qps < 10 ? n.qps.toFixed(2) : num(Math.round(n.qps));
     if (k === 'p50Us' || k === 'p99Us') return ms(n[k] == null ? null : (n[k] as number) / 1000);
@@ -52,7 +58,7 @@
   }
   function interval(n: Node, k: Key): string {
     const i = n.intervals[k];
-    return i ? `${percent(n[k] as number)} (${percent(i[0]).replace(' %', '')}–${percent(i[1])})` : value(n, k);
+    return i ? t('{value} ({low}–{high})', { value: percent(n[k] as number), low: i[0] == null ? '–' : digits(i[0]), high: percent(i[1]) }) : value(n, k);
   }
   const finding = (n: Node, k: Key) => data?.findings.find((f) => f.nodeId === n.nodeId && f.metric === k);
 
@@ -90,7 +96,6 @@
     });
     return d;
   }
-  const since = (t: string) => new Date(t).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
 
   // "Open in dashboard": the dashboard reads its scope from this key when it opens.
   function openDashboard(n: Node) {
@@ -106,37 +111,37 @@
 
 <section class="card" data-testid="compare" bind:clientWidth={width}>
   <div class="head">
-    <h2>Compare nodes<HelpButton id="cluster-compare" /></h2>
+    <h2>{t('Compare nodes')}<HelpButton id="cluster-compare" /></h2>
     <div class="controls">
-      <div class="seg" role="group" aria-label="Window">
+      <div class="seg" role="group" aria-label={t('Window')}>
         {#each COMPARE_WINDOWS as w (w.id)}
-          <button type="button" aria-pressed={win === w.id} onclick={() => onwindow(w.id)}>{w.label}</button>
+          <button type="button" aria-pressed={win === w.id} onclick={() => onwindow(w.id)}>{WINDOW_LABEL[w.id]}</button>
         {/each}
       </div>
-      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="compare-table-toggle" />Table</label></span>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="compare-table-toggle" />{t('Table')}</label></span>
     </div>
   </div>
   <ErrorNote {error} />
   {#if data}
     {#if data.missingNodes?.length}
-      <p class="muted small" data-testid="compare-missing">Not answering: {data.missingNodes.join(', ')}; the comparison covers the rest.</p>
+      <p class="muted small" data-testid="compare-missing">{t('Not answering: {nodes}; the comparison covers the rest.', { nodes: data.missingNodes.join(', ') })}</p>
     {/if}
     {#if data.nodes.length < 2}
-      <p class="muted" data-testid="compare-single">One node; nothing to compare.</p>
+      <p class="muted" data-testid="compare-single">{t('One node; nothing to compare.')}</p>
     {:else if table}
       <div class="scroll">
         <table data-testid="compare-table">
           <thead>
             <tr>
-              <th>Node</th>
-              <th class="num">Answered</th>
+              <th>{t('Node')}</th>
+              <th class="num">{t('Answered')}</th>
               {#each METRICS as m (m.key)}<th class="num">{m.label}</th>{/each}
             </tr>
           </thead>
           <tbody>
             {#each data.nodes as n (n.nodeId)}
               <tr>
-                <td>{n.label}{#if n.thisNode} <span class="muted small">(this node)</span>{/if}</td>
+                <td>{n.label}{#if n.thisNode} <span class="muted small">{t('(this node)')}</span>{/if}</td>
                 <td class="num">{num(n.answered)}</td>
                 {#each METRICS as m (m.key)}
                   <td class="num" class:odd={finding(n, m.key)?.level === 'odd'}>{interval(n, m.key)}</td>
@@ -146,10 +151,10 @@
           </tbody>
         </table>
       </div>
-      <p class="muted small">Percentages with their 95 % intervals: with few answers the interval is wide, and a high share means little.</p>
+      <p class="muted small">{t('Percentages with their 95 % intervals: with few answers the interval is wide, and a high share means little.')}</p>
     {:else}
       {#if narrow}
-        <label class="pill-field">Metric
+        <label class="pill-field">{t('Metric')}
           <select bind:value={phoneMetric} data-testid="compare-metric">
             {#each METRICS as m (m.key)}<option value={m.key}>{m.label}</option>{/each}
           </select>
@@ -160,8 +165,8 @@
           <div></div>
           {#each data.nodes as n (n.nodeId)}
             <div class="node">
-              <strong>{n.label}</strong>{#if n.thisNode} <span class="muted small">this node</span>{/if}
-              <button type="button" class="link small" onclick={() => openDashboard(n)}>Open in dashboard</button>
+              <strong>{n.label}</strong>{#if n.thisNode} <span class="muted small">{t('this node')}</span>{/if}
+              <button type="button" class="link small" onclick={() => openDashboard(n)}>{t('Open in dashboard')}</button>
             </div>
           {/each}
         {/if}
@@ -180,7 +185,7 @@
               {#if narrow}
                 <div class="node">
                   <strong>{n.label}</strong>
-                  <button type="button" class="link small" onclick={() => openDashboard(n)}>Open in dashboard</button>
+                  <button type="button" class="link small" onclick={() => openDashboard(n)}>{t('Open in dashboard')}</button>
                 </div>
               {/if}
               <div class="big">{value(n, m.key)}</div>
@@ -191,7 +196,7 @@
               {/if}
               {#if f}
                 <div class="finding small" class:note={f.level === 'note'} data-testid="compare-finding">
-                  {f.detail.replace(/, since .*$/, '')}{#if f.oddSince}, since {since(f.oddSince)}{/if}
+                  {f.detail.replace(/, since .*$/, '')}{#if f.oddSince}{t(', since {when}', { when: weekdayTime(f.oddSince) })}{/if}
                 </div>
               {/if}
             </div>
@@ -200,7 +205,7 @@
       </div>
     {/if}
     {#if data.partial}
-      <p class="muted small">Some answers have no latency counts (an older build's), so their p50 and p99 are missing.</p>
+      <p class="muted small">{t("Some answers have no latency counts (an older build's), so their p50 and p99 are missing.")}</p>
     {/if}
   {/if}
 </section>

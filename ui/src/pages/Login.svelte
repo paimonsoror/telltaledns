@@ -5,6 +5,8 @@
   import { route } from '../lib/router.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import AuthShell from './AuthShell.svelte';
+  import { tr } from '../lib/i18n';
+  const { t } = tr('login');
 
   let username = $state('');
   let password = $state('');
@@ -47,48 +49,48 @@
   }
 </script>
 
-<AuthShell title="Sign in">
+<AuthShell title={t('Sign in')}>
   {#if loginError}
     <div class="notice bad provider-error" role="alert">{loginError}</div>
   {/if}
   {#if session.oidc.length}
     <div class="providers">
       {#each session.oidc as p (p.id)}
-        <a class="btn provider" href={startUrl(p.id)}>Sign in with {p.name}</a>
+        <a class="btn provider" href={startUrl(p.id)}>{t('Sign in with {name}', { name: p.name })}</a>
       {/each}
     </div>
     <!-- REQ: API-004 (ADR-175) — with password sign-in limited to admins on trusted networks, say what the form is. -->
-    {#if session.localLogin}<div class="or muted small">{session.passwordLoginRestricted ? 'or, as an admin on a trusted network, with a password' : 'or with a password'}</div>{/if}
+    {#if session.localLogin}<div class="or muted small">{session.passwordLoginRestricted ? t('or, as an admin on a trusted network, with a password') : t('or with a password')}</div>{/if}
   {/if}
   {#if !session.localLogin}
-    <p class="muted small">Password sign-in is turned off on this server.</p>
+    <p class="muted small">{t('Password sign-in is turned off on this server.')}</p>
   {:else}
   <form class="stack" onsubmit={submit}>
     {#if !needCode}
-      <label class="field">Username
+      <label class="field">{t('Username')}
         <input name="username" autocomplete="username" required bind:value={username} />
       </label>
-      <label class="field">Password
+      <label class="field">{t('Password')}
         <input name="password" type="password" autocomplete="current-password" required bind:value={password} />
       </label>
     {:else if !useRecovery}
-      <p class="muted">Enter the 6-digit code from your authenticator app.</p>
+      <p class="muted">{t('Enter the 6-digit code from your authenticator app.')}</p>
       <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
-      <label class="field">Code
-        <input name="totp" title="6 digits" inputmode="numeric" autocomplete="one-time-code" pattern={'[0-9]{6}'} maxlength="6" required bind:value={totp} />
+      <label class="field">{t('Code')}
+        <input name="totp" title={t('6 digits')} inputmode="numeric" autocomplete="one-time-code" pattern={'[0-9]{6}'} maxlength="6" required bind:value={totp} />
       </label>
-      <button type="button" class="link" onclick={() => (useRecovery = true)}>Use a recovery code instead</button>
+      <button type="button" class="link" onclick={() => (useRecovery = true)}>{t('Use a recovery code instead')}</button>
     {:else}
-      <label class="field">Recovery code
-        <input name="recovery" autocomplete="off" required bind:value={recovery} placeholder="xxxxx-xxxxx" />
+      <label class="field">{t('Recovery code')}
+        <input name="recovery" autocomplete="off" required bind:value={recovery} placeholder={t('xxxxx-xxxxx')} />
       </label>
-      <button type="button" class="link" onclick={() => (useRecovery = false)}>Use the app code instead</button>
+      <button type="button" class="link" onclick={() => (useRecovery = false)}>{t('Use the app code instead')}</button>
     {/if}
     <ErrorNote {error} />
-    <button class="primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+    <button class="primary" type="submit" disabled={busy}>{busy ? t('Signing in…') : t('Sign in')}</button>
   </form>
   {#if session.passwordLoginRestricted}
-    <p class="muted small" data-testid="password-restricted">Password sign-in is limited to admins on trusted networks. Use it when your sign-in provider is down.</p>
+    <p class="muted small" data-testid="password-restricted">{t('Password sign-in is limited to admins on trusted networks. Use it when your sign-in provider is down.')}</p>
   {/if}
   {/if}
 </AuthShell>

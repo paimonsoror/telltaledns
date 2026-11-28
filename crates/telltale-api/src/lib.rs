@@ -1675,9 +1675,10 @@ async fn stats_timeseries(
 ///
 /// Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
 /// fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
-/// skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-/// connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
-/// applied on the server. In a browser:
+/// skipped (over `rate`, or this client fell behind). A comment comes as soon as the stream
+/// opens, so a browser reports it open at once, and again after 15 s without an event, to
+/// keep the connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`),
+/// are applied on the server. In a browser:
 /// `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
 /// in). Honors the query-log privacy level; at most 16 streams per node.
 #[utoipa::path(get, path = "/api/v1/queries/stream", tag = "queries", params(TailParams),
@@ -1691,6 +1692,7 @@ async fn queries_stream(
     Query(p): Query<TailParams>,
 ) -> Result<Response, Problem> {
     use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures_util::StreamExt as _;
     check_scope(p.scope.as_deref())?;
     if p.rate.is_some_and(|r| !(1..=2000).contains(&r)) {
         return Err(Problem::invalid("`rate`: 1 to 2000 events per second"));
@@ -1718,6 +1720,12 @@ async fn queries_stream(
         .unwrap_or_else(|_| Event::default().comment("encode error"));
         Some((Ok::<_, std::convert::Infallible>(event), rx))
     });
+    // Firefox fires `open` only once a byte arrives, and an idle log can stay silent until the
+    // 15 s keep-alive: say hello at once, so the Live view reads "streaming" in every browser.
+    let hello = futures_util::stream::once(async {
+        Ok::<_, std::convert::Infallible>(Event::default().comment("connected"))
+    });
+    let stream = hello.chain(stream);
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
         .into_response())

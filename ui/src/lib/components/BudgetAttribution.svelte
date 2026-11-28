@@ -4,12 +4,16 @@
   // upstream, status, and response code, and each node's own burn-down.
   import { api, type S } from '../api';
   import { href, navigate, route } from '../router.svelte';
-  import { num } from '../format';
+  import { logDate, num } from '../format';
   import { changes } from '../annotations.svelte';
   import Chart, { type Series } from './Chart.svelte';
   import BarList from './BarList.svelte';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  import { tr } from '../i18n';
+  import { objectiveTitle } from '../objectives';
+  import T from '../i18n/T.svelte';
+  const { t } = tr('budgetAttribution');
 
   const objective = $derived(route.params.get('objective') === 'latency' ? 'latency' : 'availability');
   let data = $state<S['SloAttribution'] | null>(null);
@@ -44,7 +48,7 @@
         for (const p of points) if (p.startUnixSeconds === t && (n === undefined || p.node === n)) spent += p.bad;
         return Math.round((100 - (spent * 100) / Math.max(1, allowed)) * 10) / 10;
       });
-      return { label: n ?? 'every node', color: colors[i % colors.length], values };
+      return { label: n ?? t('every node'), color: colors[i % colors.length], values };
     });
     return { times, series };
   }
@@ -65,69 +69,79 @@
   }
   const hidden = (w: string) => data?.coverage.hidden?.includes(w) ?? false;
   const nothing = $derived(data != null && data.budget.bad === 0);
-  const titles: Record<string, string> = { availability: 'Answers that work', latency: 'Answers that are quick' };
+  // REQ: API-012 — the summary is one sentence per variant (overspent, or the share left); the date
+  // through lib/format.ts (the browser's default locale, as before).
+  const sum = $derived(
+    data
+      ? { bad: num(data.budget.bad), answered: num(data.budget.answered), since: logDate(data.from), target: data.budget.targetPct, allowed: num(data.budget.allowedBad), left: data.budget.remainingPct }
+      : {},
+  );
 </script>
+
+{#snippet strong(x: string)}<strong>{x}</strong>{/snippet}
 
 <div class="budget-tab" data-testid="budget-attribution">
   <div class="row head">
-    <h2>Who spent the error budget?<HelpButton id="slo-attribution" /></h2>
+    <h2>{t('Who spent the error budget?')}<HelpButton id="slo-attribution" /></h2>
     <span class="spacer"></span>
-    <div class="seg" role="group" aria-label="Objective">
+    <div class="seg" role="group" aria-label={t('Objective')}>
       {#each ['availability', 'latency'] as o (o)}
-        <button aria-pressed={objective === o} onclick={() => navigate('/analyze', { tab: 'budget', objective: o })}>{titles[o]}</button>
+        <button aria-pressed={objective === o} onclick={() => navigate('/analyze', { tab: 'budget', objective: o })}>{objectiveTitle(o)}</button>
       {/each}
     </div>
   </div>
   <ErrorNote {error} />
   {#if !data}
-    <p class="empty">Loading…</p>
+    <p class="empty">{t('Loading…')}</p>
   {:else}
     <p class="small" data-testid="budget-summary">
-      <strong>{num(data.budget.bad)}</strong> bad of {num(data.budget.answered)} answers since {new Date(data.from).toLocaleDateString()};
-      the target ({data.budget.targetPct}%) allows {num(data.budget.allowedBad)}:
-      {#if data.budget.remainingPct < 0}<span class="bad-text">overspent</span>{:else}{data.budget.remainingPct}% of the budget left{/if}.
+      {#if data.budget.remainingPct < 0}
+        <T ctx="budgetAttribution" msg={'<strong>{bad}</strong> bad of {answered} answers since {since}; the target ({target}%) allows {allowed}: <span>overspent</span>.'} params={sum} {strong}
+          >{#snippet span(x: string)}<span class="bad-text">{x}</span>{/snippet}</T
+        >
+      {:else}
+        <T ctx="budgetAttribution" msg={'<strong>{bad}</strong> bad of {answered} answers since {since}; the target ({target}%) allows {allowed}: {left}% of the budget left.'} params={sum} {strong} />
+      {/if}
     </p>
     {#if data.note}<div class="notice small">{data.note}</div>{/if}
-    {#if data.missingNodes?.length}<div class="notice warn small">Without {data.missingNodes.join(', ')}: they didn't answer.</div>{/if}
+    {#if data.missingNodes?.length}<div class="notice warn small">{t("Without {nodes}: they didn't answer.", { nodes: data.missingNodes.join(', ') })}</div>{/if}
     {#if data.coverage.partialNodes?.length}
       <p class="muted small" data-testid="partial-nodes">
-        No client and name lists for part of the window from {data.coverage.partialNodes.join(', ')} (an older build, or a pod
-        counted from the minutes it shipped); their bad answers count everywhere else.
+        {t('No client and name lists for part of the window from {nodes} (an older build, or a pod counted from the minutes it shipped); their bad answers count everywhere else.', { nodes: data.coverage.partialNodes.join(', ') })}
       </p>
     {/if}
     {#if nothing}
-      <p class="empty" data-testid="budget-empty">Nothing spent this window.</p>
+      <p class="empty" data-testid="budget-empty">{t('Nothing spent this window.')}</p>
     {:else}
       {#if all}
-        <Chart title="Budget left (%)" times={all.times} series={all.series} height={200} markers={changes.markers} format={(n) => `${n}%`} />
+        <Chart title={t('Budget left (%)')} times={all.times} series={all.series} height={200} markers={changes.markers} format={(n) => `${n}%`} />
       {/if}
       {#if hidden('timeline_only')}
-        <p class="muted small">The privacy level keeps only the timeline: no breakdown by client, name, or anything else.</p>
+        <p class="muted small">{t('The privacy level keeps only the timeline: no breakdown by client, name, or anything else.')}</p>
       {:else}
         <div class="lists">
           {#if hidden('clients_hidden')}
-            <section class="card"><h3>Clients</h3><p class="muted small">Hidden by the privacy level.</p></section>
+            <section class="card"><h3>{t('Clients')}</h3><p class="muted small">{t('Hidden by the privacy level.')}</p></section>
           {:else}
-            <BarList title="Clients" testid="by-client" rows={data.byClient} link={(r) => logLink('client', r.key)} empty="No clients recorded." />
+            <BarList title={t('Clients')} testid="by-client" rows={data.byClient} link={(r) => logLink('client', r.key)} empty={t('No clients recorded.')} />
           {/if}
           <BarList
-            title={hidden('names_hidden') ? `Names (${data.byName.length}, hidden by the privacy level)` : 'Names'}
+            title={hidden('names_hidden') ? t('Names ({n}, hidden by the privacy level)', { n: data.byName.length }) : t('Names')}
             testid="by-name"
             rows={data.byName}
             link={hidden('names_hidden') ? undefined : (r) => logLink('name', r.key)}
-            empty="No names recorded."
+            empty={t('No names recorded.')}
           />
-          <BarList title="Upstreams" testid="by-upstream" rows={data.byUpstream} link={(r) => (r.key === 'none' ? undefined : href('/upstreams'))} />
-          <BarList title="Status" testid="by-status" rows={data.byStatus} />
-          <BarList title="Response code" testid="by-rcode" rows={data.byRcode} />
+          <BarList title={t('Upstreams')} testid="by-upstream" rows={data.byUpstream} link={(r) => (r.key === 'none' ? undefined : href('/upstreams'))} />
+          <BarList title={t('Status')} testid="by-status" rows={data.byStatus} />
+          <BarList title={t('Response code')} testid="by-rcode" rows={data.byRcode} />
         </div>
         <p class="muted small">
-          Clients and names are approximate top lists (each count may be up to its ± over); the other lists are exact. Links open the
-          query log, which keeps fewer days than the budget's window.
+          {t('Clients and names are approximate top lists (each count may be up to its ± over); the other lists are exact. Links open the query log, which keeps fewer days than the budget\'s window.')}
         </p>
       {/if}
       {#if perNode.length}
-        <h3>By node</h3>
+        <h3>{t('By node')}</h3>
         <div class="nodes">
           {#each perNode as n (n.node)}
             <Chart title={n.node} times={n.times} series={n.series} height={120} format={(v) => `${v}%`} />

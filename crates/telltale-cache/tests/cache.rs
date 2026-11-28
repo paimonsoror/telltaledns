@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use telltale_cache::{
-    Cache, CacheKey, CachePolicy, Client, Flight, Lookup, Singleflight, Uncacheable,
+    Cache, CacheKey, CachePolicy, Client, Flight, Lookup, Outcome, Singleflight, Uncacheable,
 };
 use telltale_proto::{
     EdnsOut, NameBuf, Query, ResponseBuilder, build_query, ede, parse_query, rcode, records, rtype,
@@ -771,27 +771,139 @@ async fn dns_006_singleflight_coalesces_identical_misses() {
     let msg = query_bytes("example.com", rtype::A, None, 1);
     let q = parse_query(&msg).unwrap();
     let k = key(&q);
-    let Flight::Leader(guard) = sf.join(k, q.qname.as_wire()) else {
+    let soon = Instant::now() + Duration::from_secs(2);
+    let Flight::Leader(guard) = sf.join(k, q.qname.as_wire(), soon) else {
         panic!("first is leader")
     };
-    let Flight::Follower(rx) = sf.join(k, q.qname.as_wire()) else {
+    let Flight::Follower(w) = sf.join(k, q.qname.as_wire(), soon) else {
         panic!("second follows")
     };
-    let waiter = tokio::spawn(Flight::wait(rx));
+    let waiter = tokio::spawn(w.wait());
     guard.complete(Arc::from(&b"answer"[..]), 3);
-    let (answer, upstream) = waiter.await.unwrap().unwrap();
-    assert_eq!((&answer[..], upstream), (&b"answer"[..], 3));
+    assert_eq!(
+        waiter.await.unwrap(),
+        Outcome::Answered(Arc::from(&b"answer"[..]), 3)
+    );
     assert!(sf.is_empty());
 
-    // A leader that gives up releases followers with None.
-    let Flight::Leader(guard) = sf.join(k, q.qname.as_wire()) else {
+    // REQ: DNS-006 (ADR-197) — a leader that goes away without an outcome leaves its followers
+    // to resolve on their own.
+    let Flight::Leader(guard) = sf.join(k, q.qname.as_wire(), soon) else {
         panic!()
     };
-    let Flight::Follower(rx) = sf.join(k, q.qname.as_wire()) else {
+    let Flight::Follower(w) = sf.join(k, q.qname.as_wire(), soon) else {
         panic!()
     };
     drop(guard);
-    assert_eq!(Flight::wait(rx).await, None);
+    assert_eq!(w.wait().await, Outcome::Abandoned);
+}
+
+/// REQ: DNS-006 (ADR-197) — a request that got no answer gives that outcome to every query
+/// waiting on it, however many: none of them resolves on its own. The request leaves the map
+/// first, so a query that arrives after it leads a request of its own.
+#[tokio::test]
+async fn dns_006_a_failed_request_gives_every_waiting_query_its_outcome() {
+    let sf = Singleflight::new();
+    let msg = query_bytes("example.com", rtype::A, None, 1);
+    let q = parse_query(&msg).unwrap();
+    let (k, name) = (key(&q), q.qname.as_wire());
+    let soon = Instant::now() + Duration::from_secs(2);
+    let Flight::Leader(guard) = sf.join(k, name, soon) else {
+        panic!("first is leader")
+    };
+    let waiting: Vec<_> = (0..100)
+        .map(|_| match sf.join(k, name, soon) {
+            Flight::Follower(w) => tokio::spawn(w.wait()),
+            Flight::Leader(_) => panic!("one leader"),
+        })
+        .collect();
+    assert_eq!(guard.followers(), 100);
+    assert_eq!(sf.len(), 1);
+    guard.fail();
+    assert!(sf.is_empty(), "the request has left the map");
+    for w in waiting {
+        assert_eq!(w.await.unwrap(), Outcome::Failed);
+    }
+    assert!(
+        matches!(sf.join(k, name, soon), Flight::Leader(_)),
+        "a query after it leads its own"
+    );
+}
+
+/// REQ: DNS-006 (ADR-197) — when the leader's own try fails, it may try once more within the
+/// time left until the latest deadline of the queries waiting on it: not when none waits (its
+/// own deadline doesn't count), not once every deadline has passed, and never past the latest
+/// (an earlier deadline that joins later doesn't shorten it).
+#[test]
+fn dns_006_a_second_try_runs_within_the_waiting_queries_time() {
+    let sf = Singleflight::new();
+    let msg = query_bytes("example.com", rtype::A, None, 1);
+    let q = parse_query(&msg).unwrap();
+    let (k, name) = (key(&q), q.qname.as_wire());
+    let (t, s, any) = (Instant::now(), Duration::from_secs(1), Duration::ZERO);
+    let Flight::Leader(guard) = sf.join(k, name, t + 2 * s) else {
+        panic!("first is leader")
+    };
+    assert_eq!(
+        guard.retry_within(t, any),
+        None,
+        "no query waits: no second try"
+    );
+    let Flight::Follower(_a) = sf.join(k, name, t + s) else {
+        panic!("follows")
+    };
+    assert_eq!(guard.retry_within(t, any), Some(s));
+    let Flight::Follower(_b) = sf.join(k, name, t + 3 * s) else {
+        panic!("follows")
+    };
+    let Flight::Follower(_c) = sf.join(k, name, t + 2 * s) else {
+        panic!("follows")
+    };
+    assert_eq!(
+        guard.retry_within(t, any),
+        Some(3 * s),
+        "the latest deadline"
+    );
+    assert_eq!(
+        guard.retry_within(t + 2 * s, any),
+        Some(s),
+        "what is left of it"
+    );
+    assert_eq!(
+        guard.retry_within(t + 3 * s, any),
+        None,
+        "every deadline has passed"
+    );
+    assert_eq!(guard.retry_within(t + 4 * s, any), None);
+}
+
+/// REQ: DNS-006 (ADR-197) — no second try with less than the least time the leader asks for:
+/// 99 ms left of a 100 ms least is none; 100 ms is a try of 100 ms.
+#[test]
+fn dns_006_no_second_try_with_less_than_the_least_time_left() {
+    let sf = Singleflight::new();
+    let msg = query_bytes("example.com", rtype::A, None, 1);
+    let q = parse_query(&msg).unwrap();
+    let (k, name) = (key(&q), q.qname.as_wire());
+    let (t, least) = (Instant::now(), Duration::from_millis(100));
+    let Flight::Leader(guard) = sf.join(k, name, t) else {
+        panic!("first is leader")
+    };
+    let end = t + Duration::from_secs(2);
+    let Flight::Follower(_waiting) = sf.join(k, name, end) else {
+        panic!("follows")
+    };
+    let at = |left_ms: u64| end.checked_sub(Duration::from_millis(left_ms)).unwrap();
+    assert_eq!(guard.retry_within(at(99), least), None, "99 ms left");
+    assert_eq!(
+        guard.retry_within(at(100), least),
+        Some(least),
+        "100 ms left"
+    );
+    assert_eq!(
+        guard.retry_within(at(1_000), least),
+        Some(Duration::from_secs(1))
+    );
 }
 
 /// REQ: DNS-015 (T9.9) — keys scoped to different client subnets never share an entry; an

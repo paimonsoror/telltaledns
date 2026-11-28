@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use telltale_proto::{NameBuf, Section, records, rtype, summarize};
 use tokio::net::UdpSocket;
 
-use crate::upstream::{ExchangeError, Question, encode_query, matches_query};
+use crate::upstream::{ExchangeError, Question, encode_query_with, matches_query};
 
 const MIN_TTL: u32 = 60;
 const MAX_TTL: u32 = 3600;
@@ -22,6 +22,8 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct Bootstrap {
     servers: Vec<SocketAddr>,
+    /// REQ: UPS-009 (ADR-192) — whether lookups carry the loop-detection option.
+    loop_tag: bool,
     cache: Mutex<HashMap<String, (Vec<IpAddr>, Instant)>>,
 }
 
@@ -29,8 +31,23 @@ impl Bootstrap {
     pub fn new(servers: Vec<SocketAddr>) -> Self {
         Self {
             servers,
+            loop_tag: true,
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// REQ: UPS-009 (ADR-192) — `false`: lookups through these servers carry no loop-detection
+    /// option (the own `bootstrap` of an upstream with `loop_tag = false`). The system resolvers
+    /// ([`Bootstrap::system`]), shared by every hostname upstream without its own, keep it.
+    #[must_use]
+    pub fn with_loop_tag(mut self, on: bool) -> Self {
+        self.loop_tag = on;
+        self
+    }
+
+    /// Whether lookups carry the loop-detection option.
+    pub fn loop_tag(&self) -> bool {
+        self.loop_tag
     }
 
     /// Uses the `nameserver` lines of `/etc/resolv.conf`, minus any address in `exclude`
@@ -82,7 +99,8 @@ impl Bootstrap {
         for &server in &self.servers {
             let id: u16 = rand::random();
             let mut buf = [0u8; 512];
-            let Some(len) = encode_query(&q, id, &mut buf) else {
+            // REQ: UPS-009 (ADR-192) — with the loop tag unless these servers go without it.
+            let Some(len) = encode_query_with(&q, id, &mut buf, &[], self.loop_tag) else {
                 continue;
             };
             let Ok(Ok(resp)) =

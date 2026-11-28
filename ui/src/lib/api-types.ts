@@ -1097,16 +1097,23 @@ export interface paths {
          * Create, rename, or change a device (API-010).
          * @description Names devices across every view: the query log, live tail, charts, and history (names
          *     are resolved when read, so earlier queries are relabelled too). To rename, send the new
-         *     `name` in the body. Devices defined in the config files are read-only here (409). Needs
-         *     the operator role (or a `write` token).
+         *     `name` in the body. Devices defined in the config files are read-only here (409), and so,
+         *     on a primary promoted from replica, are those of the cluster version it builds on. The
+         *     change is checked against the configuration the node applies (ADR-040, ADR-191): those
+         *     files or that version, every device and setting made through the API, and the change.
+         *     Needs the operator role (or a `write` token).
          */
         put: operations["put_client"];
         post?: never;
         /**
          * Delete a device named through the API.
          * @description Its queries, past and future, go back to showing the address, and it leaves its groups
-         *     (the `default` group applies). Devices from the config files can't be deleted here (409).
-         *     Needs the operator role (or a `write` token).
+         *     (the `default` group applies). Devices from the config files can't be deleted here (409),
+         *     nor, on a primary promoted from replica, those of the cluster version it builds on. A device
+         *     stored through the API that isn't in effect (the files or that version have a device of its
+         *     name, or the devices and settings made through the API don't apply) is removed too, even
+         *     while they still don't apply after it (`warnings` then say why, ADR-191). Needs the operator
+         *     role (or a `write` token).
          */
         delete: operations["delete_client"];
         options?: never;
@@ -2101,9 +2108,10 @@ export interface paths {
          * Live query stream.
          * @description Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
          *     fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
-         *     skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-         *     connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
-         *     applied on the server. In a browser:
+         *     skipped (over `rate`, or this client fell behind). A comment comes as soon as the stream
+         *     opens, so a browser reports it open at once, and again after 15 s without an event, to
+         *     keep the connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`),
+         *     are applied on the server. In a browser:
          *     `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
          *     in). Honors the query-log privacy level; at most 16 streams per node.
          */
@@ -10361,7 +10369,7 @@ export interface operations {
                     "application/json": components["schemas"]["ClientChange"];
                 };
             };
-            /** @description Defined in the config files, or an Idempotency-Key reused for another request; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            /** @description Defined in the config files (or in the cluster version a promoted primary builds on), or an Idempotency-Key reused for another request; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10379,7 +10387,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The resulting configuration is invalid (e.g. an unknown group). */
+            /** @description The resulting configuration is invalid (e.g. an unknown group, or a match key another device has: the hint names that device to whoever may read every device); nothing is stored. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -10426,7 +10434,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The result. */
+            /** @description The result: removed (or, with dryRun, what would change). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10444,7 +10452,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Defined in the config files; or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
+            /** @description Defined in the config files (or in the cluster version a promoted primary builds on); or the Idempotency-Key's first request is still running (`change_in_progress`, with `Retry-After`: retry shortly for its answer). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10455,6 +10463,15 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Without it the configuration would be invalid (e.g. a quick rule still names it); nothing is stored. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
