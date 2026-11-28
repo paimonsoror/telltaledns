@@ -52,12 +52,15 @@
     name = null,
     onchanged,
     display,
+    chip = true,
   }: {
     ip: string;
     name?: string | null;
     onchanged?: (name: string) => void;
     /** What to show in place of the name (a pod's workload for its full pod name); the name is still the device's. */
     display?: string;
+    /** False: no chip and no menu, only the dialogs, opened with `nameDevice()` (the quick rule form's MAC hint). */
+    chip?: boolean;
   } = $props();
 
   let open = $state(false);
@@ -249,6 +252,14 @@
     }
   }
 
+  /**
+   * REQ: FLT-005, FLT-006 (ADR-183, GitHub issue #95) — "Name this device…" for this address, as the menu opens it: for a
+   * place that links to the dialog without showing a chip (the quick rule form, whose own form must not hold this one's).
+   */
+  export function nameDevice() {
+    void edit('name');
+  }
+
   /** The form's fields from the device edited (the one that has the MAC, when the MAC is chosen), or what it started with. */
   function fill() {
     const t = target;
@@ -327,6 +338,7 @@
 
 <svelte:window onclick={outside} onkeydown={key} />
 
+{#if chip}
 <span class="chip" bind:this={root}>
   <button
     class="link chip-button"
@@ -353,6 +365,7 @@
     </span>
   {/if}
 </span>
+{/if}
 
 {#if editing === 'workload' && workload}
   <Drawer title={t('Put the workload in a group')} onclose={() => (editing = null)}>

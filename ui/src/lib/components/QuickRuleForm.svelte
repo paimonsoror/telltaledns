@@ -15,9 +15,16 @@
   // pod's address and points at "Add to group…", because the group it falls to is its network's (or
   // `default`) and a rule for that is a rule for every device there. A dry run as you change a
   // field shows a refusal before Save.
+  // REQ: FLT-005, FLT-006 (ADR-183, GitHub issue #95) — a rule for an address stops matching when the
+  // address changes, while a MAC that a router reports for this address alone follows the device: when
+  // the Device field holds the bare address and such a MAC is known (`mac`, `macFrom`, `macShared`: the
+  // naming dialog's own read), the form says so and opens the naming dialog; once the device is named,
+  // the field holds its name.
   import { untrack } from 'svelte';
   import { api, ApiError, type S } from '../api';
   import { endsAt } from '../format';
+  import { normMac } from '../macKeys';
+  import ClientChip from './ClientChip.svelte';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
   import SimulationCard from './SimulationCard.svelte';
@@ -33,6 +40,9 @@
     seenAs = '',
     workload = '',
     workloadFrom = '',
+    mac = '',
+    macFrom = '',
+    macShared = false,
     known,
     rule,
     onsaved,
@@ -50,6 +60,12 @@
     workload?: string;
     /** Where the workload's group came from (`pod_label`, `namespace_label`, `map`, `default_group`, `none`). */
     workloadFrom?: string;
+    /** The MAC a device at the address could be named by (the identity's `recognition`), when the caller may read it. */
+    mac?: string;
+    /** Where `mac` comes from: `router` (this node's), `peer` (another full cluster member's), or `neighbor` (this server's table). */
+    macFrom?: string;
+    /** The MAC is reported at more than one address (an extender or a bridge shares it): it tells no device apart. */
+    macShared?: boolean;
     /** The configured devices, when the page has them already (the Why? drawer): the form doesn't ask again. */
     known?: S['ClientInfo'][];
     rule?: S['RuleInfo'];
@@ -83,6 +99,11 @@
   // Only a group an operator placed the workload in starts a pod's rule, and never `default`: that is
   // every device nothing else claims. (`group` is today's group of the workload, not the row's.)
   const placed = $derived(!!workload && !!group && group !== 'default' && Object.hasOwn(placedBy, workloadFrom));
+  // The naming dialog starts from the same MAC: a router's (this node's or a member's), at this address
+  // alone. A MAC only this server's neighbor table holds isn't one other servers, Docker or Kubernetes
+  // recognize the device by, and a shared one recognizes no device.
+  const macHint = $derived(!rule && !!address && !workload && !!mac && (macFrom === 'router' || macFrom === 'peer') && !macShared);
+  let namer = $state<ReturnType<typeof ClientChip> | undefined>();
 
   let action = $state<'allow' | 'block'>('allow');
   let name = $state('');
@@ -174,6 +195,17 @@
   let checkSeq = 0;
   let touched = $state(false);
   const touch = () => (touched = true);
+  /** The device named from the MAC hint, if one was. */
+  let namedAs = $state('');
+  /** The device was named from the MAC hint: the rule is for its name now (and is checked as any change is). */
+  function named(n: string) {
+    namedAs = n;
+    who = n;
+    touch();
+  }
+  // The Device field names a configured device the address is: the row's, or the one just named from the
+  // MAC hint, so the form still says which device the address is after naming it.
+  const isDevice = $derived(!!who.trim() && ((device !== address && who.trim() === device) || (!!namedAs && who.trim() === namedAs)));
   $effect(() => {
     const ready = touched && name.trim() !== '' && (scope === 'device' ? who.trim() !== '' : scope === 'group' ? whichGroup !== '' : true);
     const mine = ++checkSeq;
@@ -288,9 +320,9 @@
         >
         {#if placed}{t('For every pod, choose “a group”.')}{:else}{t('To cover all its pods, put the workload in a group first: click its name in the log, then Add to group…')}{/if}
       </p>
-    {:else if scope === 'device' && device !== address && who.trim() === device}
+    {:else if scope === 'device' && isDevice}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
-        <T ctx="quickRuleForm" msg={'{address} is your device “<bdi>{device}</bdi>”.'} params={{ address, device }}>{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T>
+        <T ctx="quickRuleForm" msg={'{address} is your device “<bdi>{device}</bdi>”.'} params={{ address, device: who.trim() }}>{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T>
       </p>
     {:else if scope === 'device' && who.trim() === address}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
@@ -303,6 +335,14 @@
           {t('A rule for an address stops matching when the address changes: reserve the address in your router, or name the device so you change one place, not every rule.')}<HelpButton id="device-name" />
         {/if}
       </p>
+      {#if macHint && !podLike}
+        <p class="muted small seen" data-testid="quick-rule-mac-hint">
+          <T ctx="quickRuleForm" msg={"Your router reports this device's MAC address, <code>{mac}</code>: name the device by its MAC address to make rules follow it. The rule is then for its name."} params={{ mac: normMac(mac) }}
+            >{#snippet code(text: string)}<code translate="no">{text}</code>{/snippet}</T
+          >
+          <button type="button" class="link" onclick={() => namer?.nameDevice()}>{t('Name this device…')}</button><HelpButton id="device-mac" />
+        </p>
+      {/if}
     {/if}
   {/if}
   <p class="muted small">
@@ -315,6 +355,10 @@
   {#if saved && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved}</div>{/if}
   {#if name.trim() && (scope !== 'device' || who.trim())}<SimulationCard run={simulateRule} />{/if}
 </form>
+{#if macHint}
+  <!-- The naming dialog the MAC hint opens: outside the rule's form, because it has a form of its own. -->
+  <ClientChip bind:this={namer} ip={address} name={seenAs || null} chip={false} onchanged={named} />
+{/if}
 
 <style>
   .quick {

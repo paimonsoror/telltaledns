@@ -125,6 +125,7 @@ block_mode = "nxdomain"</code></pre>
         <li>Click a device's address anywhere: the dashboard's top clients, the query log, the live view, or <b>Clients</b>.</li>
         <li>Choose <b>Name this device…</b>, or <b>Add to group…</b> to put it in a group.</li>
         <li>When TelltaleDNS knows the device's MAC address (from your router, or its own neighbor table), pick <b>Recognize it by</b>: <b>its MAC address</b>, which follows the device when its address changes for as long as your router (or this server's neighbor table) keeps reporting that MAC at one address, or <b>this address</b>, which stops matching if the device gets another one. For a new device a MAC address from your router is what the dialog starts with, unless it is reported at more than one address; for a device that exists, its address is, and the MAC is offered.</li>
+        <li>From a quick rule: when the form in the query log's <b>Why?</b> holds an address whose MAC address your router reports, it suggests naming the device by its MAC so that rules follow it. Its <b>Name this device…</b> opens this dialog, and the rule is then for the name.</li>
       </ol>
       <p>Operators and admins can name devices; viewers see the names. A device defined in a config file is read-only here. A device named by its MAC address alone isn't covered by anomaly mutes, change previews and simulations, or the guess of what it is, and a phone's private Wi-Fi address can change: the dialog says so.</p>
     </div>
