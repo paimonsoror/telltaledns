@@ -30,6 +30,22 @@ jobs:
       - name: Download and parse published lists
         run: cargo test -p telltale-filter --test lists_online -- --ignored --nocapture
 
+  # REQ: DNS-011 — names from public reports (issue #115 and others) through the validator:
+  # answered; AD where checked. Nightly, not on every push: these are third-party zones, so a
+  # red run means "re-check the name", not "the resolver broke".
+  dnssec-live-names:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --profile bench-fast -p telltale
+      - run: sh .github/scripts/apt-install.sh dnsutils
+        timeout-minutes: 12
+      - name: DNSSEC validation of names from public reports (live)
+        run: bash deploy/dnssec-names-e2e.sh target/bench-fast/telltale
+
   # T9.23 — test coverage, to find untested code (no threshold, no badge: see spec/09 §5).
   # The HTML report is published on the project site at /coverage/ by the pages workflow,
   # which this job starts when the report is ready.
