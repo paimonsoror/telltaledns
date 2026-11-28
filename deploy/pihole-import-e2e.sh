@@ -139,8 +139,11 @@ EOF
   [ "$(d +short nas.lan AAAA)" = fd00::10 ] || fail "$v: nas.lan AAAA"
   d tv.lan A | grep -q 'tv.lan.*300.*CNAME.*nas.lan' || fail "$v: tv.lan isn't a CNAME with TTL 300"
   # Inline lists compile in the background. The lists.example adlists don't exist and retry
-  # with backoff; they must not hold back the others (at most [filter] settle, 10 s).
-  for _ in $(seq 60); do d denied.example A | grep -q 'EDE: 15' && break; sleep 0.5; done
+  # with backoff; they must not hold back the others (at most [filter] settle, 10 s). The
+  # first snapshot can hold only some of the inline lists and the next one the rest, so wait
+  # until each rule that is asked about below blocks.
+  blocked() { d "$1" A | grep -q 'EDE: 15'; }
+  for _ in $(seq 60); do blocked denied.example && blocked ad7.example && break; sleep 0.5; done
   out=$(d denied.example A)
   echo "$out" | grep -q 'EDE: 15' || fail "$v: denied.example isn't blocked"
   echo "$out" | grep -q 'status: NXDOMAIN' || fail "$v: blocking mode isn't NXDOMAIN"
