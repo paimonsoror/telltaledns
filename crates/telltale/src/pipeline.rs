@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
+use telltale_cache::{
+    Cache, CacheKey, Client, Flight, Lookup, Outcome as FlightOutcome, Singleflight,
+};
 use telltale_config::BlockMode;
 use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
 use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Matcher, Scratch};
@@ -32,6 +34,14 @@ use tokio::sync::Semaphore;
 
 /// REQ: DNS-019, UPS-007 (ADR-187) — the labels of `resolver.arpa`.
 const RESOLVER_ARPA_LABELS: usize = 2;
+
+/// How long past the query budget a client waits for its resolution's answer. A query waiting
+/// on another's upstream request is wanted for as long (REQ: DNS-006, ADR-197).
+const CLIENT_GRACE: Duration = Duration::from_millis(100);
+
+/// REQ: DNS-006 (ADR-197) — no shortened try (a leader's second try, or a follower of a leader
+/// that went away) starts with less time left than this: the waiting queries take the failure.
+const MIN_TRY: Duration = Duration::from_millis(100);
 
 /// REQ: DNS-019, UPS-007 (ADR-187) — whether a name in `resolver.arpa` is answered here, given the
 /// label count of the suffix that chose its route (`Selection::suffix_labels`; `None` without an
@@ -583,7 +593,8 @@ impl Refresh {
             return;
         };
         rt.spawn(async move {
-            let _ = pipe.resolve_shared(req, key, view, permit).await;
+            let deadline = pipe.wanted_until(Instant::now());
+            let _ = pipe.resolve_shared(req, key, view, deadline, permit).await;
         });
     }
 }
@@ -1206,8 +1217,9 @@ impl Pipeline {
             Internal::Miss(key, view) => (key, view),
         };
         let permit = Arc::clone(&self.inflight).try_acquire_owned().ok()?;
+        let deadline = self.wanted_until(Instant::now());
         let (a, _) = Arc::clone(self)
-            .resolve_shared(req, key, view, permit)
+            .resolve_shared(req, key, view, deadline, permit)
             .await?;
         Some(a.to_vec())
     }
@@ -2216,7 +2228,7 @@ impl Pipeline {
         Response::Deferred(Box::pin(async move {
             let waited = Instant::now();
             let mut answer = Arc::clone(&this)
-                .resolve_for_client(req.clone(), key, view, stale_ok, transport)
+                .resolve_for_client(req.clone(), key, view, stale_ok, transport, waited)
                 .await
                 .map(|(bytes, status, upstream)| {
                     // REQ: OBS-001 (review 04-07) — the upstream that answered.
@@ -2256,7 +2268,8 @@ impl Pipeline {
     }
 
     /// The deferred stage: resolve upstream (shared via singleflight), then build the client's
-    /// response from the answer, from stale data, or as SERVFAIL with an EDE.
+    /// response from the answer, from stale data, or as SERVFAIL with an EDE. `since` is when
+    /// the client started waiting.
     async fn resolve_for_client(
         self: Arc<Self>,
         req: Vec<u8>,
@@ -2264,6 +2277,7 @@ impl Pipeline {
         view: u16,
         stale_ok: bool,
         transport: Transport,
+        since: Instant,
     ) -> Option<(Vec<u8>, Status, u16)> {
         let q = parse_query(&req).ok()?;
         // REQ: NFR-002 (T10.2) — the client's response buffer is allocated once the answer is
@@ -2288,11 +2302,13 @@ impl Pipeline {
         };
         // Run the resolution as its own task so that, if we give up waiting and serve stale,
         // it still completes and refreshes the cache (RFC 8767 §5).
-        let task = tokio::spawn(Arc::clone(&self).resolve_shared(req.clone(), key, view, permit));
+        let deadline = self.wanted_until(since);
+        let shared = Arc::clone(&self).resolve_shared(req.clone(), key, view, deadline, permit);
+        let task = tokio::spawn(shared);
         let wait = if stale_ok {
             self.settings.stale_answer_timeout
         } else {
-            self.settings.budget + Duration::from_millis(100)
+            self.settings.budget + CLIENT_GRACE
         };
         // REQ: DNS-007 — a zero wait answers from the expired entry at once (the spawned
         // resolution carries on and refreshes it); a zero-length timer would still let an
@@ -2377,28 +2393,86 @@ impl Pipeline {
         }
     }
 
+    /// REQ: DNS-006 (ADR-197) — when a query that starts waiting at `since` stops being
+    /// wanted: the query budget, plus the grace its client waits beyond it.
+    fn wanted_until(&self, since: Instant) -> Instant {
+        since
+            .checked_add(self.settings.budget.saturating_add(CLIENT_GRACE))
+            .unwrap_or(since)
+    }
+
     /// Resolves `req` upstream once per (key, name), inserting the answer into the cache.
+    /// `deadline` is when the query it answers stops being wanted ([`Self::wanted_until`]).
+    ///
+    /// REQ: DNS-006 (ADR-197) — a waiting query takes its leader's outcome, or resolves within
+    /// the budget of the query it answers:
+    /// - a follower takes the leader's answer, or its failure;
+    /// - a leader whose own try fails tries once more for its followers, within the time left
+    ///   until the latest of their deadlines; queries that join meanwhile take that try's
+    ///   outcome. So a request makes at most two tries, however many queries join it;
+    /// - only a leader that goes away without an outcome (cancelled with its caller) leaves its
+    ///   followers to resolve on their own, each within its own time;
+    /// - a shortened try starts only with [`MIN_TRY`] left, and runs as [`Self::cut_short`]
+    ///   says.
     async fn resolve_shared(
         self: Arc<Self>,
         req: Vec<u8>,
         key: CacheKey,
         view: u16,
+        deadline: Instant,
         _permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Option<(Arc<[u8]>, u16)> {
         let q = parse_query(&req).ok()?;
-        let guard = match self.flights.join(key, q.qname.as_wire()) {
+        let guard = match self.flights.join(key, q.qname.as_wire(), deadline) {
             Flight::Leader(g) => g,
-            Flight::Follower(rx) => {
-                if let Some(a) = Flight::wait(rx).await {
-                    return Some(a);
-                }
-                // The leader gave up; resolve without coalescing.
-                return self.resolve_upstream(&q, key, view).await;
+            Flight::Follower(waiter) => {
+                return match waiter.wait().await {
+                    FlightOutcome::Answered(answer, upstream) => Some((answer, upstream)),
+                    FlightOutcome::Failed => None,
+                    FlightOutcome::Abandoned => {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        if left < MIN_TRY {
+                            return None;
+                        }
+                        self.cut_short(left, &q, key, view).await
+                    }
+                };
             }
         };
-        let (answer, upstream) = self.resolve_upstream(&q, key, view).await?;
-        guard.complete(Arc::clone(&answer), upstream);
-        Some((answer, upstream))
+        if let Some((answer, upstream)) = self.resolve_upstream(&q, key, view).await {
+            guard.complete(Arc::clone(&answer), upstream);
+            return Some((answer, upstream));
+        }
+        // REQ: DNS-006 (ADR-197) — no answer: once more for the queries waiting, if one still
+        // has time, and then the outcome is theirs too.
+        if let Some(left) = guard.retry_within(Instant::now(), MIN_TRY)
+            && let Some((answer, upstream)) = self.cut_short(left, &q, key, view).await
+        {
+            guard.complete(Arc::clone(&answer), upstream);
+            return Some((answer, upstream));
+        }
+        guard.fail();
+        None
+    }
+
+    /// REQ: DNS-006, DNS-011 (ADR-197) — [`Self::resolve_upstream`] ended after `left`: it runs
+    /// with the configured budget and is cut from outside, so nothing it shares with other
+    /// queries learns the shorter time (the DNSSEC validator keeps the budget of each group's
+    /// first lookup for every later one; an attempt's timeout feeds its upstream's latency
+    /// average and breaker; a failed unsigned-zone proof is remembered for a minute). A try cut
+    /// short emits no upstream event, and its queries still out are dropped rather than left to
+    /// finish.
+    async fn cut_short(
+        &self,
+        left: Duration,
+        q: &Query<'_>,
+        key: CacheKey,
+        view: u16,
+    ) -> Option<(Arc<[u8]>, u16)> {
+        tokio::time::timeout(left, self.resolve_upstream(q, key, view))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// The answer and the ID of the upstream that gave it (REQ: OBS-001, review 04-07).
@@ -5933,6 +6007,10 @@ members = [\"u\"]
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "pipeline_flight_tests.rs"]
+mod flight_tests;
 
 #[cfg(test)]
 mod policy_tests {

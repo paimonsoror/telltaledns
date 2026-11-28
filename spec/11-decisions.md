@@ -2359,6 +2359,36 @@ A plain listener behind a proxy would see only loopback, so a request without a 
 
 REQ: UPS-006.
 
+## ADR-197 — A query waiting on another's upstream request takes its outcome; the request is tried once more for the waiting queries, within their time (Proposed)
+**Context:** DNS-006, `spec/03` §4: identical concurrent misses share one upstream request (a singleflight map keyed like the cache); the first query leads it and the others wait on it. When the leader got no answer, each waiting query resolved again on its own, with a new budget. A question an upstream sends back to this node as a query of its own (a forwarder in front of the node that builds its own query, so the option of `spec/04` §7 doesn't come along; or an upstream set to leave the option out, ADR-192) waits on the request that sent it.
+
+**Decision:** a waiting query takes its leader's outcome; the leader's own failed try is tried once more within the time left; a request makes at most two tries.
+- A query waiting on a request takes the leader's outcome: its answer, or its failure (a stale answer where one may be served, otherwise SERVFAIL, as the leader's own client gets).
+- Each query that joins a request carries its deadline: the query budget plus the 100 ms its client waits beyond it, from when it started waiting. A leader whose own try gets no answer tries once more, within the time left until the latest of its followers' deadlines, when at least 100 ms is left. That second try is still the shared request: a query that joins it meanwhile takes its outcome; if it answers while the leader's own client still waits, that client gets the answer too. There is no third try, and a leader that no query joined doesn't try again.
+- A leader that goes away without an outcome (its caller is cancelled, as a DNS64 lookup is when its DoH client disconnects) leaves its followers to resolve on their own, each within the time left until its own deadline, and only with at least 100 ms left.
+- A shortened try (the second one, or that of a follower whose leader went away) runs with the configured budget and is cut from outside when its time is up. Nothing shared with other queries learns the shorter time: the DNSSEC validator keeps the budget of a group's first lookup for every later lookup of that group, an attempt's timeout feeds its upstream's latency average and breaker, and a failed unsigned-zone proof is remembered for a minute.
+- A failed request leaves the map before its failure is published, so a query that arrives after it leads a request of its own.
+
+**Alternatives considered:**
+- *The follower takes the leader's outcome, and nothing is tried again.* One upstream query per miss in the case above, and the smallest change. Rejected: with one upstream, the leader's only try may wait the whole budget (ADR-165); when that one query or its answer is lost, every query that joined it would get SERVFAIL, where each used to ask again and be answered.
+- *The follower resolves again on its own, within its own remaining time instead of a new budget.* No bound in the case above: the question that comes back starts as a new client query with a whole budget of its own.
+- *Caching resolution failures for a short time* (RFC 9520 §3.2): a possible later step. It changes what new queries get after a failure and needs its own design (a cached failure must not hide a stale answer, DNS-007).
+
+**What it doesn't change:** cache hits; a leader that gets an answer, and the queries waiting on it (they take it, as before); a miss no other query joined (it fails as before, without a second try); no configuration key, no wire or API change.
+
+**Consequences:**
+- A request makes at most two upstream tries, however many queries join it. A question an upstream sends back to this node ends with the request it waits on, and every resolution is done by the latest deadline of the queries waiting on it.
+- Queries whose leader failed share one second try instead of making one each.
+- A query that joins a request during its second try takes that try's outcome, even when its own deadline is later: if that try fails too, it gets SERVFAIL (or a stale answer) then, where it used to make a request of its own.
+- A follower that joined within a few milliseconds of its leader has about 100 ms left when the leader's try ends at the budget, so whether the second try is made for it turns on those milliseconds.
+- The leader's own client gets the second try's answer when it lands within its wait (it used to get SERVFAIL). When the second try fails too, that client is answered up to 100 ms later than before, at the end of its wait, and only when a follower's time made the leader try again.
+- A shortened try that runs out of time emits no upstream event, and its queries still out are dropped rather than left to finish; the leader's first try has already been counted in the upstream's health.
+- Cost: on the follower path, one deadline compared under the lock `join` already takes; on the leader's failure path, one more map lookup under that lock and a timer for the second try. Nothing on cache hits or on the leader's path when it gets an answer.
+
+**Verification:** `dns_006_singleflight_coalesces_identical_misses` (a follower takes the answer; a dropped leader leaves it to resolve), `dns_006_a_failed_request_gives_every_waiting_query_its_outcome` (100 followers, one failure; a later query leads its own), `dns_006_a_second_try_runs_within_the_waiting_queries_time` (no follower, no second try; the latest deadline, never a new budget), `dns_006_no_second_try_with_less_than_the_least_time_left`; through the pipeline: `dns_006_an_upstream_that_sends_questions_back_ends_with_the_miss`, `dns_006_many_queries_for_one_name_share_one_request` (20 clients), `dns_006_a_follower_whose_leader_ran_out_of_time_gets_the_second_try`, `dns_006_no_second_try_with_less_than_100_ms_left`, `dns_006_a_follower_takes_its_leaders_answer`, `dns_006_a_follower_of_an_abandoned_leader_resolves_within_its_own_time`, `dns_006_a_second_try_leaves_the_validation_budget_as_configured` and `dns_006_an_abandoned_follower_leaves_the_validation_budget_as_configured` (DNSSEC on: a shortened try as a fresh validator's first lookup, then a name that takes longer than that try had is answered).
+
+REQ: DNS-006, DNS-011.
+
 ## ADR-172 — A cluster support package: each node redacts its own part under one key, with labels every node agrees on (Accepted)
 **Context:** GitHub issue #55 (the later phase of #50, ADR-156): in a cluster the problem is often on another node, and a package of the node that answered covers only that one. ADR-156 settled the direction (each node redacts before its data leaves it, the asking node's key travels over the mutually authenticated stream) and left three points: how the key reaches the others, what an older peer does, and the size cap across nodes. One more came up in building it: ADR-156 numbers a name by when it is first met (`device-3`), so two nodes would give one device two labels, and the issue asks that a device have one name on every node.
 **Decision:**
