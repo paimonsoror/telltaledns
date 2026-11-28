@@ -730,7 +730,7 @@ ecs = "client"                    # each client's /24 (IPv4) or /56 (IPv6)
 - The subnet comes from the client's address (after PROXY protocol, if enabled). ECS options your clients send are still never forwarded.
 
 ### Forwarding loops
-Every query TelltaleDNS forwards to an upstream carries an EDNS option (code 65429, from the range RFC 6891 keeps for local use) with a random tag the node picks when it starts. A query that arrives with the node's own tag has come back through an upstream that forwards to TelltaleDNS: it's dropped and an error is logged (`forwarding loop detected`), so it doesn't go round until it times out. If the log reports one, fix the upstream that sends queries back.
+Every query TelltaleDNS forwards to an upstream carries an EDNS option (code 65429, from the range RFC 6891 keeps for local use) with a random tag the node picks when it starts. A query that arrives with the node's own tag has come back through an upstream that forwards to TelltaleDNS: it's dropped and an error is logged (`forwarding loop detected`), so it doesn't go round until it times out. If the log reports one, fix the upstream that sends queries back. The tag doesn't catch two TelltaleDNS nodes that forward to each other (directly, or through forwarders in between): a node never passes a client's EDNS options on, so a query that one node forwards reaches the other and comes back carrying only the other node's tag, and neither node recognizes it as its own; don't make two nodes each other's upstream.
 
 A few resolvers drop every query that carries an EDNS option they don't know (RFC 6891 asks them to ignore it), so every query to them times out (over DoH, fails with an HTTP error) and their breaker stays open, while `dig` from the same host gets answers. Leave the option out for such an upstream:
 ```toml
@@ -1291,6 +1291,49 @@ answer = "cdn.example.net"           # answered as a CNAME to that name, with it
 - An exact name wins over a wildcard; the most specific wildcard wins over others. A wildcard covers names under the domain, not the domain itself.
 - An address rewrite answers the other address family and other record types with no data.
 - Blocks still win: a blocked name isn't rewritten. For a name everyone should get, use [local records](#local-records) instead.
+
+### Different answers per network (split horizon)
+The same name can get a different answer depending on the network a device is on: the LAN gets a server's LAN address, the VPN its VPN address. Three settings join up: a group per network ([`[[group]] networks`](#groups-for-your-networks-vlans)), the group's [rewrites](#rewrites) for single names and wildcards, and a [zone](#local-zones) that only some groups see (`[[zone]] groups`) for a whole domain of their own:
+```toml
+# A group per network: every device on it belongs to the group.
+[[group]]
+name = "lan"
+networks = ["192.168.2.0/24"]
+
+[[group.rewrite]]                    # belongs to the group above
+domain = "*.internal.example.org"    # every name under internal.example.org...
+answer = "192.168.2.177"             # ...answered with the reverse proxy's LAN address
+
+[[group]]
+name = "vpn"
+networks = ["10.10.0.0/24"]
+
+[[group.rewrite]]
+domain = "*.internal.example.org"
+answer = "10.10.0.132"               # the same names, the proxy's VPN address
+
+# A whole domain only the LAN sees: its records, and "no such name" for the rest.
+[[zone]]
+name = "lab.example.org"
+groups = ["lan"]
+
+[[zone.record]]
+name = "printer.lab.example.org"
+type = "A"
+value = "192.168.2.20"
+
+[[zone.record]]
+name = "_ipp._tcp.lab.example.org"
+type = "SRV"
+value = "0 5 631 printer.lab.example.org"
+```
+- **Devices on other networks** get the public answer for `internal.example.org` names, and resolve `lab.example.org` normally.
+- **A rewrite or a zone?** A rewrite answers with an address (A, or AAAA for an IPv6 address) or a CNAME, and leaves every other name to the upstreams. A zone holds any type local records support (A, AAAA, CNAME, PTR, TXT, MX, SRV), and answers "no such name" for names it doesn't have, so the groups that see it never send that domain to a public resolver.
+- **One domain for several networks, as a zone:** one `[[zone]]` with the same `name` per group, each with its own records. A zone without `groups` for the same domain answers everyone else (the groups' own zones are used first); without one, devices outside those groups resolve the domain normally. The same zone twice for the same groups is a configuration error.
+- **What answers first,** for one question: [local records](#local-records) (`[[record]]`, and names added in **Names on my network**), for every device; then the zones the device's groups see; then quick rules and blocking; then the rewrites of the device's highest-priority group. So don't also give a per-network name a local record, which every network would get, and remember that a blocked name isn't rewritten while a name in a zone is answered before blocking. A device in several groups sees the zones of all of them.
+- **Devices must reach TelltaleDNS with their own addresses** for their network to count: a VPN that is routed, not hidden behind one address, and no forwarder that rewrites the sender (see [Seeing real client IPs](#seeing-real-client-ips)).
+- **Check it** with `telltale explain nas.internal.example.org --client 10.10.0.5 -c telltale.toml`, or **Explain** in the UI, from an address on each network.
+- **Where they are set:** zones in the configuration file (or Git); rewrites there too, or through `PUT /api/v1/groups/{name}` (its body is the whole group, with the same fields as `[[group]]`, `networks` and `rewrite` included, and it replaces a file's group of that name). The UI doesn't edit either yet: the Groups page shows each group's rewrites, and **Names on my network** lists the zones and the groups that see them. File changes apply on reload (`SIGHUP`).
 
 ### DNS64
 For IPv6-only devices behind a NAT64 gateway: names without an IPv6 address get one made from their IPv4 address (RFC 6147), so the gateway can reach them.

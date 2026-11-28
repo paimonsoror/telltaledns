@@ -43,7 +43,7 @@
   <ul>
     <li><b>The gate.</b> The <code>image</code> workflow builds every platform, then <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/image/size.py"><code>deploy/image/size.py</code></a> adds up the <i>compressed</i> layer sizes per platform and fails over 15 MiB. Compressed is what a Pi downloads, so how well something compresses matters: the same bytes stored twice cost twice.</li>
     <li><b>Where the bytes are.</b> About 97% of the image is the one static binary. Its largest parts are the DNS and TLS code, SQLite, and the embedded web UI.</li>
-    <li><b>Where we are.</b> About 13.0 MiB on amd64, 12.3 on arm64, and 12.8 on armv7 after the cuts below (it was 14.84, 14.16, and 14.82 when the margin ran out). The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
+    <li><b>Where we are.</b> About 13.6 MiB on amd64, 13.0 on arm64, and 13.5 on armv7 on <code>main</code> at the end of November 2026. The cuts below took it from 14.84, 14.16, and 14.82, when the margin ran out, to 13.0, 12.3, and 12.8. The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
     <li><b>Measure it like CI does.</b> Build the image with BuildKit and OCI output as the <a href="https://github.com/paimonsoror/telltaledns/blob/main/.github/workflows/image.yml"><code>image</code> workflow</a> does, then run <code>python3 deploy/image/size.py --oci image.tar</code>. A debug build says nothing: the release profile uses fat LTO, one codegen unit, and abort on panic.</li>
   </ul>
 </section>
