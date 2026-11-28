@@ -3735,26 +3735,65 @@ fn client_impact(
     (recent_queries, impact)
 }
 
-/// REQ: API-002, API-010, CLU-003 (ADR-040, ADR-051; GitHub issue #113) — what a reload merges
-/// the entries made through the API onto, for the write checks: the config files, or on a primary
-/// promoted from replica the files plus the cluster version it builds on.
+/// REQ: API-002, API-010, CLU-003 (ADR-040, ADR-051; GitHub issue #113) — what the last reload
+/// merged the entries made through the API onto: the config files, or on a primary promoted from
+/// replica the files plus the cluster version it builds on. For what the API lists; a write's
+/// checks read [`write_base`].
 fn managed_base(src: &Sources) -> Arc<telltale_config::Config> {
     src.managed_base
         .load_full()
         .unwrap_or_else(|| src.file_config.load_full())
 }
 
+/// What a write is checked on ([`write_base`]).
+struct WriteBase {
+    /// This node's config files, as the last reload read them.
+    own: Arc<telltale_config::Config>,
+    /// What a reload merges the stored entries onto: `own`, or `own` plus the cluster version a
+    /// primary promoted from replica builds on.
+    base: Arc<telltale_config::Config>,
+    /// Whether `base` is `own` plus that version.
+    inherited: bool,
+}
+
+/// REQ: API-002, API-010, CLU-003 (ADR-040, ADR-051, ADR-191; GitHub issue #113) — the base a write
+/// is checked on, read as the next reload reads it: the node's role and the version it last applied
+/// come from disk now (`replication::managed_base`), not from what the last reload kept, which lags
+/// a promotion until the reload that follows it. It reads files, so it is called where a write is
+/// planned, on a blocking thread, never on the async executor. While the files couldn't be read at
+/// start-up (ADR-179), the running configuration stands in for them and nothing is inherited, as at
+/// start-up.
+fn write_base(src: &Sources) -> WriteBase {
+    let own = src.file_config.load_full();
+    let inherited = if src.files_unread.load(std::sync::atomic::Ordering::Acquire) {
+        None
+    } else {
+        crate::replication::managed_base(&own)
+    };
+    match inherited {
+        Some(b) => WriteBase {
+            own,
+            base: Arc::new(b),
+            inherited: true,
+        },
+        None => WriteBase {
+            base: Arc::clone(&own),
+            own,
+            inherited: false,
+        },
+    }
+}
+
 /// REQ: OBS-024, API-002 (GitHub issue #113) — what a dry run's simulation compares a change with,
-/// for a device change as for any other kind: what the stored entries make on the base now, or,
-/// while they don't apply, the base alone (what is in effect then).
+/// for a device change as for any other kind: what the stored entries make on the base the change
+/// was planned on, or, while they don't apply, the base alone (what is in effect then).
 fn dry_run_baseline(
-    src: &Sources,
+    base: &Arc<telltale_config::Config>,
     state: &telltale_store::state::State,
 ) -> Arc<telltale_config::Config> {
-    let base = managed_base(src);
-    match crate::managed::merge(&base, &crate::managed::entries(state)) {
+    match crate::managed::merge(base, &crate::managed::entries(state)) {
         Ok(c) => Arc::new(c),
-        Err(_) => base,
+        Err(_) => Arc::clone(base),
     }
 }
 
@@ -3799,31 +3838,65 @@ fn base_holder<'a>(
     })
 }
 
+/// Why the merge after a device change doesn't validate, besides its reasons: whether the stored
+/// entries applied before the change, and the stored devices the reasons name (the changed one
+/// left out).
+struct DeviceRefused<'a> {
+    applied_before: bool,
+    named: &'a [String],
+}
+
 /// REQ: API-010 (GitHub issue #113) — a device change after which the merge a reload applies
 /// doesn't validate: the reasons (422, as before). REQ: AGT-004 — which device of the base
-/// already holds a key the change uses is said in the fuller hint only, which the node that
-/// answers gives to whoever may read every device (`sanitize_problem`); the plain hint names none.
+/// already holds a key the change uses, and which stored devices the reasons name, is said in the
+/// fuller hint only, which the node that answers gives to whoever may read every device
+/// (`sanitize_problem`); the plain hint names none. REQ: API-010 (ADR-191) — while the stored
+/// entries didn't apply before the change, or for a delete that something else stored needs, the
+/// hint says that, not where the groups are.
 fn device_refusal(
     base: &telltale_config::Config,
     inherited: bool,
     after: Option<&telltale_config::ClientConfig>,
     errs: &[String],
+    why: &DeviceRefused<'_>,
 ) -> Problem {
     let refusal = Problem::new(Code::InvalidConfig, errs.join("; "));
-    match after.and_then(|c| base_holder(base, c)) {
-        Some((key, holder)) => {
-            let from = if inherited {
-                "in the cluster version this node builds on (the one it last applied as a replica)"
-            } else {
-                "in the config files"
-            };
-            refusal
-                .hint("A match key identifies one device: give this one a key the other device doesn't use.")
-                .fuller_hint(format!(
-                    "`{key}` already identifies `{holder}` {from}. A match key identifies one device: give this one a key `{holder}` doesn't use."
-                ))
-        }
-        None => refusal.hint("GET /api/v1/groups lists the groups a device can join."),
+    let rows = if why.named.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " The devices made through the API that the reasons name: {} (DELETE /api/v1/clients/{{name}} removes one).",
+            crate::managed::quoted(why.named)
+        )
+    };
+    if let Some((key, holder)) = after.and_then(|c| base_holder(base, c)) {
+        let from = if inherited {
+            "in the cluster version this node builds on (the one it last applied as a replica)"
+        } else {
+            "in the config files"
+        };
+        return refusal
+            .hint("A match key identifies one device: give this one a key the other device doesn't use.")
+            .fuller_hint(format!(
+                "`{key}` already identifies `{holder}` {from}. A match key identifies one device: give this one a key `{holder}` doesn't use.{rows}"
+            ));
+    }
+    // REQ: AGT-004 (ADR-191) — the node that answers recognizes this hint (it withholds the reasons
+    // from a caller that may not read every device), so the text lives beside that check.
+    let plain = if !why.applied_before {
+        telltale_api::config_api::STORED_ENTRIES_DONT_APPLY_HINT
+    } else if after.is_none() {
+        telltale_api::config_api::SOMETHING_ELSE_NAMES_IT_HINT
+    } else if !why.named.is_empty() {
+        // REQ: AGT-004 (ADR-191) — another stored device holds a name or match key the change uses.
+        "This change conflicts with another device made through the API: give this one a name and match keys no other device uses."
+    } else {
+        "GET /api/v1/groups lists the groups a device can join."
+    };
+    if rows.is_empty() {
+        refusal.hint(plain)
+    } else {
+        refusal.hint(plain).fuller_hint(format!("{plain}{rows}"))
     }
 }
 
@@ -3909,19 +3982,36 @@ fn device_candidate(
             applies: true,
         }),
         Err(errs) => {
+            // REQ: API-010 (ADR-191; GitHub issue #113) — the stored devices the reasons name, by
+            // name, for the refusal (the changed one is the change's own).
+            let mut named = crate::managed::stored_devices_named(base, &entries, &errs);
+            named.retain(|n| after.is_none_or(|c| c.name.as_str() != n));
             let deletes_a_row = after.is_none() && rows.iter().any(|m| m.name == from);
             entries.clients = now;
-            if deletes_a_row && crate::managed::merge(base, &entries).is_err() {
+            let applied_before = crate::managed::merge(base, &entries).is_ok();
+            if deletes_a_row && !applied_before {
                 return Ok(DeviceCandidate {
                     config: base.clone(),
+                    // REQ: AGT-004 (ADR-191) — the node that answers cuts this warning back to its
+                    // first words for a caller that may not read every device.
                     warnings: vec![format!(
-                        "the devices and settings made through the API still don't apply: {}",
+                        "{}: {}",
+                        telltale_api::config_api::STORED_ENTRIES_STILL_DONT_APPLY,
                         errs.join("; ")
                     )],
                     applies: false,
                 });
             }
-            Err(device_refusal(base, inherited, after, &errs))
+            Err(device_refusal(
+                base,
+                inherited,
+                after,
+                &errs,
+                &DeviceRefused {
+                    applied_before,
+                    named: &named,
+                },
+            ))
         }
     }
 }
@@ -3954,8 +4044,11 @@ fn unused_device_impact(
             "Removes the stored `{name}`, which isn't in effect (the devices and settings made through the API don't apply); without it they apply again."
         )
     } else {
+        // REQ: AGT-004 (ADR-191) — the pointer to the warnings is a shared text: the node that
+        // answers drops it for a caller whose warning it cuts back.
         format!(
-            "Removes the stored `{name}`, which isn't in effect; the devices and settings made through the API still don't apply after it (the warnings say why)."
+            "Removes the stored `{name}`, which isn't in effect; the devices and settings made through the API still don't apply after it{}.",
+            telltale_api::config_api::SEE_THE_WARNINGS
         )
     })
 }
@@ -3975,10 +4068,12 @@ fn plan_client(
         .map_err(|e| Problem::internal(e.to_string()))?;
     let managed: Vec<String> = rows.iter().map(|m| m.name.clone()).collect();
     let cfg = src.config.load_full();
-    // REQ: API-010, CLU-003 (GitHub issue #113) — what the reload merges the stored devices onto.
-    let base =
-        (!src.files_unread.load(std::sync::atomic::Ordering::Acquire)).then(|| managed_base(src));
-    let inherited = src.managed_base.load().is_some();
+    // REQ: API-010, CLU-003 (ADR-191; GitHub issue #113) — what the reload merges the stored
+    // devices onto, read now (this runs on a blocking thread).
+    let written_on = write_base(src);
+    let base = (!src.files_unread.load(std::sync::atomic::Ordering::Acquire))
+        .then(|| Arc::clone(&written_on.base));
+    let inherited = written_on.inherited;
     let is_managed = |n: &str| managed.iter().any(|m| m == n);
     let in_files = |n: &str| match &base {
         Some(b) => b.client.iter().any(|c| c.name.as_str() == n),
@@ -3995,19 +4090,24 @@ fn plan_client(
     if in_files(&w.name) && !leaves_its_name {
         return Err(defined_in_base(&w.name, inherited));
     }
-    // REQ: API-010 (GitHub issue #113) — a stored device the configuration in effect has no
-    // device of: what a delete removes is the stored one.
-    let before = cfg
-        .client
-        .iter()
-        .find(|c| c.name.as_str() == w.name)
-        .map(|c| client_info(c, &managed))
-        .or_else(|| {
-            rows.iter()
-                .find(|m| removes_a_row && m.name == w.name)
-                .and_then(|m| serde_json::from_str::<telltale_config::ClientConfig>(&m.body).ok())
-                .map(|c| client_info(&c, &managed))
-        });
+    // REQ: API-010 (ADR-191; GitHub issue #113) — what a delete removes is the stored row: `before`
+    // (and so the audit entry) is that row when the configuration in effect has no device of its
+    // name, or when a device of the base hides it (the base's device, in effect, stays).
+    let stored_row = || {
+        rows.iter()
+            .find(|m| m.name == w.name)
+            .and_then(|m| serde_json::from_str::<telltale_config::ClientConfig>(&m.body).ok())
+            .map(|c| client_info(&c, &managed))
+    };
+    let before = if removes_a_row && in_files(&w.name) {
+        stored_row()
+    } else {
+        cfg.client
+            .iter()
+            .find(|c| c.name.as_str() == w.name)
+            .map(|c| client_info(c, &managed))
+            .or_else(|| if removes_a_row { stored_row() } else { None })
+    };
     let after = match &w.input {
         None => {
             if before.is_none() && !removes_a_row {
@@ -4047,12 +4147,16 @@ fn plan_client(
         &w.name,
         after.as_ref(),
     )?;
-    let (recent_queries, mut impact) = client_impact(src, &w.name, before.as_ref(), after.as_ref());
+    let (mut recent_queries, mut impact) =
+        client_impact(src, &w.name, before.as_ref(), after.as_ref());
+    // REQ: AGT-002, API-010 (ADR-191; GitHub issue #113) — a stored device that isn't in effect
+    // labels no query: deleting it relabels none (not its addresses', nor the base device's).
     if removes_a_row
         && let Some(b) = &base
         && let Some(i) = unused_device_impact(state, b, inherited, &w.name, planned.applies)
     {
         impact = i;
+        recent_queries = 0;
     }
     Ok(ClientPlan {
         before,
@@ -4063,7 +4167,7 @@ fn plan_client(
         candidate: Arc::new(planned.config),
         // REQ: OBS-024 (GitHub issue #113) — read only by a dry run's simulation.
         baseline: if w.dry_run && w.simulate.is_some() {
-            dry_run_baseline(src, state)
+            dry_run_baseline(&written_on.base, state)
         } else {
             cfg
         },
@@ -4540,6 +4644,9 @@ struct ManagedPlan {
     also: AlsoStored,
     /// REQ: OBS-024 — the merged configuration with the change (for `simulate`).
     candidate: telltale_config::Config,
+    /// REQ: OBS-024, CLU-003 (ADR-191) — the base the change was planned on, which a dry run's
+    /// simulation compares with.
+    base: Arc<telltale_config::Config>,
 }
 
 /// Parses a records body into stored form.
@@ -4744,9 +4851,11 @@ fn plan_managed(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
-    // REQ: API-002, CLU-003 (GitHub issue #113) — what the reload merges the entries onto: the
-    // config files, or on a primary promoted from replica the files plus the version it builds on.
-    let file = managed_base(src);
+    // REQ: API-002, CLU-003 (ADR-191; GitHub issue #113) — what the reload merges the entries onto,
+    // read now: the config files, or on a primary promoted from replica the files plus the version
+    // it builds on.
+    let written_on = write_base(src);
+    let file = Arc::clone(&written_on.base);
     let defines = |cfg: &telltale_config::Config| match w.kind {
         ManagedKind::Record => cfg
             .record
@@ -4762,7 +4871,7 @@ fn plan_managed(
     if defines(&file) {
         // REQ: CLU-003 (GitHub issue #113) — on a primary promoted from replica, an entry of the
         // version it builds on that its own files don't define says where it comes from.
-        if src.managed_base.load().is_some() && !defines(&src.file_config.load()) {
+        if written_on.inherited && !defines(&written_on.own) {
             return Err(Problem::new(
                 Code::Conflict,
                 format!(
@@ -4889,6 +4998,7 @@ fn plan_managed(
         warnings,
         also: Vec::new(),
         candidate: merged,
+        base: written_on.base,
     })
 }
 
@@ -5016,8 +5126,9 @@ fn plan_singleton(
             singleton_noun(w.kind)
         )));
     }
-    // REQ: API-002, CLU-003 (GitHub issue #113) — onto what the reload merges the entries onto.
-    let file = managed_base(src);
+    // REQ: API-002, CLU-003 (ADR-191; GitHub issue #113) — onto what the reload merges the entries
+    // onto, read now.
+    let file = write_base(src).base;
     let mut entries = crate::managed::entries(state);
     let change = singleton_change(w.kind, &file, &mut entries, w.body.as_ref())?;
     let warnings = telltale_config::validate_config(&change.merged).unwrap_or_default();
@@ -5032,6 +5143,7 @@ fn plan_singleton(
         warnings,
         also: Vec::new(),
         candidate: change.merged,
+        base: file,
     })
 }
 
@@ -5504,16 +5616,18 @@ fn plan_override(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
-    // This node's own config files: what vouches for a plugin upstream (ADR-180), and, with the
-    // entries, what the guards below read, as before.
-    let own = src.file_config.load_full();
-    // REQ: API-002, CLU-003 (GitHub issue #113) — what the reload merges the entries onto: the
-    // files, or on a primary promoted from replica the files plus the version it builds on. The
-    // checks of what a change does, and the merge it must pass, read this.
-    let file = managed_base(src);
+    // REQ: API-002, CLU-003 (ADR-191; GitHub issue #113) — what the reload merges the entries onto,
+    // read now: the files, or on a primary promoted from replica the files plus the version it
+    // builds on. The checks of what a change does, and the merge it must pass, read this (`file`).
+    // This node's own config files (`own`): what vouches for a plugin upstream (ADR-180), and,
+    // with the entries, what the guards below read, as before.
+    let written_on = write_base(src);
+    let own = Arc::clone(&written_on.own);
+    let file = Arc::clone(&written_on.base);
     let mut entries = crate::managed::entries(state);
     let own_cfg = crate::managed::merge(&own, &entries).unwrap_or_else(|_| (*own).clone());
-    let base_cfg = (!Arc::ptr_eq(&own, &file))
+    let base_cfg = written_on
+        .inherited
         .then(|| crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone()));
     let before_cfg = base_cfg.as_ref().unwrap_or(&own_cfg);
     // REQ: API-002, T8.2 (ADR-181) — routers are an administrator's (checked again here, where
@@ -5684,6 +5798,7 @@ fn plan_override(
         warnings,
         also,
         candidate: merged,
+        base: written_on.base,
     })
 }
 
@@ -5984,7 +6099,8 @@ async fn run_managed_write(
         drop(one_at_a_time);
         if let Some(opts) = &w.simulate {
             out.simulation =
-                dry_run_simulation(&src, &state, &plan.candidate, opts, w.by_admin).await?;
+                dry_run_simulation(&src, &state, &plan.base, &plan.candidate, opts, w.by_admin)
+                    .await?;
         }
         return Ok(out);
     }
@@ -6074,13 +6190,14 @@ async fn run_managed_write(
 async fn dry_run_simulation(
     src: &Arc<Sources>,
     state: &telltale_store::state::State,
+    base: &Arc<telltale_config::Config>,
     candidate: &telltale_config::Config,
     opts: &telltale_api::SimulateOpts,
     by_admin: bool,
 ) -> Result<Option<telltale_api::model::Simulation>, Problem> {
     // REQ: API-002, CLU-003 (GitHub issue #113) — on the base the candidate was merged onto (the
     // base alone while the stored entries don't apply: what is in effect then).
-    let baseline = dry_run_baseline(src, state);
+    let baseline = dry_run_baseline(base, state);
     let candidate = Arc::new(candidate.clone());
     // REQ: OBS-024 (ADR-180) — the rule of `POST /api/v1/simulate`, before anything is read:
     // here the plan still answers, and its simulation says it wasn't run.
