@@ -54,7 +54,7 @@
 
     <dt id="q-dhcp">Does it include a DHCP server?</dt>
     <dd>
-      <p>No, on purpose. DHCP stays on your router or another server. TelltaleDNS reads device names from your router's lease list (UniFi and OPNsense) and from mDNS, so devices still show up by name. See <a href="#q-naming">how devices get their names</a>.</p>
+      <p>No, on purpose. DHCP stays on your router or another server. TelltaleDNS reads device names from your router's lease list (UniFi, OPNsense, and MikroTik) and from mDNS, so devices still show up by name. See <a href="#q-naming">how devices get their names</a>.</p>
     </dd>
 
     <dt id="q-firewall">Is it a firewall or a network monitor?</dt>
@@ -192,7 +192,7 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-naming">How does it name my devices?</dt>
     <dd>
-      <p>In order: names you give them, then your router's DHCP leases (UniFi and OPNsense, read through their APIs every few minutes), then the names devices announce over mDNS. <b>Clients → Discovered</b> lists everything found. See <a href="guide-devices.html">Groups, devices, and VLANs</a>.</p>
+      <p>In order: names you give them, then your router's DHCP leases (UniFi, OPNsense, and MikroTik, read through their APIs every few minutes), then the names devices announce over mDNS. <b>Clients → Discovered</b> lists everything found. See <a href="guide-devices.html">Groups, devices, and VLANs</a>.</p>
       <p>Two things it doesn't do yet: look up a device's reverse (PTR) record to name it, and accept dynamic DNS updates (RFC 2136) from a DHCP server. Lease and mDNS names label devices in the interface and the query log; they are not served as DNS answers. If you need either, an issue describing your setup helps.</p>
     </dd>
 

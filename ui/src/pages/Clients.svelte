@@ -72,15 +72,15 @@
     return { text: keyText.saved, cls: 'ok' };
   };
   const routerFields: Field[] = [
-    { key: 'type', label: t('Type'), type: 'select', options: ['unifi', 'opnsense'], initial: 'unifi' },
+    { key: 'type', label: t('Type'), type: 'select', options: ['unifi', 'opnsense', 'mikrotik'], optionLabels: { unifi: 'UniFi', opnsense: 'OPNsense', mikrotik: 'MikroTik (RouterOS 7)' }, initial: 'unifi' },
     { key: 'url', label: t('Address'), type: 'text', placeholder: 'https://192.168.1.1',
-      help: t('UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. A pasted key is sent only over https://. Changing the address (or the type, site or TLS settings) needs the key pasted again.') },
+      help: t('UniFi OS consoles: https://192.168.1.1. The classic Network application: https://controller:8443. OPNsense: https://opnsense.lan. MikroTik: https://192.168.88.1 (the www-ssl service). A pasted key is sent only over https://. Changing the address (or the type, site or TLS settings) needs the key pasted again.') },
     { key: 'api_key', label: t('API key'), type: 'secret', placeholderFor: kept('api_key', t('API key')),
       help: t('UniFi Network 9+: Settings → Control Plane → Integrations. OPNsense: System → Access → Users → API keys. It is saved on the node that takes configuration changes, and not in backups.') },
     { key: 'api_secret', label: t('API secret (OPNsense)'), type: 'secret', placeholderFor: kept('api_secret', t('API secret')) },
-    { key: 'username', label: t('Username (UniFi, instead of an API key)'), type: 'text', placeholder: t('telltale'), advanced: true,
-      help: t('A local UniFi user; read-only is enough.') },
-    { key: 'password', label: t('Password (UniFi)'), type: 'secret', placeholderFor: kept('password', t('password')), advanced: true },
+    { key: 'username', label: t('Username (MikroTik; UniFi without an API key)'), type: 'text', placeholder: t('telltale'),
+      help: t('A local user on the router; read-only is enough. MikroTik: a user in a group with the read, api and rest-api policies.') },
+    { key: 'password', label: t('Password (MikroTik; UniFi without an API key)'), type: 'secret', placeholderFor: kept('password', t('password')) },
     { key: 'site', label: t('Site (UniFi)'), type: 'text', placeholder: t('default'), advanced: true },
     { key: 'tls_ca', label: t('Console certificate'), type: 'text', placeholder: '/etc/telltale/udm.pem',
       help: t('A self-signed console: a file with its certificate, so it is verified.') },
@@ -89,8 +89,8 @@
     { key: 'tls_insecure_skip_verify', label: t("Don't check the certificate"), type: 'bool',
       help: t('Works with any console, but anything on your network could pose as it and receive the key. With a pasted key, give the address as a number (https://192.168.1.1).') },
     { key: 'interval_secs', label: t('Read every (seconds)'), type: 'number', placeholder: '300', advanced: true },
-    { key: 'offline_days', label: t('Offline devices seen within (days, UniFi)'), type: 'number', placeholder: '30', advanced: true,
-      help: t('0: only the connected clients.') },
+    { key: 'offline_days', label: t('Offline devices seen within (days, UniFi and MikroTik)'), type: 'number', placeholder: '30', advanced: true,
+      help: t('0: only the connected clients. MikroTik: static leases that are not bound now.') },
   ];
   // REQ: API-002, T8.2 (ADR-181) — the key files stay the server's: never sent back.
   const routerFiles = ['api_key_file', 'api_secret_file', 'password_file'];
@@ -338,7 +338,7 @@
     <section class="card" data-testid="discovered">
       <h2>{t('Discovered on your network')}</h2>
       <p class="muted small">
-        <T ctx="clients" msg={"Names your router's DHCP knows (<routerentry/>: UniFi, OPNsense), or that devices announced themselves over mDNS (<mdnskey/>). Unnamed devices already show these names; click an address to keep one, change it, or put the device in a group."} {routerentry} {mdnskey} />
+        <T ctx="clients" msg={"Names your router's DHCP knows (<routerentry/>: UniFi, OPNsense, MikroTik), or that devices announced themselves over mDNS (<mdnskey/>). Unnamed devices already show these names; click an address to keep one, change it, or put the device in a group."} {routerentry} {mdnskey} />
       </p>
       {#if found.length === 0}
         <p class="empty"><T ctx="clients" msg={'Nothing discovered yet. Connect your router under <strong>Routers</strong>, below, or set <mdnson/>.'} {strong} {mdnson} /></p>

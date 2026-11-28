@@ -1277,11 +1277,13 @@ const fn default_zone_negative_ttl() -> u32 {
 pub struct RouterConfig {
     /// Unique name (logs, the leases' source).
     pub name: SafeString,
-    /// `unifi` (UniFi OS consoles and the Network application) or `opnsense`.
+    /// `unifi` (UniFi OS consoles and the Network application), `opnsense`, or `mikrotik`
+    /// (RouterOS v7, through its REST API).
     #[serde(rename = "type")]
     pub kind: RouterKind,
     /// The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`
-    /// (Network application), `https://opnsense.lan`.
+    /// (Network application), `https://opnsense.lan`, `https://192.168.88.1` (MikroTik, the
+    /// `www-ssl` service).
     pub url: SafeString,
     /// UniFi: the site (default `default`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1292,8 +1294,8 @@ pub struct RouterConfig {
     /// OPNsense: the API secret (a file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_secret_file: Option<SafeString>,
-    /// UniFi without an API key: a local (read-only is enough) user and a file holding its
-    /// password.
+    /// UniFi without an API key, or MikroTik: a local (read-only is enough) user and a file
+    /// holding its password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<SafeString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1315,9 +1317,9 @@ pub struct RouterConfig {
     /// holds an address, and a read that fails is asked again within that time).
     #[serde(default = "default_router_interval")]
     pub interval_secs: u32,
-    /// UniFi: also name the clients that are offline now, if UniFi saw them within this many
-    /// days (their queries then show a name, not a bare address); at most 1,024 of them, most
-    /// recently seen first. 0: only the connected clients.
+    /// UniFi and MikroTik: also name the clients that are offline now, if the router saw them
+    /// within this many days (their queries then show a name, not a bare address); at most
+    /// 1,024 of them, most recently seen first. 0: only the connected clients.
     #[serde(
         default = "default_router_offline_days",
         skip_serializing_if = "is_default_offline_days"
@@ -1346,6 +1348,8 @@ const fn is_default_offline_days(d: &u32) -> bool {
 pub enum RouterKind {
     Unifi,
     Opnsense,
+    /// REQ: T8.2 (ADR-185) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.
+    Mikrotik,
 }
 
 /// REQ: OBS-010 (T7.12, `spec/06` §8) — alerts: rules checked on the primary (or a standalone

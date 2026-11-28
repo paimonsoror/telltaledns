@@ -3221,7 +3221,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "offline_days": {
-          "description": "UniFi: also name the clients that are offline now, if UniFi saw them within this many\ndays (their queries then show a name, not a bare address); at most 1,024 of them, most\nrecently seen first. 0: only the connected clients.",
+          "description": "UniFi and MikroTik: also name the clients that are offline now, if the router saw them\nwithin this many days (their queries then show a name, not a bare address); at most\n1,024 of them, most recently seen first. 0: only the connected clients.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -3262,16 +3262,16 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`unifi` (UniFi OS consoles and the Network application) or `opnsense`.",
+          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or `mikrotik`\n(RouterOS v7, through its REST API).",
           "$ref": "#/$defs/RouterKind"
         },
         "url": {
-          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`.",
+          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`, `https://192.168.88.1` (MikroTik, the\n`www-ssl` service).",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "username": {
-          "description": "UniFi without an API key: a local (read-only is enough) user and a file holding its\npassword.",
+          "description": "UniFi without an API key, or MikroTik: a local (read-only is enough) user and a file\nholding its password.",
           "type": [
             "string",
             "null"
@@ -3288,10 +3288,19 @@
     },
     "RouterKind": {
       "description": "A router integration's kind.",
-      "type": "string",
-      "enum": [
-        "unifi",
-        "opnsense"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "unifi",
+            "opnsense"
+          ]
+        },
+        {
+          "description": "REQ: T8.2 (ADR-185) — MikroTik RouterOS v7: the DHCP server's leases over the REST API.",
+          "type": "string",
+          "const": "mikrotik"
+        }
       ]
     },
     "RuleAction": {

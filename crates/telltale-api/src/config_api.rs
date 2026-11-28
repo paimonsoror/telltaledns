@@ -1117,7 +1117,7 @@ pub(crate) async fn put_schedule(
 /// The body has the same fields as `[[router]]` (the name comes from the path), e.g. a UniFi
 /// console: `{"type": "unifi", "url": "https://192.168.1.1", "api_key": "…",
 /// "tls_insecure_skip_verify": true}`. The UniFi API key, the OPNsense key and secret, or a
-/// UniFi password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
+/// UniFi or MikroTik password are sent as `api_key`, `api_secret`, and `password`: TelltaleDNS writes
 /// each to a new file only it can read under `<data_dir>/secrets/` on this node and stores that
 /// file's path. The value itself is never stored, logged, or returned; with an `Idempotency-Key`,
 /// the record kept for a retry holds only a keyed hash of it, for a day (ADR-181). A pasted key goes only

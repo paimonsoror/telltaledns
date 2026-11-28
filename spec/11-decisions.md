@@ -1859,6 +1859,18 @@ REQ: FLT-006, FLT-005, API-010, CLU-002, CLU-010, OBS-005, AGT-004. Implemented 
 
 **Verification:** `dns_011_opt_out_accepts_parent_apex_and_span`, `dns_011_opt_out_rejects_delegation_nsec3_as_encloser`, `dns_011_opt_out_requires_one_parent_zone`, `dns_011_opt_out_rejected_when_apex_has_own_nsec3`, `dns_011_opt_out_closest_encloser_above_parent_is_not_proof`, `dns_011_cut_nsec3_must_be_in_parent_zone`, `dns_011_insecure_denial_needs_unsigned_tld`, `dns_011_nsec3_iteration_cap_is_not_proof`, `dns_011_ds_denial_returned_as_error_is_not_proof`, `dns_011_proof_hashes_each_name_once`, `dns_011_proven_zone_is_remembered_for_its_proof_ttl`, `dns_011_hash_range_covers`, `dns_011_nsec3_hash_rfc5155_vectors`, `dns_011_ds_denial_by_nsec3_opt_out`; offline: `dns_011_offline_opt_out_unsigned_delegation_is_insecure`, `dns_011_offline_cname_chain_across_opt_out_unsigned_zones_is_insecure`, `dns_011_offline_signed_delegation_stays_validated`, `dns_011_offline_hickory_opt_out_ds_denial_is_secure`, `dns_011_offline_insecure_zone_proof_is_per_group_and_ttl_bounded`.
 
+## ADR-185 — MikroTik routers: DHCP leases over the RouterOS REST API (Proposed)
+**Context:** T8.2, ADR-080 (community request 2026-11-17). MikroTik routers run their own DHCP server, so their devices show up in TelltaleDNS by address only. RouterOS 7.1 and later serve a REST API (`/rest/…`, over the `www-ssl` or `www` service) with the same data as the terminal, authenticated with a RouterOS user (HTTP Basic). RouterOS v6 has only the binary API on port 8728, which would need a protocol implementation of its own.
+**Decision (proposed):**
+- **`type = "mikrotik"`**, RouterOS 7.1+, `GET /rest/ip/dhcp-server/lease` with `.proplist` (only the fields used), a `username` and `password_file` (the existing fields; a password pasted in the UI is saved like a key, ADR-181). No new dependency: the request goes through the fetch client the other routers use, with the same TLS options (`tls_ca`, `tls_server_name`, `tls_insecure_skip_verify`). `http://` loads with a warning, since the password then travels in clear on every read.
+- **Connected and offline, like UniFi (ADR-166).** A lease with `status = bound` is a connected device, at its `active-address` and `active-mac-address`. A static lease (`dynamic = false`) that isn't bound now is an offline device: kept when it has a name and its `last-seen` is within `offline_days` (a lease never seen stays, ordered last), the most recently seen first, at most 1,024, and never over a connected device's address (the UniFi merge, now shared). Disabled leases and dynamic leases that aren't bound are skipped.
+- **Names:** the lease's comment (its first line), else the host name the device sent. The comment is where RouterOS users label a static lease, as UniFi's alias.
+- Errors say what to check: 401/403 the user, its password, or its group's `rest-api` policy; 404 a RouterOS older than 7.1.
+**Consequences:**
+- A MikroTik router names devices from Clients → Discovered → Routers or `[[router]]`, with a read-only user (`policy=read,api,rest-api`).
+- One request per poll; a router with many leases answers only the listed fields. RouterOS v6 isn't supported.
+- Leases from every DHCP server on the router are read; a lease's `server` isn't used to filter.
+
 ## ADR-186 — A sweep of private reverse names is its own anomaly kind, `reverse_sweep`, muted on its own; the NXDOMAIN storm is judged on the other names (Proposed)
 
 **Context:**
