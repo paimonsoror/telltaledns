@@ -248,7 +248,7 @@ async fn dns_003_xff_only_from_listed_peers() {
 
 /// REQ: DNS-020 (ADR-194, R4) — with `trusted_proxies` a PROXY-protocol listener accepts only
 /// the listed balancer: another peer is closed even with a well-formed header, and the listed one
-/// names its client.
+/// names its client. Such a listener reads no `X-Forwarded-For`: the PROXY header's client wins.
 #[tokio::test]
 async fn dns_020_proxy_v2_only_from_listed_peers() {
     let (server, seen, stats) = server(proxied("127.0.0.2/32"));
@@ -261,7 +261,12 @@ async fn dns_020_proxy_v2_only_from_listed_peers() {
     assert!(until(|| stats.unlisted_peer.load(Relaxed) == 1).await);
 
     let (mut c, _conn) = h2_from("127.0.0.2", addr, "dns.test", &encode(client, addr)).await;
-    assert_eq!(send(&mut c, get("/dns-query", &[])).await.0, 200);
+    let (st, _) = send(
+        &mut c,
+        get("/dns-query", &[("x-forwarded-for", "198.51.100.9")]),
+    )
+    .await;
+    assert_eq!(st, 200);
     assert_eq!(*seen.lock().unwrap(), [(client, None::<String>)]);
     server.shutdown().await;
 }
