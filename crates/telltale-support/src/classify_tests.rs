@@ -230,3 +230,32 @@ fn ops_011_known_names_and_inline_secrets_come_from_the_config() {
     let dev = out.split_whitespace().next().unwrap();
     assert!(cfg_text.contains(dev), "{dev} not in {cfg_text}");
 }
+
+// REQ: OPS-011, DNS-003 (ADR-194) — a `doh` listener's proxies are addresses: kept at `none`,
+// replaced by a network of the same size at `strict`, and never dropped as unclassified.
+#[test]
+fn ops_011_support_package_classifies_the_new_listener_fields() {
+    assert_eq!(class_of("listen[].trusted_proxies[]"), Some(Class::Scan));
+    let cfg = json!({ "listen": [{
+        "proto": "doh", "addr": "0.0.0.0:443",
+        "tls": { "cert": "/etc/telltale/tls.crt", "key": "/etc/telltale/tls.key" },
+        "proxy_protocol": false, "x_forwarded_for": true,
+        "trusted_proxies": ["10.0.5.20/32"]
+    }] });
+    let off = config_view(&cfg, &mut red(Level::Off));
+    assert!(off.unclassified.is_empty(), "{:?}", off.unclassified);
+    assert_eq!(
+        off.value["listen"][0]["trusted_proxies"],
+        json!(["10.0.5.20/32"])
+    );
+    assert_eq!(off.value["listen"][0]["x_forwarded_for"], true);
+    let strict = config_view(&cfg, &mut red(Level::Strict));
+    assert!(strict.unclassified.is_empty(), "{:?}", strict.unclassified);
+    let kept = strict.value["listen"][0]["trusted_proxies"][0]
+        .as_str()
+        .unwrap();
+    assert!(
+        !kept.contains("10.0.5.20") && kept.ends_with("/32"),
+        "{kept}"
+    );
+}

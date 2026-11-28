@@ -183,7 +183,8 @@ pub fn encode_query(q: &Question, id: u16, out: &mut [u8]) -> Option<usize> {
 }
 
 /// [`encode_query`] with `extra` EDNS options (already encoded) after the loop tag; `tag`
-/// false leaves the loop tag out (a self-probe, T11.3).
+/// false leaves the loop tag out (a self-probe, T11.3; an upstream with `loop_tag = false` and
+/// its own bootstrap servers, ADR-192).
 pub(crate) fn encode_query_with(
     q: &Question,
     id: u16,
@@ -306,6 +307,10 @@ pub struct UpstreamOptions {
     /// query carries no loop tag (the listener would drop it as a forwarding loop, `spec/04`
     /// §7) and isn't copied to the exchange observer (dnstap's forwarder messages).
     pub self_probe: bool,
+    /// REQ: UPS-009 (ADR-192) — `[[upstream]] loop_tag`: queries carry the loop-detection option
+    /// (on by default; never for a self-probe). `false` leaves it out, for a resolver that drops
+    /// queries carrying an EDNS option it doesn't know.
+    pub loop_tag: bool,
 }
 
 impl Default for UpstreamOptions {
@@ -330,6 +335,7 @@ impl Default for UpstreamOptions {
             tls: crate::tls::UpstreamTls::default(),
             doh_get: false,
             self_probe: false,
+            loop_tag: true,
         }
     }
 }
@@ -419,6 +425,9 @@ pub struct Upstream {
     pub ecs_client: bool,
     /// REQ: OBS-020 — see [`UpstreamOptions::self_probe`].
     self_probe: bool,
+    /// REQ: UPS-009 (ADR-192), OBS-020 — whether queries carry the loop tag: decided once, when
+    /// the upstream is built ([`UpstreamOptions::loop_tag`], never for a self-probe).
+    loop_tag: bool,
     /// REQ: UPS-008 — connections opened and closed (TCP, DoT, DoH, and UDP's TCP fallback).
     conns: Arc<ConnStats>,
 }
@@ -717,6 +726,7 @@ impl Upstream {
             ecs: opts.ecs.clone(),
             ecs_client: opts.ecs_client,
             self_probe: opts.self_probe,
+            loop_tag: opts.loop_tag && !opts.self_probe,
             conns,
         })
     }
@@ -726,9 +736,25 @@ impl Upstream {
         &self.conns
     }
 
+    /// The bootstrap servers that look up this upstream's host name (the router's tests).
+    #[cfg(test)]
+    pub(crate) fn bootstrap(&self) -> Option<&Arc<Bootstrap>> {
+        self.target.bootstrap.as_ref()
+    }
+
     /// REQ: UPS-006 — one active health check. A stub upstream (DNS-022) is up by
     /// [`Self::stub_liveness`]; any other asks [`Self::health_question`] as a client would.
+    ///
+    /// REQ: UPS-006 (ADR-198) — an open breaker whose backoff has run out takes its half-open
+    /// probe here, so the check's outcome closes it (or opens it again, with the backoff
+    /// doubled). Only a query's attempt order used to admit the probe, so an upstream that
+    /// nobody's query reached, such as a node with no clients, stayed benched after it had
+    /// recovered, however many checks it answered. Before the backoff has run out, and while
+    /// a query's probe is out, the check's outcome counts as it always has.
     pub async fn health_check(&self) {
+        // The check runs whatever the admission is: what counts is the transition `admit`
+        // makes, to half-open with this check as the probe once the backoff has run out.
+        let _ = self.health.admit(Instant::now());
         let t0 = Instant::now();
         if let Some(up) = self.stub_liveness().await {
             let (outcome, latency) = if up {
@@ -893,7 +919,8 @@ impl Upstream {
             .as_deref()
             .or(self.ecs.as_deref())
             .unwrap_or_default();
-        let len = encode_query_with(q, id, &mut buf, ecs, !self.self_probe)
+        // REQ: UPS-009 (ADR-192), OBS-020 — the loop tag, unless this upstream goes without it.
+        let len = encode_query_with(q, id, &mut buf, ecs, self.loop_tag)
             .ok_or(ExchangeError::BadResponse)?;
         let query = &buf[..len];
         // REQ: OBS-007 (T9.19) — dnstap's forwarder messages, when observed (not for our own

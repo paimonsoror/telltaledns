@@ -1,0 +1,14 @@
+{
+  "cache": [
+    ["Choose email or ntfy","Qa-choose email / ntfy"],
+    ["Holds","Qa-holds-zeta"],
+    ["Kept by <b>{who}</b>","Qa-kept <b>{who}</b>"],
+    ["Notify by {kind}","Qa-notify {kind}"],
+    ["Read https://example.com/docs first.","Qa-read https://example.com/docs."],
+    ["Sends mail to smtp://mail.example:587","Qa-mail smtp://mail.example:587"],
+    [["{n} answer","{n} answers"],{"other":"{n} qa-answers"}]
+  ],
+  "common": [
+    ["Save","Qa-save-omega"]
+  ]
+}

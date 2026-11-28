@@ -83,7 +83,7 @@
       <ol class="guide">
         <li>Edit <code>telltale.toml</code>. Split it if you like: later files override earlier ones (<code>telltale run -c base.toml -c site.toml</code>).</li>
         <li>Check it: <code>telltale config check base.toml site.toml</code> reports every problem at once with its key path. <code>--print</code> shows the effective configuration.</li>
-        <li>Apply it without a restart: <code>systemctl reload telltale</code>, or <code>docker kill -s HUP telltale</code>. A file that doesn't validate is refused and the previous configuration keeps serving.</li>
+        <li>Apply it without a restart: <code>systemctl reload telltale</code>, or <code>sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' telltale)"</code>. A file that doesn't validate is refused and the previous configuration keeps serving.</li>
       </ol>
 <pre><code>telltale config check /etc/telltale/telltale.toml   # "config OK", or every error with its path
 sudo systemctl reload telltale                       # applied with no dropped queries</code></pre>

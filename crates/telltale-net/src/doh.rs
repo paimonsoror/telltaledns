@@ -4,7 +4,9 @@
 //! with `Content-Type: application/dns-message`, on the configured path and on
 //! `<path>/<client-id>` (FLT-006; the path's ID wins over one from SNI). Answers carry
 //! `Cache-Control: max-age` = the smallest TTL in the answer (RFC 8484 §5.1). PROXY protocol
-//! v2 (DNS-020) is read before the TLS handshake when configured.
+//! v2 (DNS-020) is read before the TLS handshake when configured. Behind proxies the operator
+//! lists (`trusted_proxies`, `x_forwarded_for`; ADR-194) only they may connect, and nothing is
+//! answered without the client's address (`crate::forwarded`).
 
 use std::convert::Infallible;
 use std::io;
@@ -16,15 +18,19 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
-use hyper::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
+use hyper::header::{ALLOW, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, HeaderValue};
 use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::{Notify, Semaphore, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
+use tracing::warn;
 
+use crate::forwarded::Network;
 use crate::handler::{ClientId, QueryHandler, RequestMeta, Response, Transport};
+use crate::log_line::OncePerMinute;
+use crate::proxy::{NoAddress, Source};
 use crate::tls::CertStore;
 
 pub(crate) const DNS_MESSAGE: &str = "application/dns-message";
@@ -49,6 +55,13 @@ pub struct DohConfig {
     /// REQ: DNS-004 (T7.8) — `Alt-Svc` to send (`h3=":443"`) when an HTTP/3 DoH listener serves the
     /// same name.
     pub alt_svc: Option<String>,
+    /// REQ: DNS-003, DNS-020 (ADR-194) — `trusted_proxies`: the only peers this listener accepts
+    /// (any other connection is closed at accept, before a byte is read), and the hops skipped in
+    /// `X-Forwarded-For`.
+    pub trusted_proxies: Vec<Network>,
+    /// REQ: DNS-003 (ADR-194) — the client is the rightmost `X-Forwarded-For` entry that isn't in
+    /// `trusted_proxies`. No `Alt-Svc`, and no client IDs from SNI (the SNI is the proxy's).
+    pub x_forwarded_for: bool,
 }
 
 impl DohConfig {
@@ -62,7 +75,16 @@ impl DohConfig {
             max_connections: 1024,
             max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
             alt_svc: None,
+            trusted_proxies: Vec::new(),
+            x_forwarded_for: false,
         }
+    }
+
+    /// REQ: DNS-003, DNS-020 (ADR-194) — the listener is behind proxies the operator lists: only
+    /// they connect, and a connection or request without a usable client address is refused,
+    /// never answered as the socket's peer.
+    pub fn behind_listed_proxies(&self) -> bool {
+        self.x_forwarded_for || !self.trusted_proxies.is_empty()
     }
 }
 
@@ -80,6 +102,18 @@ pub struct DohStats {
     pub bad_requests: AtomicU64,
     pub tls_failed: AtomicU64,
     pub proxy_rejected: AtomicU64,
+    /// Connections whose PROXY header named no client address, by kind (DNS-020), and that kept
+    /// the socket's address. A listener behind listed proxies refuses those instead and counts
+    /// them in `no_client_address` only (ADR-194).
+    pub proxy_no_address: crate::proxy::NoAddressStats,
+    /// REQ: DNS-003 (ADR-194) — connections closed at accept: the peer isn't in
+    /// `trusted_proxies`.
+    pub unlisted_peer: AtomicU64,
+    /// REQ: DNS-003, DNS-020 (ADR-194) — behind listed proxies: connections whose PROXY header,
+    /// and requests whose `X-Forwarded-For`, name no usable client address. They are refused.
+    pub no_client_address: AtomicU64,
+    unlisted_peer_line: OncePerMinute,
+    no_client_address_line: OncePerMinute,
 }
 
 /// A running DoH listener.
@@ -93,7 +127,12 @@ pub struct DohServer {
 
 impl DohServer {
     /// Binds and starts accepting. Must be called from within a Tokio runtime.
-    pub fn bind<H: QueryHandler>(cfg: DohConfig, handler: Arc<H>) -> io::Result<Self> {
+    pub fn bind<H: QueryHandler>(mut cfg: DohConfig, handler: Arc<H>) -> io::Result<Self> {
+        // REQ: DNS-003 (ADR-194) — clients reach the proxy, not this node: an advertised HTTP/3
+        // port would point at the proxy's host.
+        if cfg.x_forwarded_for {
+            cfg.alt_svc = None;
+        }
         let tls = cfg.tls.server_config(&[b"h2", b"http/1.1"])?;
         let listener = crate::tcp::listen(cfg.addr)?;
         let local_addr = listener.local_addr()?;
@@ -150,6 +189,21 @@ async fn accept_loop<H: QueryHandler>(
             tokio::time::sleep(Duration::from_millis(10)).await;
             continue;
         };
+        // REQ: DNS-003 (ADR-194) — behind listed proxies only they connect: any other peer is
+        // closed before a byte is read, and takes no slot.
+        if cfg.behind_listed_proxies() && !crate::forwarded::listed(&cfg.trusted_proxies, peer.ip())
+        {
+            stats.unlisted_peer.fetch_add(1, Ordering::Relaxed);
+            if stats.unlisted_peer_line.due(crate::log_line::now_ms()) {
+                warn!(
+                    listener = %cfg.addr,
+                    %peer,
+                    "doh: closed a connection from an address this listener's trusted_proxies doesn't list (logged at most once a minute)"
+                );
+            }
+            drop(stream);
+            continue;
+        }
         let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
             stats.rejected.fetch_add(1, Ordering::Relaxed);
             continue;
@@ -192,16 +246,34 @@ async fn serve_conn<H: QueryHandler>(
     per_address: &Arc<crate::peer_limit::PeerLimit>,
 ) {
     if cfg.proxy_protocol {
-        match timeout(
+        let Ok(Ok(source)) = timeout(
             cfg.handshake_timeout,
-            crate::proxy::read_header(&mut stream),
+            crate::proxy::read_source(&mut stream),
         )
         .await
-        {
-            Ok(Ok(Some(src))) => peer = src,
-            Ok(Ok(None)) => {}
-            _ => {
-                stats.proxy_rejected.fetch_add(1, Ordering::Relaxed);
+        else {
+            stats.proxy_rejected.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        match source {
+            // REQ: DNS-020 (ADR-194) — behind listed proxies the header must name a client:
+            // never an unspecified or a loopback address (source port 0 and an empty destination
+            // are fine).
+            Source::Client(src)
+                if !cfg.behind_listed_proxies() || crate::forwarded::is_client(src.ip()) =>
+            {
+                peer = src;
+            }
+            // REQ: DNS-020 (ADR-039) — LOCAL, AF_UNSPEC and AF_UNIX keep the socket's address,
+            // as before; they are only counted (and logged for loopback). Not behind listed
+            // proxies (ADR-194).
+            Source::NoAddress(kind) if !cfg.behind_listed_proxies() => {
+                stats.proxy_no_address.note(kind, peer, cfg.addr);
+            }
+            // REQ: DNS-020 (ADR-194) — behind listed proxies: refused, and counted as a refusal
+            // only; `proxy_no_address` counts the connections that keep the socket's address.
+            refused => {
+                no_client_address(&cfg, &stats, refused_header(refused));
                 return;
             }
         }
@@ -219,7 +291,13 @@ async fn serve_conn<H: QueryHandler>(
     let (sni_id, h2) = {
         let conn = tls.get_ref().1;
         (
-            conn.server_name().and_then(|s| cfg.tls.client_id(s)),
+            // REQ: DNS-003 (ADR-194) — behind a proxy that names its clients in
+            // `X-Forwarded-For`, the SNI is the proxy's: client IDs come from the path only.
+            if cfg.x_forwarded_for {
+                None
+            } else {
+                conn.server_name().and_then(|s| cfg.tls.client_id(s))
+            },
             conn.alpn_protocol() == Some(b"h2"),
         )
     };
@@ -229,7 +307,10 @@ async fn serve_conn<H: QueryHandler>(
         peer,
         sni_id,
         stats,
+        h2,
+        closing: Notify::new(),
     });
+    let held = Arc::clone(&ctx);
     let svc = hyper::service::service_fn(move |req| {
         let ctx = Arc::clone(&ctx);
         async move { Ok::<_, Infallible>(ctx.answer(req).await) }
@@ -260,7 +341,37 @@ async fn serve_conn<H: QueryHandler>(
                 conn.as_mut().graceful_shutdown();
                 let _ = conn.await;
             }
+            // REQ: DNS-003 (ADR-194) — a refused request ends an HTTP/1.1 connection, so nothing
+            // more of a stream the proxy and this listener might frame differently is read.
+            () = held.closing.notified(), if cfg.x_forwarded_for => {
+                conn.as_mut().graceful_shutdown();
+                let _ = conn.await;
+            }
         }
+    }
+}
+
+/// REQ: DNS-020 (ADR-194) — what a refused PROXY header was, for the log line: fixed text that
+/// names its kind, never the header's bytes.
+fn refused_header(source: Source) -> &'static str {
+    match source {
+        Source::NoAddress(NoAddress::Local) => "a PROXY header with the LOCAL command",
+        Source::NoAddress(NoAddress::Unspec) => "a PROXY header with the AF_UNSPEC address family",
+        Source::NoAddress(NoAddress::Unix) => "a PROXY header with the AF_UNIX address family",
+        Source::Client(_) => "a PROXY header that names an unspecified or loopback source",
+    }
+}
+
+/// REQ: DNS-003, DNS-020 (ADR-194) — counts a connection or request refused for want of a
+/// client address, with at most one log line a minute. `what` is fixed text: never a header's
+/// value, which its sender wrote.
+fn no_client_address(cfg: &DohConfig, stats: &DohStats, what: &str) {
+    stats.no_client_address.fetch_add(1, Ordering::Relaxed);
+    if stats.no_client_address_line.due(crate::log_line::now_ms()) {
+        warn!(
+            listener = %cfg.addr,
+            "doh: refused {what}; a listener with trusted_proxies or x_forwarded_for never answers without the client's address (logged at most once a minute)"
+        );
     }
 }
 
@@ -271,6 +382,12 @@ struct Ctx<H> {
     peer: SocketAddr,
     sni_id: Option<ClientId>,
     stats: Arc<DohStats>,
+    /// The connection speaks HTTP/2 (ALPN `h2`).
+    h2: bool,
+    /// REQ: DNS-003 (ADR-194) — set by a refused request on an `x_forwarded_for` listener over
+    /// HTTP/1.1: the connection is shut down after the answer, so nothing more of its stream is
+    /// read. HTTP/2 frames each request on its own, and its connection stays.
+    closing: Notify,
 }
 
 type HttpResponse = hyper::Response<Full<Bytes>>;
@@ -294,6 +411,14 @@ impl<H: QueryHandler> Ctx<H> {
     }
 
     async fn answer_inner(&self, req: Request<Incoming>) -> HttpResponse {
+        let peer = if self.cfg.x_forwarded_for {
+            let Some(peer) = self.forwarded_client(&req) else {
+                return self.ending(StatusCode::FORBIDDEN);
+            };
+            peer
+        } else {
+            self.peer
+        };
         let path_id = match route(&self.cfg.path, req.uri().path()) {
             Ok(id) => id,
             Err(code) => return status(code),
@@ -324,7 +449,7 @@ impl<H: QueryHandler> Ctx<H> {
             }
         };
         let meta = RequestMeta {
-            peer: self.peer,
+            peer,
             local: None,
             transport: Transport::Doh,
             client_id: path_id.or(self.sni_id),
@@ -347,6 +472,43 @@ impl<H: QueryHandler> Ctx<H> {
             .and_then(|a| HeaderValue::from_str(a).ok())
         {
             h.insert(hyper::header::ALT_SVC, alt);
+        }
+        r
+    }
+
+    /// REQ: DNS-003 (ADR-194) — the client a listed proxy names in `X-Forwarded-For` (as the
+    /// peer, with port 0), or `None` (counted and logged) when there is none: the caller answers
+    /// 403 without asking the pipeline, and on HTTP/1.1 the connection ends after it. (A
+    /// request that states its length both ways never reaches here with both: hyper frames it
+    /// by `Transfer-Encoding`, drops `Content-Length`, and closes the connection after the
+    /// answer, RFC 9112 §6.3, so nothing behind it on the connection is read.)
+    fn forwarded_client(&self, req: &Request<Incoming>) -> Option<SocketAddr> {
+        let lines = req
+            .headers()
+            .get_all("x-forwarded-for")
+            .iter()
+            .map(HeaderValue::as_bytes);
+        let client = crate::forwarded::client(lines, &self.cfg.trusted_proxies).ok();
+        if client.is_none() {
+            no_client_address(
+                &self.cfg,
+                &self.stats,
+                "a request without a usable X-Forwarded-For client (missing, unreadable at the entry that counts, only listed proxies, more than 16 entries, or an unspecified or loopback address)",
+            );
+        }
+        client.map(|ip| SocketAddr::new(ip, 0))
+    }
+
+    /// A refusal. On HTTP/1.1 the connection closes after it (`Connection: close`, then a
+    /// shutdown once the answer is sent), so nothing more of the stream is read. On HTTP/2 each
+    /// request is framed on its own, and the connection, which carries the proxy's other
+    /// clients, stays.
+    fn ending(&self, code: StatusCode) -> HttpResponse {
+        let mut r = status(code);
+        if !self.h2 {
+            self.closing.notify_one();
+            r.headers_mut()
+                .insert(CONNECTION, HeaderValue::from_static("close"));
         }
         r
     }
@@ -464,6 +626,63 @@ mod tests {
         assert!(
             base64url_decode("AA+/").is_none(),
             "standard alphabet is not base64url"
+        );
+    }
+
+    /// REQ: DNS-020 (ADR-194) — a header that a listener behind listed proxies refuses is named
+    /// by its kind in the log line: fixed text, never the header's bytes.
+    #[test]
+    fn dns_020_a_refused_header_is_named_by_kind() {
+        let loopback: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        for (source, word) in [
+            (Source::NoAddress(NoAddress::Local), "LOCAL"),
+            (Source::NoAddress(NoAddress::Unspec), "AF_UNSPEC"),
+            (Source::NoAddress(NoAddress::Unix), "AF_UNIX"),
+            (Source::Client(loopback), "unspecified or loopback source"),
+        ] {
+            let text = refused_header(source);
+            assert!(text.contains(word), "{source:?}: {text}");
+            assert!(text.starts_with("a PROXY header"), "{text}");
+        }
+    }
+
+    /// REQ: DNS-020, DNS-003 (ADR-039, ADR-194) — a DoH listener's four log lines (an unlisted
+    /// peer, a refusal for want of a client address, and a kept no-address header at info and at
+    /// debug) go through the one limiter, each on a minute of its own: none holds another back.
+    #[test]
+    fn dns_020_each_listener_line_has_its_own_minute() {
+        let s = DohStats::default();
+        let names = [
+            "unlisted peer",
+            "no client address",
+            "kept, info",
+            "kept, debug",
+        ];
+        let due = |line: usize, t: u64| match line {
+            0 => s.unlisted_peer_line.due(t),
+            1 => s.no_client_address_line.due(t),
+            2 => s.proxy_no_address.line_due(NoAddress::Unspec, t),
+            _ => s.proxy_no_address.line_due(NoAddress::Local, t),
+        };
+        for (line, what) in names.iter().enumerate() {
+            assert!(
+                due(line, 1_000),
+                "{what}: the first line, whatever the others did"
+            );
+        }
+        for (line, what) in names.iter().enumerate() {
+            assert!(
+                !due(line, 60_999),
+                "{what}: a millisecond short of a minute"
+            );
+            assert!(
+                due(line, 61_000),
+                "{what}: a minute later, on its own minute"
+            );
+        }
+        assert!(
+            !s.proxy_no_address.line_due(NoAddress::Unix, 61_001),
+            "AF_UNIX shares the info line's minute with AF_UNSPEC"
         );
     }
 }

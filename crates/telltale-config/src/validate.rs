@@ -1404,6 +1404,7 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 "only valid for tcp, dot, and doh listeners",
             );
         }
+        behind_proxies(l, &p, r);
         if l.proto == crate::ListenProto::Udp {
             if l.max_connections.is_some() {
                 r.err(
@@ -1420,6 +1421,74 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
         }
         if l.max_connections == Some(0) {
             r.err(format!("{p}.max_connections"), "must be at least 1");
+        }
+    }
+}
+
+/// REQ: DNS-003, DNS-020 (ADR-194) — a `doh` listener behind proxies the operator lists:
+/// `trusted_proxies` goes with one source of client addresses (`proxy_protocol` or
+/// `x_forwarded_for`), `x_forwarded_for` needs the list, and the list names proxies, not
+/// everyone.
+fn behind_proxies(l: &crate::schema::Listener, p: &str, r: &mut Report<'_>) {
+    let doh = l.proto == crate::ListenProto::Doh;
+    if l.x_forwarded_for {
+        if !doh {
+            r.err(
+                format!("{p}.x_forwarded_for"),
+                "only valid for doh listeners",
+            );
+        } else if l.proxy_protocol {
+            r.err(
+                format!("{p}.x_forwarded_for"),
+                "set `proxy_protocol` or `x_forwarded_for`, not both",
+            );
+        } else if l.trusted_proxies.is_empty() {
+            r.err(
+                format!("{p}.trusted_proxies"),
+                "required with `x_forwarded_for`: list your proxies' addresses, e.g. [\"10.0.5.20/32\"]",
+            );
+        } else if l.max_connections_per_address.is_none() {
+            r.warn(format!(
+                "{p}.max_connections_per_address: with `x_forwarded_for` every connection is the proxy's; the default 32 may refuse it: raise it or set 0"
+            ));
+        }
+    }
+    if l.trusted_proxies.is_empty() {
+        return;
+    }
+    if !doh || !(l.proxy_protocol || l.x_forwarded_for) {
+        r.err(
+            format!("{p}.trusted_proxies"),
+            "only valid on a doh listener with `proxy_protocol` or `x_forwarded_for`",
+        );
+    }
+    let loopback = |ip: std::net::IpAddr| ip.to_canonical().is_loopback();
+    for (j, n) in l.trusted_proxies.iter().enumerate() {
+        let host = if n.addr.is_ipv4() { 32 } else { 128 };
+        if n.prefix == 0 {
+            r.err(
+                format!("{p}.trusted_proxies[{j}]"),
+                format!("`{n}` trusts every address: list only your proxies"),
+            );
+            continue;
+        }
+        if n.prefix < host {
+            r.warn(format!(
+                "{p}.trusted_proxies[{j}]: `{n}` is a network, not one proxy: every machine in it can name any client; list only your proxies"
+            ));
+        }
+        // A loopback listener's peers are this host in the listener's own family: `127.0.0.0/8`
+        // for an IPv4 one, `::1` for an IPv6 one.
+        let sees_this_host = if l.addr.ip().to_canonical().is_ipv4() {
+            let a = n.addr.to_canonical();
+            (a.is_ipv4() && a.is_loopback()) || n.contains(std::net::Ipv4Addr::LOCALHOST.into())
+        } else {
+            n.contains(std::net::Ipv6Addr::LOCALHOST.into())
+        };
+        if loopback(l.addr.ip()) && !sees_this_host {
+            r.warn(format!(
+                "{p}.trusted_proxies[{j}]: a loopback listener only sees this host; `{n}` never connects"
+            ));
         }
     }
 }
@@ -1456,6 +1525,80 @@ fn relay(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>)
         r.err(
             format!("{p}.relay"),
             "a relay stamp (sdns://…) or ip:port, e.g. 203.0.113.7:443",
+        );
+    }
+}
+
+/// REQ: UPS-009 (ADR-192) — why `ip` is this node, as far as the configuration can tell: a
+/// loopback or unspecified address, or one a `[[listen]]` entry uses. The machine's other
+/// addresses aren't in the configuration, and validation doesn't read them from the host.
+fn this_node(cfg: &Config, ip: std::net::IpAddr) -> Option<&'static str> {
+    let ip = ip.to_canonical();
+    if ip.is_loopback() {
+        Some("a loopback address")
+    } else if ip.is_unspecified() {
+        Some("the unspecified address")
+    } else if cfg.listen.iter().any(|l| l.addr.ip().to_canonical() == ip) {
+        Some("an address a [[listen]] entry uses")
+    } else {
+        None
+    }
+}
+
+/// The host of an upstream URL's `host[:port][/path]` part, as written (without brackets).
+fn url_host(rest: &str) -> &str {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if let Some(v6) = authority.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or_default();
+    }
+    match authority.split_once(':') {
+        Some((host, port)) if !port.contains(':') => host,
+        _ => authority,
+    }
+}
+
+/// REQ: UPS-009 (ADR-192) — `loop_tag = false` only where it does something, and never toward
+/// this node: there it doesn't fix a loop, it hides it, and the queries go round. Refused on a
+/// `recursive://` upstream (it asks authoritative servers without the option either way), and
+/// when the URL's host or a `bootstrap` server is this node as far as the configuration can
+/// tell ([`this_node`], or the name `localhost`). A host name other than `localhost`, a DNS
+/// stamp's address, the machine's other addresses, and a resolver that forwards back to this
+/// node can't be known here.
+fn loop_tag(cfg: &Config, u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
+    if u.loop_tag {
+        return;
+    }
+    if scheme == "recursive" {
+        r.err(
+            format!("{p}.loop_tag"),
+            "only for upstreams that forward: a recursive:// upstream never sends the option",
+        );
+        return;
+    }
+    let mut why = None;
+    if matches!(scheme, "udp" | "tcp" | "tls" | "https" | "h3" | "quic") {
+        let host = url_host(&u.url.as_str()[scheme.len() + 3..]);
+        let name = host.trim_end_matches('.').to_ascii_lowercase();
+        why = if name == "localhost" || name.ends_with(".localhost") {
+            Some(format!("the url's host `{host}` is this node (localhost)"))
+        } else {
+            host.parse()
+                .ok()
+                .and_then(|ip| this_node(cfg, ip))
+                .map(|w| format!("the url's host `{host}` is this node ({w})"))
+        };
+    }
+    if why.is_none() {
+        why = u.bootstrap.iter().find_map(|ip| {
+            this_node(cfg, *ip).map(|w| format!("the bootstrap server `{ip}` is this node ({w})"))
+        });
+    }
+    if let Some(why) = why {
+        r.err(
+            format!("{p}.loop_tag"),
+            format!(
+                "can't be false toward this node: {why}, and without the option its queries would come back and go round undetected (point the upstream at another resolver, or leave loop_tag on)"
+            ),
         );
     }
 }
@@ -1518,6 +1661,8 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                     r.err(format!("{p}.proxy"), "only for tcp://, tls://, and https:// upstreams, or udp:// through a socks5:// proxy (use tcp:// with an HTTP proxy or Tor)");
                 }
                 relay(u, s, &p, r);
+                // REQ: UPS-009 (ADR-192)
+                loop_tag(cfg, u, s, &p, r);
                 // REQ: DNS-012 (T7.15)
                 if s != "recursive" && u.recursive != crate::schema::RecursiveConfig::default() {
                     r.err(

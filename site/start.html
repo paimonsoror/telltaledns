@@ -142,7 +142,7 @@ dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works
         <li><b>Create the admin account.</b> Print the one-time setup token and open the UI at <code>http://&lt;address&gt;:8053/</code>:
 <pre><code>docker compose exec telltale telltale auth setup-token</code></pre></li>
       </ol>
-      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>docker compose kill -s HUP</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
+      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>sudo kill -HUP "$(docker inspect -f '{{with .State.Pid}}{{.}}{{end}}' $(docker compose ps -q telltale))"</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
 
       <h4>docker run</h4>
 <pre><code>docker run -d --name telltale --read-only --cap-drop ALL \
@@ -324,7 +324,7 @@ strategy = "fastest"</code></pre>
   <h2>Troubleshooting</h2>
   <dl class="faq">
     <dt>"address already in use" on port 53</dt>
-    <dd>Another DNS server runs there: Pi-hole, dnsmasq, or systemd-resolved's stub (<code>sudo ss -Hulpn 'sport = :53'</code> names it). Stop it, or for systemd-resolved add <code>DNSStubListener=no</code> under <code>[Resolve]</code> in <code>/etc/systemd/resolved.conf.d/telltale.conf</code> and restart it.</dd>
+    <dd>Another program listens on port 53, and on Linux one that listens on a single address of the machine is enough to block the default (every address). <code>sudo ss -lunp 'sport = :53'</code> (UDP) and <code>sudo ss -ltnp 'sport = :53'</code> (TCP) name it: systemd-resolved's stub, <code>dnsmasq</code> (including the one libvirt starts for its virtual machine network), Pi-hole or another resolver, or a NAS's built-in DNS service. Stop it, or for systemd-resolved add <code>DNSStubListener=no</code> under <code>[Resolve]</code> in <code>/etc/systemd/resolved.conf.d/telltale.conf</code> and restart it. To run beside it instead with a native install or host networking, set <code>[[listen]]</code> to this machine's own address for UDP and TCP (with Docker Compose, in the bundle's <code>telltale.toml</code>) and start again; only the listed addresses answer then. With <code>docker run -p</code>, publish on the one address instead: <code>-p 192.168.1.2:53:53/udp -p 192.168.1.2:53:53/tcp</code>. <a href="faq.html#q-port53">How, with an example</a>.</dd>
     <dt>A site is broken</dt>
     <dd>Find it in the <b>Query log</b> and press <b>Why?</b>: it names the list and line that blocked it. Then allow it with a quick rule, or add an allow line (<code>@@||name^</code>) to a list.</dd>
     <dt>Every query shows the same address</dt>

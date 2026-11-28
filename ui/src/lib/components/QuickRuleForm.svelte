@@ -15,12 +15,22 @@
   // pod's address and points at "Add to group…", because the group it falls to is its network's (or
   // `default`) and a rule for that is a rule for every device there. A dry run as you change a
   // field shows a refusal before Save.
+  // REQ: FLT-005, FLT-006 (ADR-183, GitHub issue #95) — a rule for an address stops matching when the
+  // address changes, while a MAC that a router reports for this address alone follows the device: when
+  // the Device field holds the bare address and such a MAC is known (`mac`, `macFrom`, `macShared`: the
+  // naming dialog's own read), the form says so and opens the naming dialog; once the device is named,
+  // the field holds its name.
   import { untrack } from 'svelte';
   import { api, ApiError, type S } from '../api';
   import { endsAt } from '../format';
+  import { normMac } from '../macKeys';
+  import ClientChip from './ClientChip.svelte';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
   import SimulationCard from './SimulationCard.svelte';
+  import { tk, tr, type Msg } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t, m } = tr('quickRuleForm');
 
   let {
     domain = '',
@@ -30,6 +40,9 @@
     seenAs = '',
     workload = '',
     workloadFrom = '',
+    mac = '',
+    macFrom = '',
+    macShared = false,
     known,
     rule,
     onsaved,
@@ -47,6 +60,12 @@
     workload?: string;
     /** Where the workload's group came from (`pod_label`, `namespace_label`, `map`, `default_group`, `none`). */
     workloadFrom?: string;
+    /** The MAC a device at the address could be named by (the identity's `recognition`), when the caller may read it. */
+    mac?: string;
+    /** Where `mac` comes from: `router` (this node's), `peer` (another full cluster member's), or `neighbor` (this server's table). */
+    macFrom?: string;
+    /** The MAC is reported at more than one address (an extender or a bridge shares it): it tells no device apart. */
+    macShared?: boolean;
     /** The configured devices, when the page has them already (the Why? drawer): the form doesn't ask again. */
     known?: S['ClientInfo'][];
     rule?: S['RuleInfo'];
@@ -60,19 +79,19 @@
   const checkDomId = `${listId}-check`;
 
   /** A group an operator put the workload in. */
-  const placedBy: Record<string, string> = {
-    pod_label: 'set by a label on its pods',
-    namespace_label: 'set by a label on its namespace',
-    map: 'set by a rule',
+  const placedBy: Record<string, Msg> = {
+    pod_label: m('set by a label on its pods'),
+    namespace_label: m('set by a label on its namespace'),
+    map: m('set by a rule'),
   };
   /** Where any other group of a workload comes from. */
-  const otherGroup: Record<string, string> = {
-    default_group: 'the default group for workloads',
-    none: "its network's group",
+  const otherGroup: Record<string, Msg> = {
+    default_group: m('the default group for workloads'),
+    none: m("its network's group"),
   };
   /** The words for a workload's group, whichever it is. */
   const origin = (from: string) =>
-    Object.hasOwn(placedBy, from) ? placedBy[from] : Object.hasOwn(otherGroup, from) ? otherGroup[from] : 'its group';
+    Object.hasOwn(placedBy, from) ? tk(placedBy[from]) : Object.hasOwn(otherGroup, from) ? tk(otherGroup[from]) : t('its group');
   // What the log calls a pod is `namespace/kind/name`. When this node's explanation has no workload for
   // the row, that shape decides nothing about the rule (the field and the scope stay as they were);
   // it only changes the advice in the label, which is wrong for a pod: its address changes.
@@ -80,6 +99,11 @@
   // Only a group an operator placed the workload in starts a pod's rule, and never `default`: that is
   // every device nothing else claims. (`group` is today's group of the workload, not the row's.)
   const placed = $derived(!!workload && !!group && group !== 'default' && Object.hasOwn(placedBy, workloadFrom));
+  // The naming dialog starts from the same MAC: a router's (this node's or a member's), at this address
+  // alone. A MAC only this server's neighbor table holds isn't one other servers, Docker or Kubernetes
+  // recognize the device by, and a shared one recognizes no device.
+  const macHint = $derived(!rule && !!address && !workload && !!mac && (macFrom === 'router' || macFrom === 'peer') && !macShared);
+  let namer = $state<ReturnType<typeof ClientChip> | undefined>();
 
   let action = $state<'allow' | 'block'>('allow');
   let name = $state('');
@@ -117,17 +141,17 @@
   });
 
   const durations = [
-    { v: '30', l: '30 minutes' },
-    { v: '60', l: '1 hour' },
-    { v: '120', l: '2 hours' },
-    { v: 'today', l: 'Until midnight' },
-    { v: '1440', l: '1 day' },
-    { v: 'always', l: 'Until I remove it' },
+    { v: '30', l: t('30 minutes') },
+    { v: '60', l: t('1 hour') },
+    { v: '120', l: t('2 hours') },
+    { v: 'today', l: t('Until midnight') },
+    { v: '1440', l: t('1 day') },
+    { v: 'always', l: t('Until I remove it') },
   ];
   /** An edit can keep the end time the rule has (a new duration counts from now). */
   const options = $derived(
     rule?.expires && (rule.expiresInSeconds ?? 0) > 0
-      ? [{ v: 'keep', l: `Keep the current end (${endsAt(rule.expires)})` }, ...durations]
+      ? [{ v: 'keep', l: t('Keep the current end ({end})', { end: endsAt(rule.expires) }) }, ...durations]
       : durations,
   );
 
@@ -171,6 +195,17 @@
   let checkSeq = 0;
   let touched = $state(false);
   const touch = () => (touched = true);
+  /** The device named from the MAC hint, if one was. */
+  let namedAs = $state('');
+  /** The device was named from the MAC hint: the rule is for its name now (and is checked as any change is). */
+  function named(n: string) {
+    namedAs = n;
+    who = n;
+    touch();
+  }
+  // The Device field names a configured device the address is: the row's, or the one just named from the
+  // MAC hint, so the form still says which device the address is after naming it.
+  const isDevice = $derived(!!who.trim() && ((device !== address && who.trim() === device) || (!!namedAs && who.trim() === namedAs)));
   $effect(() => {
     const ready = touched && name.trim() !== '' && (scope === 'device' ? who.trim() !== '' : scope === 'group' ? whichGroup !== '' : true);
     const mine = ++checkSeq;
@@ -201,7 +236,7 @@
     const id = rule?.id ?? `r-${Date.now().toString(36)}`;
     try {
       const c = await api.putRule(id, body);
-      saved = c.impact ?? 'Saved.';
+      saved = c.impact ?? t('Saved.');
       onsaved?.(saved);
     } catch (err) {
       error = err;
@@ -213,25 +248,25 @@
 
 <form class="quick" onsubmit={save} data-testid={rule ? 'quick-rule-edit-form' : 'quick-rule-form'}>
   <div class="row">
-    <span class="seg" role="group" aria-label="Action">
-      <button type="button" aria-pressed={action === 'allow'} onclick={() => (action = 'allow')}>Allow</button>
-      <button type="button" aria-pressed={action === 'block'} onclick={() => (action = 'block')}>Block</button>
+    <span class="seg" role="group" aria-label={t('Action')}>
+      <button type="button" aria-pressed={action === 'allow'} onclick={() => (action = 'allow')}>{t('Allow')}</button>
+      <button type="button" aria-pressed={action === 'block'} onclick={() => (action = 'block')}>{t('Block')}</button>
     </span>
-    <input class="grow mono" aria-label="Domain" placeholder="game.example.com" bind:value={name} oninput={touch} required />
+    <input class="grow mono" aria-label={t('Domain')} placeholder={t('game.example.com')} bind:value={name} oninput={touch} required />
   </div>
   <div class="row">
-    <label class="small">For
-      <select bind:value={scope} onchange={touch} aria-label="Applies to">
-        <option value="device">a device</option>
-        <option value="group">a group</option>
-        <option value="everyone">everyone</option>
+    <label class="small">{t('For')}
+      <select bind:value={scope} onchange={touch} aria-label={t('Applies to')}>
+        <option value="device">{t('a device')}</option>
+        <option value="group">{t('a group')}</option>
+        <option value="everyone">{t('everyone')}</option>
       </select>
     </label>
     {#if scope === 'device'}
       <input
-        aria-label="Device"
+        aria-label={t('Device')}
         list={listId}
-        placeholder="named device, IP, or network"
+        placeholder={t('named device, IP, or network')}
         bind:value={who}
         oninput={touch}
         aria-invalid={checkError ? 'true' : undefined}
@@ -240,20 +275,20 @@
       />
       <datalist id={listId}>{#each known ?? devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
     {:else if scope === 'group'}
-      <select aria-label="Group" bind:value={whichGroup} onchange={touch} required>
-        {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
+      <select aria-label={t('Group')} bind:value={whichGroup} onchange={touch} required>
+        {#each groups as g (g.name)}<option value={g.name} translate="no">{g.name}</option>{/each}
       </select>
     {/if}
-    <label class="small">for
-      <select aria-label="Duration" bind:value={duration}>
+    <label class="small">{t('for')}
+      <select aria-label={t('Duration')} bind:value={duration}>
         {#each options as d (d.v)}<option value={d.v}>{d.l}</option>{/each}
       </select>
     </label>
   </div>
   <div class="row">
-    <input class="grow" aria-label="Note" placeholder="Note (optional), e.g. Mom's game" bind:value={note} />
-    <button class="primary" disabled={saving || !name.trim()}>{saving ? 'Saving…' : rule ? 'Save changes' : 'Save rule'}</button>
-    {#if rule}<button type="button" class="link" onclick={oncancel}>Cancel</button>{/if}
+    <input class="grow" aria-label={t('Note')} placeholder={t('Note (optional), e.g. Mom\'s game')} bind:value={note} />
+    <button class="primary" disabled={saving || !name.trim()}>{saving ? t('Saving…') : rule ? t('Save changes') : t('Save rule')}</button>
+    {#if rule}<button type="button" class="link" onclick={oncancel}>{t('Cancel')}</button>{/if}
   </div>
   {#if !rule && address}
     <!-- REQ: FLT-005, FLT-017 (issue #73) — what the form filled in, and what the log shows for it. The
@@ -261,39 +296,57 @@
     {#if scope === 'group' && workload}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
         {#if whichGroup === group}
-          <bdi>{workload}</bdi> is a Kubernetes workload and its pods come and go, so this rule is for its group, <bdi>{whichGroup}</bdi>
-          ({origin(workloadFrom)}): every device in it. For one address instead, choose “a device”.
+          <T
+            ctx="quickRuleForm"
+            msg={'<bdi>{workload}</bdi> is a Kubernetes workload and its pods come and go, so this rule is for its group, <bdi>{group}</bdi> ({origin}): every device in it. For one address instead, choose “a device”.'}
+            params={{ workload, group: whichGroup, origin: origin(workloadFrom) }}>{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T
+          >
         {:else if group}
-          <bdi>{workload}</bdi> is a Kubernetes workload whose group is <bdi>{group}</bdi>. This rule is for <bdi>{whichGroup}</bdi>: every
-          device in it.
+          <T
+            ctx="quickRuleForm"
+            msg={'<bdi>{workload}</bdi> is a Kubernetes workload whose group is <bdi>{group}</bdi>. This rule is for <bdi>{which}</bdi>: every device in it.'}
+            params={{ workload, group, which: whichGroup }}>{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T
+          >
         {:else}
-          This rule is for <bdi>{whichGroup}</bdi>: every device in it.
+          <T ctx="quickRuleForm" msg={'This rule is for <bdi>{which}</bdi>: every device in it.'} params={{ which: whichGroup }}
+            >{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T
+          >
         {/if}
       </p>
     {:else if scope === 'device' && workload && who.trim() === address}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
-        {address} is one pod of <bdi>{workload}</bdi>, and a pod's address changes whenever it restarts.
-        {#if placed}For every pod, choose “a group”.{:else}To cover all its pods, put the workload in a group first: click its name in the log,
-          then Add to group…{/if}
+        <T ctx="quickRuleForm" msg={"{address} is one pod of <bdi>{workload}</bdi>, and a pod's address changes whenever it restarts."} params={{ address, workload }}
+          >{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T
+        >
+        {#if placed}{t('For every pod, choose “a group”.')}{:else}{t('To cover all its pods, put the workload in a group first: click its name in the log, then Add to group…')}{/if}
       </p>
-    {:else if scope === 'device' && device !== address && who.trim() === device}
-      <p class="muted small seen" data-testid="quick-rule-seen-as">{address} is your device “<bdi>{device}</bdi>”.</p>
+    {:else if scope === 'device' && isDevice}
+      <p class="muted small seen" data-testid="quick-rule-seen-as">
+        <T ctx="quickRuleForm" msg={'{address} is your device “<bdi>{device}</bdi>”.'} params={{ address, device: who.trim() }}>{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T>
+      </p>
     {:else if scope === 'device' && who.trim() === address}
       <p class="muted small seen" data-testid="quick-rule-seen-as">
-        {#if seenAs && seenAs !== address}{address} (shown in the log as <bdi>{seenAs}</bdi>).{/if}
+        {#if seenAs && seenAs !== address}<T ctx="quickRuleForm" msg={'{address} (shown in the log as <bdi>{seen}</bdi>).'} params={{ address, seen: seenAs }}
+            >{#snippet bdi(text: string)}<bdi translate="no">{text}</bdi>{/snippet}</T
+          >{/if}
         {#if podLike}
-          This looks like a Kubernetes pod this node doesn't know about: a pod's address changes whenever it restarts, so use the group an
-          operator placed it in, not the address.
+          {t('This looks like a Kubernetes pod this node doesn\'t know about: a pod\'s address changes whenever it restarts, so use the group an operator placed it in, not the address.')}
         {:else}
-          A rule for an address stops matching when the address changes: reserve the address in your router, or name the device so you change
-          one place, not every rule.<HelpButton id="device-name" />
+          {t('A rule for an address stops matching when the address changes: reserve the address in your router, or name the device so you change one place, not every rule.')}<HelpButton id="device-name" />
         {/if}
       </p>
+      {#if macHint && !podLike}
+        <p class="muted small seen" data-testid="quick-rule-mac-hint">
+          <T ctx="quickRuleForm" msg={"Your router reports this device's MAC address, <code>{mac}</code>: name the device by its MAC address to make rules follow it. The rule is then for its name."} params={{ mac: normMac(mac) }}
+            >{#snippet code(text: string)}<code translate="no">{text}</code>{/snippet}</T
+          >
+          <button type="button" class="link" onclick={() => namer?.nameDevice()}>{t('Name this device…')}</button><HelpButton id="device-mac" />
+        </p>
+      {/if}
     {/if}
   {/if}
   <p class="muted small">
-    Includes subdomains. Decides before any list. Devices may keep an old answer for a few minutes.{#if rule} Saving keeps who made the
-    rule and when.{/if}
+    {t('Includes subdomains. Decides before any list. Devices may keep an old answer for a few minutes.')}{#if rule} {t('Saving keeps who made the rule and when.')}{/if}
   </p>
   <!-- A polite live region that stays in the page, so a refusal that comes and goes while someone types
        is announced once, and the Device field points at it while it is there. -->
@@ -302,6 +355,10 @@
   {#if saved && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved}</div>{/if}
   {#if name.trim() && (scope !== 'device' || who.trim())}<SimulationCard run={simulateRule} />{/if}
 </form>
+{#if macHint}
+  <!-- The naming dialog the MAC hint opens: outside the rule's form, because it has a form of its own. -->
+  <ClientChip bind:this={namer} ip={address} name={seenAs || null} chip={false} onchanged={named} />
+{/if}
 
 <style>
   .quick {

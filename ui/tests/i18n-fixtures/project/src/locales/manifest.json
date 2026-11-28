@@ -1,0 +1,10 @@
+{
+  "qaa": {
+    "dir": "ltr",
+    "offered": false,
+    "owners": [
+      "example-owner"
+    ],
+    "since": "0.9.0"
+  }
+}

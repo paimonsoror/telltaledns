@@ -6,11 +6,16 @@
   import { bytes, num, pct } from '../format';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  import { tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  // REQ: API-012 — `answers` (u16) and `totalRemoved` (u64) are counts: tn() gives the ternaries'
+  // English.
+  const { t, tn } = tr('cacheCard');
 
   let {
     name: initial = '',
     compact = false,
-    title = 'Cache',
+    title = t('Cache'),
   }: { name?: string; compact?: boolean; title?: string } = $props();
 
   let stats = $state<S['CacheNodeStats'][]>([]);
@@ -64,7 +69,12 @@
     void loadStats();
     if (initial) void lookup();
   });
-  const ttl = (s: number) => (s >= 0 ? `${num(s)} s left` : `stale for ${num(-s)} s`);
+  const ttl = (s: number) => (s >= 0 ? t('{n} s left', { n: num(s) }) : t('stale for {n} s', { n: num(-s) }));
+  const errors = (f: S['CacheFlushResult']) =>
+    f.nodes
+      .filter((n) => n.error)
+      .map((n) => ` · ${n.node}: ${n.error}`)
+      .join('');
 </script>
 
 <section class="card" data-testid="cache-card">
@@ -73,12 +83,12 @@
     <div class="table-wrap">
       <table class="compact">
         <thead>
-          <tr><th>Node</th><th class="num">Entries</th><th class="num">Memory</th><th class="num" title="Answered from the cache: fresh, or refreshed in the background">From cache</th><th class="num">Stale served</th><th class="num">Prefetches</th><th class="num">Evictions</th></tr>
+          <tr><th>{t('Node')}</th><th class="num">{t('Entries')}</th><th class="num">{t('Memory')}</th><th class="num" title={t('Answered from the cache: fresh, or refreshed in the background')}>{t('From cache')}</th><th class="num">{t('Stale served')}</th><th class="num">{t('Prefetches')}</th><th class="num">{t('Evictions')}</th></tr>
         </thead>
         <tbody>
-          {#each stats as s, i (s.node ?? i)}
+          {#each stats as s, i (i)}
             <tr>
-              <td>{s.node ?? 'this node'}</td>
+              <td>{s.node ?? t('this node')}</td>
               <td class="num">{num(s.entries)}</td>
               <td class="num">{bytes(s.bytes)}</td>
               <td class="num">{pct(s.answeredPercent ?? s.hitPercent)}</td>
@@ -93,22 +103,26 @@
   {/if}
 
   <form class="row" onsubmit={lookup}>
-    <input class="grow mono" aria-label="Name to look up" placeholder="www.example.com" bind:value={name} />
-    <button>Look up</button>
+    <input class="grow mono" aria-label={t('Name to look up')} placeholder={t('www.example.com')} bind:value={name} />
+    <button>{t('Look up')}</button>
   </form>
   {#if found}
     {#if found.entries.length === 0}
-      <p class="muted small">Nothing cached for <span class="mono">{found.name}</span>.</p>
+      <p class="muted small">
+        <T ctx="cacheCard" msg={'Nothing cached for <span>{name}</span>.'} params={{ name: found.name }}
+          >{#snippet span(x: string)}<span class="mono" translate="no">{x}</span>{/snippet}</T
+        >
+      </p>
     {:else}
       <div class="table-wrap">
         <table class="compact" data-testid="cache-entries">
-          <thead><tr><th>Node</th><th>Type</th><th>Answer</th><th>Fresh</th><th class="num">Hits</th></tr></thead>
+          <thead><tr><th>{t('Node')}</th><th>{t('Type')}</th><th>{t('Answer')}</th><th>{t('Fresh')}</th><th class="num">{t('Hits')}</th></tr></thead>
           <tbody>
             {#each found.entries as e, i (i)}
               <tr>
-                <td>{e.node ?? 'this node'}</td>
-                <td>{e.qtype}{#if e.dnssecOk}<span class="muted small"> (DO)</span>{/if}</td>
-                <td>{e.rcode} · {e.answers} answer{e.answers === 1 ? '' : 's'}{#if e.authentic}<span class="badge ok">validated</span>{/if}</td>
+                <td>{e.node ?? t('this node')}</td>
+                <td translate="no">{e.qtype}{#if e.dnssecOk}<span class="muted small" translate="no"> (DO)</span>{/if}</td>
+                <td>{tn('{rcode} · {n} answer', '{rcode} · {n} answers', e.answers, { rcode: e.rcode, n: e.answers })}{#if e.authentic}<span class="badge ok">{t('validated')}</span>{/if}</td>
                 <td class="small">{ttl(e.ttlLeftSeconds)}</td>
                 <td class="num">{num(e.hits)}</td>
               </tr>
@@ -121,31 +135,30 @@
 
   {#if writable}
     <div class="row">
-      <label class="small"><input type="checkbox" bind:checked={subtree} /> and everything under it</label>
+      <label class="small"><input type="checkbox" bind:checked={subtree} /> {t('and everything under it')}</label>
       {#if stats.length > 1}
-        <select aria-label="Node" bind:value={node}>
-          <option value="">every node</option>
-          {#each stats as s, i (s.node ?? i)}<option value={s.node ?? ''}>{s.node}</option>{/each}
+        <select aria-label={t('Node')} bind:value={node}>
+          <option value="">{t('every node')}</option>
+          {#each stats as s, i (i)}<option value={s.node ?? ''}>{s.node}</option>{/each}
         </select>
       {/if}
-      <button disabled={busy || !name.trim()} onclick={() => flush(false)}>Flush this name</button>
+      <button disabled={busy || !name.trim()} onclick={() => flush(false)}>{t('Flush this name')}</button>
       {#if confirmAll}
-        <button class="danger" disabled={busy} onclick={() => flush(true)}>Yes, empty the cache</button>
-        <button class="link" onclick={() => (confirmAll = false)}>Cancel</button>
+        <button class="danger" disabled={busy} onclick={() => flush(true)}>{t('Yes, empty the cache')}</button>
+        <button class="link" onclick={() => (confirmAll = false)}>{t('Cancel')}</button>
       {:else}
-        <button class="link" onclick={() => (confirmAll = true)}>Flush everything…</button>
+        <button class="link" onclick={() => (confirmAll = true)}>{t('Flush everything…')}</button>
       {/if}
     </div>
   {/if}
   {#if flushed}
     <p class="notice ok small" data-testid="cache-flushed">
-      Removed {num(flushed.totalRemoved)} {flushed.totalRemoved === 1 ? 'entry' : 'entries'}{#each flushed.nodes.filter((n) => n.error) as n (n.node)}{` · ${n.node}: ${n.error}`}{/each}.
+      {tn('Removed {n} entry{errors}.', 'Removed {n} entries{errors}.', flushed.totalRemoved, { n: num(flushed.totalRemoved), errors: errors(flushed) })}
     </p>
   {/if}
   <ErrorNote {error} />
   <p class="muted small">
-    Flushing doesn't clear devices' own caches. Blocked answers are never cached, so unblocking needs no flush. To change
-    what a name resolves to, use Names on my network.
+    {t('Flushing doesn\'t clear devices\' own caches. Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on my network.')}
   </p>
 </section>
 

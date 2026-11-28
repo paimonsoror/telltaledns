@@ -22,6 +22,8 @@ regex-syntax = "0.8"
 telltale-store = { path = "../crates/telltale-store" }
 telltale-telemetry = { path = "../crates/telltale-telemetry" }
 telltale-support = { path = "../crates/telltale-support" }
+# ADR-194: the `X-Forwarded-For` walk (already in the lockfile through telltale-filter).
+telltale-net = { path = "../crates/telltale-net" }
 
 [[bin]]
 name = "parse_query"
@@ -75,6 +77,13 @@ bench = false
 [[bin]]
 name = "anomaly_observe"
 path = "fuzz_targets/anomaly_observe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "forwarded_for"
+path = "fuzz_targets/forwarded_for.rs"
 test = false
 doc = false
 bench = false

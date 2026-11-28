@@ -138,6 +138,8 @@ const TABLE: &[(&str, Class)] = &[
     ("listen[].path", Scan),
     ("listen[].tls.cert", Scan),
     ("listen[].tls.key", Scan),
+    // REQ: OPS-011, DNS-003 (ADR-194) — the proxies' addresses, like `api.trusted_proxies[]`.
+    ("listen[].trusted_proxies[]", Scan),
     ("local.hosts_files[]", Scan),
     ("node.data_dir", Scan),
     ("node.name", Name(C::Node)),

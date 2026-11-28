@@ -320,6 +320,258 @@ fn api_004_the_hint_never_contains_what_the_header_said() {
     );
 }
 
+// ---- the walk from the right (API-004, ADR-034)
+
+/// Headers whose `X-Forwarded-For` field lines are `lines`, in order.
+fn forwarded(lines: &[&[u8]]) -> HeaderMap {
+    let mut h = HeaderMap::new();
+    for l in lines {
+        h.append("x-forwarded-for", HeaderValue::from_bytes(l).unwrap());
+    }
+    h
+}
+
+/// The field lines as text, for a failure message.
+fn shown(lines: &[&[u8]]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|l| String::from_utf8_lossy(l).into_owned())
+        .collect()
+}
+
+/// REQ: API-004 (ADR-034) — the walk from the right stops at the first entry that isn't a bare
+/// IPv4 or IPv6 address, and the client is then the peer, as with no header. It never goes on to
+/// an entry further left: the client wrote those.
+#[test]
+fn api_004_xff_unparsable_entry_is_not_skipped() {
+    let a = auth(&[("10.0.0.1", 32), ("10.0.0.2", 32)]);
+    let peer = "10.0.0.1";
+    let mut wrong = Vec::new();
+    for (lines, what) in [
+        (
+            &[&b"192.168.1.5, 203.0.113.9:4711"[..]][..],
+            "an address and a port",
+        ),
+        (
+            &[&b"192.168.1.5, [2001:db8::1]"[..]][..],
+            "a bracketed IPv6 address",
+        ),
+        (
+            &[&b"192.168.1.5, [2001:db8::1]:443"[..]][..],
+            "brackets and a port",
+        ),
+        (&[&b"192.168.1.5, unknown"[..]][..], "a token"),
+        (
+            &[&b"192.168.1.5, 203.0.113.9:4711, 10.0.0.2"[..]][..],
+            "behind a listed proxy",
+        ),
+        (&[&b"192.168.1.5, , 10.0.0.2"[..]][..], "an empty entry"),
+        (&[&b"192.168.1.5,"[..]][..], "an empty last entry"),
+        (
+            &[&b"192.168.1.5"[..], &b"203.0.113.9:4711"[..]][..],
+            "on the last field line",
+        ),
+        (
+            &[&b"192.168.1.5"[..], &b"\xfe"[..]][..],
+            "a last field line that isn't text",
+        ),
+        (
+            &[&b"192.168.1.5, \xfe, 10.0.0.2"[..]][..],
+            "an entry that isn't text, behind a listed proxy",
+        ),
+        (
+            &[&b"192.168.1.5, 10.0.0.2:80"[..]][..],
+            "a listed proxy with a port",
+        ),
+        (&[&b"192.168.1.5, fe80::1%eth0"[..]][..], "a zone id"),
+        (&[&b"192.168.1.5, 010.0.0.2"[..]][..], "leading zeros"),
+    ] {
+        let got = remote(&a, &from(peer), &forwarded(lines));
+        if got != ip(peer) {
+            wrong.push(format!("{what}: {:?} gave {got}", shown(lines)));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the peer, {peer}, every time:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// REQ: API-004 (ADR-034) — what every well-formed header answered before the walk stopped at an
+/// unusable entry, and still answers.
+#[test]
+fn api_004_xff_well_formed_headers_keep_their_answers() {
+    let a = auth(&[("10.0.0.1", 32), ("10.0.0.2", 32), ("2001:db8:ffff::", 48)]);
+    for (peer, lines, want) in [
+        ("10.0.0.1", &[&b"192.168.1.5"[..]][..], "192.168.1.5"),
+        (
+            "10.0.0.1",
+            &[&b"192.168.1.5, 10.0.0.2"[..]][..],
+            "192.168.1.5",
+        ),
+        (
+            "10.0.0.1",
+            &[&b"127.0.0.1, 192.168.1.5, 10.0.0.2, 10.0.0.1"[..]][..],
+            "192.168.1.5",
+        ),
+        ("10.0.0.1", &[&b"10.0.0.2, 10.0.0.1"[..]][..], "10.0.0.1"),
+        ("192.168.1.50", &[&b"127.0.0.1"[..]][..], "192.168.1.50"),
+        (
+            "192.168.1.50",
+            &[&b"203.0.113.9:4711"[..]][..],
+            "192.168.1.50",
+        ),
+        ("10.0.0.1", &[][..], "10.0.0.1"),
+        ("10.0.0.1", &[&b""[..]][..], "10.0.0.1"),
+        (
+            "2001:db8:ffff::1",
+            &[&b"2001:db8::5"[..]][..],
+            "2001:db8::5",
+        ),
+        (
+            "10.0.0.1",
+            &[&b"2001:db8::5, 2001:db8:ffff::9"[..]][..],
+            "2001:db8::5",
+        ),
+        (
+            "10.0.0.1",
+            &[&b"  192.168.1.5  ,\t10.0.0.2 "[..]][..],
+            "192.168.1.5",
+        ),
+        (
+            "10.0.0.1",
+            &[&b"192.168.1.5"[..], &b"10.0.0.2"[..]][..],
+            "192.168.1.5",
+        ),
+        (
+            "10.0.0.1",
+            &[&b"127.0.0.1"[..], &b"192.168.1.5, 10.0.0.2"[..]][..],
+            "192.168.1.5",
+        ),
+        // A listed proxy written as an IPv4-mapped address is still a listed proxy.
+        (
+            "10.0.0.1",
+            &[&b"192.168.1.5, ::ffff:10.0.0.2"[..]][..],
+            "192.168.1.5",
+        ),
+        // Whatever is left of the selected entry is never read.
+        (
+            "10.0.0.1",
+            &[&b"unknown, 203.0.113.9:1, 192.168.1.5"[..]][..],
+            "192.168.1.5",
+        ),
+    ] {
+        let got = remote(&a, &from(peer), &forwarded(lines));
+        assert_eq!(got, ip(want), "from {peer}: {:?}", shown(lines));
+    }
+}
+
+/// REQ: API-004 (ADR-034) — the rule is per entry: bytes left of the entry that decides never
+/// matter, even in the same field line (a proxy that appends its client to the incoming header
+/// writes one line), and whatever they are, text or not.
+#[test]
+fn api_004_xff_bytes_left_of_the_deciding_entry_never_matter() {
+    let a = auth(&[("10.0.0.1", 32), ("10.0.0.2", 32)]);
+    let peer = "10.0.0.1";
+    let mut wrong = Vec::new();
+    for (lines, want) in [
+        (&[&b"\xfe, 203.0.113.9"[..]][..], "203.0.113.9"),
+        (
+            &[&b"\xfe\xff, 192.168.1.5, 10.0.0.2"[..]][..],
+            "192.168.1.5",
+        ),
+        (&[&b"caf\xc3\xa9, 203.0.113.9"[..]][..], "203.0.113.9"),
+        (&[&b"\xfe"[..], &b"203.0.113.9"[..]][..], "203.0.113.9"),
+        (&[&b"\xfe, 10.0.0.2"[..]][..], peer),
+    ] {
+        let got = remote(&a, &from(peer), &forwarded(lines));
+        if got != ip(want) {
+            wrong.push(format!("{:?} gave {got}, not {want}", shown(lines)));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The walk as it was before ADR-034's amendment of 2026-11-27: the oracle for
+/// `api_004_xff_walk_matches_the_old_walk_for_bare_entries`.
+fn old_remote(a: &Auth, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+    let trusted = |ip: IpAddr| {
+        a.settings()
+            .trusted_proxies
+            .iter()
+            .any(|(n, l)| crate::auth::in_network(ip, *n, *l))
+    };
+    if !trusted(peer) {
+        return peer;
+    }
+    headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find(|ip| !trusted(*ip))
+        .unwrap_or(peer)
+}
+
+/// REQ: API-004 (ADR-034) — for headers made only of bare addresses (any number of field lines
+/// and entries, spaces and tabs around them), the walk answers exactly what the old one did.
+/// Random lists from a small pool, from a fixed seed: the same cases on every run.
+#[test]
+fn api_004_xff_walk_matches_the_old_walk_for_bare_entries() {
+    const POOL: [&str; 10] = [
+        "10.0.0.1",
+        "10.0.0.2",
+        "192.168.1.5",
+        "203.0.113.9",
+        "127.0.0.1",
+        "2001:db8::5",
+        "2001:db8:ffff::9",
+        "::ffff:10.0.0.2",
+        "::ffff:192.168.1.5",
+        "::1",
+    ];
+    const PEERS: [&str; 4] = ["10.0.0.1", "10.0.0.2", "2001:db8:ffff::1", "192.168.1.50"];
+    const SPACE: [&str; 4] = ["", " ", "  ", "\t"];
+    let a = auth(&[("10.0.0.1", 32), ("10.0.0.2", 32), ("2001:db8:ffff::", 48)]);
+    // xorshift64, fixed seed.
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        usize::try_from(state % u64::try_from(n).unwrap()).unwrap()
+    };
+    for case in 0..5000 {
+        let peer: IpAddr = PEERS[next(PEERS.len())].parse().unwrap();
+        let mut lines = Vec::new();
+        for _ in 0..next(4) {
+            let entries: Vec<String> = (0..=next(5))
+                .map(|_| {
+                    let (l, r) = (SPACE[next(SPACE.len())], SPACE[next(SPACE.len())]);
+                    format!("{l}{}{r}", POOL[next(POOL.len())])
+                })
+                .collect();
+            lines.push(entries.join(","));
+        }
+        let mut h = HeaderMap::new();
+        for l in &lines {
+            h.append("x-forwarded-for", HeaderValue::from_str(l).unwrap());
+        }
+        let mut ext = Extensions::new();
+        ext.insert(ConnectInfo(SocketAddr::new(peer, 40_000)));
+        assert_eq!(
+            remote(&a, &ext, &h),
+            old_remote(&a, peer, &h),
+            "case {case}: from {peer}: {lines:?}"
+        );
+    }
+}
+
 #[test]
 fn api_004_the_hint_is_due_once_per_ten_minutes_whatever_the_number_of_threads() {
     let hint = ProxyHint::new();

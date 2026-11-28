@@ -89,9 +89,17 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
                 .filter(|_| l.proto.needs_tls())
                 .map(|t| t.cert.to_string()),
             self_signed: false,
-            skipped: l
-                .proxy_protocol
-                .then_some("it requires a PROXY protocol header, which probes don't send"),
+            skipped: if l.proxy_protocol {
+                Some("it requires a PROXY protocol header, which probes don't send")
+            } else if l.x_forwarded_for {
+                // REQ: OBS-020, DNS-003 (ADR-194) — a probe is no listed proxy and sends no
+                // client address; the proxy's public URL in `[probe] targets` tests the whole path.
+                Some(
+                    "it takes the client's address from a listed proxy's X-Forwarded-For; add the proxy's public URL to [probe] targets",
+                )
+            } else {
+                None
+            },
         });
     }
     // REQ: API-003 (ADR-149) — the web UI and API over HTTPS, and their certificate.
@@ -401,6 +409,46 @@ targets = ["udp://192.168.5.112:53"]
         assert_eq!(t[3].proto, "doh");
         assert_eq!(t[3].cert.as_deref(), Some("/etc/telltale/cert.pem"));
         assert!(!t[4].listener);
+    }
+
+    // REQ: OBS-020, DNS-003 (ADR-194) — a probe sends no client address, so a `doh` listener
+    // that takes it from a listed proxy is skipped, with a reason that points to `[probe]
+    // targets`; one behind listed PROXY-protocol balancers is skipped as before; the others are
+    // probed.
+    #[test]
+    fn obs_020_probes_skip_listeners_that_need_a_forwarded_address() {
+        let c = cfg(r#"
+[[listen]]
+proto = "doh"
+addr = "0.0.0.0:443"
+tls = { cert = "/etc/telltale/cert.pem", key = "/etc/telltale/key.pem" }
+x_forwarded_for = true
+trusted_proxies = ["10.0.5.20/32"]
+max_connections_per_address = 0
+[[listen]]
+proto = "doh"
+addr = "0.0.0.0:8443"
+tls = { cert = "/etc/telltale/cert.pem", key = "/etc/telltale/key.pem" }
+proxy_protocol = true
+trusted_proxies = ["10.0.5.30/32"]
+[[listen]]
+proto = "doh"
+addr = "0.0.0.0:9443"
+tls = { cert = "/etc/telltale/cert.pem", key = "/etc/telltale/key.pem" }
+"#);
+        let t = targets(&c);
+        assert_eq!(t.len(), 3);
+        let xff = t[0].skipped.unwrap_or_default();
+        assert!(
+            xff.contains("X-Forwarded-For") && xff.contains("[probe] targets"),
+            "{xff}"
+        );
+        assert!(
+            t[1].skipped.is_some_and(|s| s.contains("PROXY protocol")),
+            "{:?}",
+            t[1]
+        );
+        assert_eq!(t[2].skipped, None);
     }
 
     // REQ: API-003 (ADR-149) — with `[api] tls` the web UI is checked over HTTPS, with its

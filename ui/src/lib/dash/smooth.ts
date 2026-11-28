@@ -1,7 +1,14 @@
 // Dashboard lab — calming a time series for display: fewer, wider buckets (sums stay exact for
 // the interval they cover), no half-filled bucket at the newest edge.
+import { clock, monthDay } from '../format';
+import { tr } from '../i18n';
+
+const { t } = tr('smooth');
 
 export interface RawSeries {
+  /** What the series is (a status, a group's name): what the chart keys it by. REQ: API-012 — the
+   * `label` is display text only. */
+  key: string;
   label: string;
   /** A CSS variable name (`--s-blocked`) or a color. */
   color: string;
@@ -55,19 +62,17 @@ export function rebucket(times: number[], series: RawSeries[], maxPts: number): 
 }
 
 /** "05:47:00 PM · 17 s": the start and how long the bucket is, for a tooltip with little room. */
-export function bucketStart(t: number, span: number, multiDay: boolean): string {
-  const clock = new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: span < 60 ? '2-digit' : undefined });
-  const day = multiDay ? `${new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}, ` : '';
-  const len = span < 60 ? `${span} s` : span < 3600 ? `${Math.round(span / 60)} min` : `${Math.round(span / 3600)} h`;
-  return `${day}${clock} · ${len}`;
+export function bucketStart(start: number, span: number, multiDay: boolean): string {
+  const time = clock(start, span < 60);
+  const day = multiDay ? `${monthDay(start)}, ` : '';
+  const len = span < 60 ? t('{n} s', { n: span }) : span < 3600 ? t('{n} min', { n: Math.round(span / 60) }) : t('{n} h', { n: Math.round(span / 3600) });
+  return `${day}${time} · ${len}`;
 }
 
 /** "05:47 PM – 05:48 PM", with the date when the range spans days. */
-export function bucketLabel(t: number, span: number, multiDay: boolean): string {
+export function bucketLabel(start: number, span: number, multiDay: boolean): string {
   const withSec = span < 60;
-  const clock = (x: number) =>
-    new Date(x * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: withSec ? '2-digit' : undefined });
-  const day = multiDay ? `${new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}, ` : '';
-  if (span >= 3600) return `${day}${clock(t)}`;
-  return `${day}${clock(t)} – ${clock(t + span)}`;
+  const day = multiDay ? `${monthDay(start)}, ` : '';
+  if (span >= 3600) return `${day}${clock(start, withSec)}`;
+  return `${day}${clock(start, withSec)} – ${clock(start + span, withSec)}`;
 }

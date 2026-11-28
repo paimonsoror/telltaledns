@@ -3,6 +3,10 @@
 // otherwise. Expects the state left by ui.spec.ts (admin `admin`, some traffic).
 import { test } from '@playwright/test';
 import { resolve } from 'node:path';
+import { failOnPageErrors } from './page-errors';
+
+// REQ: API-005 — a page error fails the test, as in 1-ui.spec.ts.
+failOnPageErrors(test);
 
 const shot = (name: string) => resolve(import.meta.dirname, '../../../site/assets/shots', `${name}.jpg`);
 const review = (name: string) => resolve(import.meta.dirname, '../../.shots', `${name}.jpg`);

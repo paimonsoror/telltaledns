@@ -5,6 +5,9 @@
   import type { S } from '../api';
   import FlowDiagram from './FlowDiagram.svelte';
   import SimulationCard from './SimulationCard.svelte';
+  import { tr } from '../i18n';
+  // REQ: API-012 — a label beside the caller's sentence (the sentence is the caller's message).
+  const { t } = tr('changePreview');
 
   let {
     sentence,
@@ -23,7 +26,7 @@
 </script>
 
 <div class="preview" data-testid="change-preview">
-  <p><b>What this will do:</b> {sentence}</p>
+  <p><b>{t('What this will do:')}</b> {sentence}</p>
   <FlowDiagram {highlight} {device} {name} />
   {#if simulate}<SimulationCard run={simulate} />{/if}
 </div>

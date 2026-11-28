@@ -1,5 +1,7 @@
 //! OPS-005 acceptance tests: unknown keys error with path; env overrides apply.
 
+use std::fmt::Write as _;
+
 use telltale_config::{ByteSize, Config, ConfigError, Loader, Role, Strategy, TelemetryMode};
 
 const EXAMPLE: &str = include_str!("../../../docs/examples/telltale.toml");
@@ -1331,6 +1333,142 @@ stub_servers = ["10.0.0.53"]
     }
 }
 
+/// The listeners of the `loop_tag` tests: an IPv4 and an IPv6 address of this node.
+const LOOP_TAG_LISTENERS: &str = "[[listen]]
+proto = \"udp\"
+addr = \"192.168.1.5:53\"
+[[listen]]
+proto = \"tcp\"
+addr = \"[fd00::5]:5300\"
+";
+
+/// REQ: UPS-009 (ADR-192) — `loop_tag = false` is refused toward this node, as far as the
+/// configuration can tell: a loopback or unspecified address (IPv4, IPv6, or IPv4-mapped), the
+/// name `localhost`, or an address a `[[listen]]` entry uses (on any port), in the URL or among
+/// the `bootstrap` servers. Accepted: a public address, a LAN address no listener uses, a host
+/// name with public bootstrap servers, and loopback with the switch left on.
+#[test]
+fn ups_009_loop_tag_off_is_refused_toward_this_node() {
+    let refused = [
+        ("udp://127.0.0.1", ""),
+        ("udp://127.0.0.53:5353", ""),
+        ("tcp://[::1]:53", ""),
+        ("udp://0.0.0.0", ""),
+        ("udp://[::]:53", ""),
+        ("udp://[::ffff:127.0.0.1]", ""),
+        ("udp://localhost:5300", ""),
+        ("https://LocalHost./dns-query", ""),
+        ("tls://resolver.localhost", ""),
+        ("udp://192.168.1.5:5353", ""),
+        ("tcp://[fd00::5]", ""),
+        ("tls://dns.example", "bootstrap = [\"127.0.0.1\"]\n"),
+        (
+            "tls://dns.example",
+            "bootstrap = [\"9.9.9.9\", \"192.168.1.5\"]\n",
+        ),
+        ("https://dns.example/dns-query", "bootstrap = [\"::\"]\n"),
+    ];
+    let mut upstreams = String::new();
+    for (i, (url, extra)) in refused.iter().enumerate() {
+        write!(
+            upstreams,
+            "[[upstream]]\nname = \"u{i}\"\nurl = \"{url}\"\nloop_tag = false\n{extra}"
+        )
+        .unwrap();
+    }
+    let errs = load_str(&format!("{LOOP_TAG_LISTENERS}{upstreams}"))
+        .err()
+        .unwrap_or_default();
+    for (i, (url, extra)) in refused.iter().enumerate() {
+        let want = format!("upstream[{i}].loop_tag");
+        let e = errs.iter().find(|e| e.path == want);
+        assert!(
+            e.is_some_and(|e| e.message.contains("this node")),
+            "{url} {extra}: {want} not refused; errors: {errs:?}"
+        );
+    }
+    assert_eq!(errs.len(), refused.len(), "nothing else: {errs:?}");
+
+    let accepted = load_str(&format!(
+        "{LOOP_TAG_LISTENERS}[[upstream]]
+name = \"public\"
+url = \"udp://198.51.100.53\"
+loop_tag = false
+[[upstream]]
+name = \"lan\"
+url = \"udp://192.168.1.9\"
+loop_tag = false
+[[upstream]]
+name = \"named\"
+url = \"tls://dns.example\"
+bootstrap = [\"9.9.9.9\"]
+loop_tag = false
+[[upstream]]
+name = \"system-bootstrap\"
+url = \"https://dns.example/dns-query\"
+loop_tag = false
+[[upstream]]
+name = \"loopback-tagged\"
+url = \"udp://127.0.0.1:5335\"
+"
+    ));
+    assert!(accepted.is_ok(), "{:?}", accepted.err());
+}
+
+/// REQ: UPS-009 (ADR-192) — `loop_tag = false` only where it changes what is sent: refused on a
+/// `recursive://` upstream, stub zones included, which asks authoritative servers without the
+/// option either way; accepted on the kinds that send the query's bytes on (DNS stamps and
+/// plugins).
+#[test]
+fn ups_009_loop_tag_off_is_refused_where_it_does_nothing() {
+    let errs = load_str(
+        r#"
+[[upstream]]
+name = "root"
+url = "recursive://"
+loop_tag = false
+[[upstream]]
+name = "stub"
+url = "recursive://"
+loop_tag = false
+[upstream.recursive]
+stub_zone = "corp.example"
+stub_servers = ["10.0.0.53"]
+"#,
+    )
+    .err()
+    .unwrap_or_default();
+    for want in ["upstream[0].loop_tag", "upstream[1].loop_tag"] {
+        assert!(
+            errs.iter()
+                .any(|e| e.path == want && e.message.contains("recursive://")),
+            "{want} not refused; errors: {errs:?}"
+        );
+    }
+    assert_eq!(errs.len(), 2, "nothing else: {errs:?}");
+
+    let accepted = load_str(
+        r#"
+[[upstream]]
+name = "stamp"
+url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20"
+loop_tag = false
+[[upstream]]
+name = "socket"
+url = "unix:///run/magicdns.sock"
+loop_tag = false
+[[upstream]]
+name = "program"
+url = "exec:///usr/local/bin/consul-dns-plugin"
+loop_tag = false
+[[upstream]]
+name = "root"
+url = "recursive://"
+"#,
+    );
+    assert!(accepted.is_ok(), "{:?}", accepted.err());
+}
+
 /// REQ: OBS-038 (ADR-161) — anomaly mutes: a device or group and a kind each, names that exist
 /// and have addresses, no mute for everyone, no MAC address, a readable end time; devices and
 /// groups resolve to the networks the engine matches.
@@ -1682,4 +1820,313 @@ fn t8_2_fritzbox_signs_in_with_a_user_and_its_password_or_not_at_all() {
         let errs = load_str(&source(bad)).unwrap_err();
         assert!(paths(&errs).contains(&"router[0]"), "{bad}: {errs:?}");
     }
+}
+
+/// A TLS `doh` listener on all addresses, for the ADR-194 tests to add keys to.
+const DOH_TLS: &str = "[[listen]]\nproto = \"doh\"\naddr = \"0.0.0.0:443\"\ntls = { cert = \"/etc/telltale/tls.crt\", key = \"/etc/telltale/tls.key\" }\n";
+
+/// The errors at `path`, as text.
+fn errors_at(errs: &[ConfigError], path: &str) -> Vec<String> {
+    errs.iter()
+        .filter(|e| e.path == path)
+        .map(|e| e.message.clone())
+        .collect()
+}
+
+/// The warnings about listeners (a configuration without upstreams also warns about those).
+fn listen_warnings(l: &telltale_config::Loaded) -> Vec<&str> {
+    l.warnings
+        .iter()
+        .map(String::as_str)
+        .filter(|w| w.starts_with("listen["))
+        .collect()
+}
+
+/// REQ: DNS-003 (ADR-194) — `x_forwarded_for` is for `doh` listeners only, and needs the list
+/// of the proxies it believes; with them it loads and is read back.
+#[test]
+fn dns_003_x_forwarded_for_needs_trusted_proxies() {
+    let ok = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\", \"10.0.5.21\"]\nmax_connections_per_address = 0\n"
+    ))
+    .unwrap();
+    assert!(listen_warnings(&ok).is_empty(), "{:?}", ok.warnings);
+    let written = serde_json::to_value(&ok.config.listen[0]).unwrap();
+    assert_eq!(written["x_forwarded_for"], true);
+    assert_eq!(
+        written["trusted_proxies"],
+        serde_json::json!(["10.0.5.20/32", "10.0.5.21/32"])
+    );
+
+    let errs = load_str(&format!("{DOH_TLS}x_forwarded_for = true\n")).unwrap_err();
+    assert_eq!(paths(&errs), ["listen[0].trusted_proxies"], "{errs:?}");
+    assert!(
+        errs[0]
+            .message
+            .contains("required with `x_forwarded_for`: list your proxies' addresses"),
+        "{errs:?}"
+    );
+
+    for (proto, tls) in [
+        ("tcp", ""),
+        ("udp", ""),
+        ("dot", "tls = { cert = \"/c\", key = \"/k\" }\n"),
+        ("doh3", "tls = { cert = \"/c\", key = \"/k\" }\n"),
+        ("doq", "tls = { cert = \"/c\", key = \"/k\" }\n"),
+    ] {
+        let errs = load_str(&format!(
+            "[[listen]]\nproto = \"{proto}\"\naddr = \"0.0.0.0:853\"\n{tls}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+        ))
+        .unwrap_err();
+        assert_eq!(
+            errors_at(&errs, "listen[0].x_forwarded_for"),
+            ["only valid for doh listeners"],
+            "{proto}: {errs:?}"
+        );
+    }
+}
+
+/// REQ: DNS-003, DNS-020 (ADR-194) — one source of client addresses per listener.
+#[test]
+fn dns_003_proxy_protocol_and_x_forwarded_for_are_exclusive() {
+    let errs = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\nx_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+    ))
+    .unwrap_err();
+    assert_eq!(
+        errors_at(&errs, "listen[0].x_forwarded_for"),
+        ["set `proxy_protocol` or `x_forwarded_for`, not both"],
+        "{errs:?}"
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}
+
+/// REQ: DNS-003, DNS-020 (ADR-194) — `trusted_proxies` is for a `doh` listener that takes the
+/// client's address from them (PROXY protocol or `X-Forwarded-For`).
+#[test]
+fn dns_003_trusted_proxies_only_with_a_forwarded_source() {
+    let why = "only valid on a doh listener with `proxy_protocol` or `x_forwarded_for`";
+    for toml in [
+        format!("{DOH_TLS}trusted_proxies = [\"10.0.5.20/32\"]\n"),
+        "[[listen]]\nproto = \"tcp\"\naddr = \"0.0.0.0:53\"\nproxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n".to_owned(),
+        "[[listen]]\nproto = \"dot\"\naddr = \"0.0.0.0:853\"\ntls = { cert = \"/c\", key = \"/k\" }\nproxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n".to_owned(),
+    ] {
+        let errs = load_str(&toml).unwrap_err();
+        assert_eq!(
+            errors_at(&errs, "listen[0].trusted_proxies"),
+            [why],
+            "{toml}: {errs:?}"
+        );
+    }
+    let ok = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+    ))
+    .unwrap();
+    assert!(listen_warnings(&ok).is_empty(), "{:?}", ok.warnings);
+    assert!(ok.config.listen[0].proxy_protocol);
+}
+
+/// REQ: DNS-003 (ADR-194) — a prefix of 0 trusts everyone and is refused; a network wider than
+/// one host, a proxy a loopback listener can never see, and the per-address limit left at its
+/// default behind `X-Forwarded-For` are warnings.
+#[test]
+fn dns_003_trusted_proxies_refuses_everyone_and_warns_on_networks() {
+    let errs = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"0.0.0.0/0\", \"10.0.5.20/32\", \"::/0\"]\n"
+    ))
+    .unwrap_err();
+    assert_eq!(
+        errors_at(&errs, "listen[0].trusted_proxies[0]"),
+        ["`0.0.0.0/0` trusts every address: list only your proxies"],
+        "{errs:?}"
+    );
+    assert_eq!(
+        errors_at(&errs, "listen[0].trusted_proxies[2]"),
+        ["`::/0` trusts every address: list only your proxies"],
+        "{errs:?}"
+    );
+    assert_eq!(errs.len(), 2, "{errs:?}");
+
+    let wide = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"10.0.0.0/24\", \"10.0.5.20/32\", \"2001:db8::/64\", \"2001:db8::5\"]\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        listen_warnings(&wide),
+        [
+            "listen[0].trusted_proxies[0]: `10.0.0.0/24` is a network, not one proxy: every machine in it can name any client; list only your proxies",
+            "listen[0].trusted_proxies[2]: `2001:db8::/64` is a network, not one proxy: every machine in it can name any client; list only your proxies",
+        ],
+    );
+
+    let local = load_str(
+        "[[listen]]\nproto = \"doh\"\naddr = \"127.0.0.1:9443\"\ntls = { cert = \"/c\", key = \"/k\" }\nproxy_protocol = true\ntrusted_proxies = [\"10.0.5.20/32\", \"127.0.0.1/32\", \"127.0.0.2\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        listen_warnings(&local),
+        [
+            "listen[0].trusted_proxies[0]: a loopback listener only sees this host; `10.0.5.20/32` never connects"
+        ],
+    );
+
+    let limit = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        listen_warnings(&limit),
+        [
+            "listen[0].max_connections_per_address: with `x_forwarded_for` every connection is the proxy's; the default 32 may refuse it: raise it or set 0"
+        ],
+    );
+    let raised = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\nmax_connections_per_address = 256\n"
+    ))
+    .unwrap();
+    assert!(listen_warnings(&raised).is_empty(), "{:?}", raised.warnings);
+}
+
+/// REQ: DNS-003 (ADR-194) — neither key lifts the certificate a `doh` listener needs: without
+/// `tls` it is refused with the same message as before.
+#[test]
+fn dns_003_forwarding_keys_keep_the_tls_requirement() {
+    let errs = load_str(
+        "[[listen]]\nproto = \"doh\"\naddr = \"127.0.0.1:8053\"\nx_forwarded_for = true\ntrusted_proxies = [\"127.0.0.1/32\"]\nmax_connections_per_address = 0\n",
+    )
+    .unwrap_err();
+    assert_eq!(
+        errors_at(&errs, "listen[0].tls"),
+        ["required for dot, doh, doh3, and doq listeners"],
+        "{errs:?}"
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}
+
+/// REQ: DNS-003 (ADR-194) — a loopback listener's peers are this host in the listener's own
+/// family: an IPv4 one never sees `::1`, an IPv6 one never sees `127.0.0.1`, and an entry it can
+/// never see is a warning.
+#[test]
+fn dns_003_a_loopback_listener_warns_about_the_other_family() {
+    let warns = |addr: &str, list: &str| -> Vec<String> {
+        let loaded = load_str(&format!(
+            "[[listen]]\nproto = \"doh\"\naddr = \"{addr}\"\ntls = {{ cert = \"/c\", key = \"/k\" }}\nproxy_protocol = true\ntrusted_proxies = [{list}]\n"
+        ))
+        .unwrap();
+        listen_warnings(&loaded)
+            .iter()
+            .map(|w| (*w).to_owned())
+            .collect()
+    };
+    assert_eq!(
+        warns("127.0.0.1:9443", "\"::1/128\""),
+        [
+            "listen[0].trusted_proxies[0]: a loopback listener only sees this host; `::1/128` never connects"
+        ]
+    );
+    assert_eq!(
+        warns("[::1]:9443", "\"127.0.0.1/32\""),
+        [
+            "listen[0].trusted_proxies[0]: a loopback listener only sees this host; `127.0.0.1/32` never connects"
+        ]
+    );
+    for (addr, list) in [
+        ("127.0.0.1:9443", "\"127.0.0.2\""),
+        ("[::1]:9443", "\"::1\""),
+    ] {
+        assert_eq!(warns(addr, list), Vec::<String>::new(), "{addr} {list}");
+    }
+}
+
+/// REQ: DNS-003 (ADR-194) — `trusted_proxies` takes networks or addresses only: a host name is
+/// refused with the network type's own message.
+#[test]
+fn dns_003_trusted_proxies_entries_are_networks() {
+    let errs = load_str(&format!(
+        "{DOH_TLS}proxy_protocol = true\ntrusted_proxies = [\"proxy.example\"]\n"
+    ))
+    .unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.path.starts_with("listen[0].trusted_proxies")
+                && e.message.contains("`proxy.example` is not an IP network")),
+        "{errs:?}"
+    );
+}
+
+/// REQ: DNS-003, CLU-010 (ADR-194, ADR-187) — the new keys are written only when set: every
+/// listener without them serializes as before (the defaults, and a `doh` listener that sets
+/// them to their defaults), and set ones read back.
+#[test]
+fn dns_003_new_listener_keys_not_written_at_default() {
+    // Sorted, whatever order the map keeps.
+    let keys = |v: &serde_json::Value| -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    for l in serde_json::to_value(Config::default()).unwrap()["listen"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(keys(l), ["addr", "proto", "proxy_protocol"], "{l}");
+    }
+    let plain = load_str(DOH_TLS).unwrap().config;
+    let written = serde_json::to_value(&plain.listen[0]).unwrap();
+    assert_eq!(
+        keys(&written),
+        ["addr", "proto", "proxy_protocol", "tls"],
+        "{written}"
+    );
+    let defaults = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = false\ntrusted_proxies = []\n"
+    ))
+    .unwrap()
+    .config;
+    assert_eq!(serde_json::to_value(&defaults.listen[0]).unwrap(), written);
+    assert_eq!(defaults, plain);
+
+    let set = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\nmax_connections_per_address = 0\n"
+    ))
+    .unwrap()
+    .config;
+    let text = serde_json::to_value(&set.listen[0]).unwrap();
+    assert_eq!(
+        keys(&text),
+        [
+            "addr",
+            "max_connections_per_address",
+            "proto",
+            "proxy_protocol",
+            "tls",
+            "trusted_proxies",
+            "x_forwarded_for"
+        ]
+    );
+    let back: telltale_config::Listener = serde_json::from_value(text).unwrap();
+    assert_eq!(back, set.listen[0]);
+}
+
+/// REQ: CLU-003, CLU-006 (ADR-194) — listener settings never leave a node: the shared part of a
+/// configuration with the new keys is the same bytes as without them.
+#[test]
+fn clu_003_listener_keys_never_shared() {
+    let with = load_str(&format!(
+        "{DOH_TLS}x_forwarded_for = true\ntrusted_proxies = [\"10.0.5.20/32\"]\nmax_connections_per_address = 0\n"
+    ))
+    .unwrap()
+    .config;
+    let without = load_str(DOH_TLS).unwrap().config;
+    let shared = telltale_config::shared::shared_part(&with);
+    assert!(shared.get("listen").is_none(), "{shared}");
+    let text = serde_json::to_string(&shared).unwrap();
+    assert!(
+        !text.contains("x_forwarded_for") && !text.contains("trusted_proxies"),
+        "{text}"
+    );
+    assert_eq!(
+        text,
+        serde_json::to_string(&telltale_config::shared::shared_part(&without)).unwrap()
+    );
 }

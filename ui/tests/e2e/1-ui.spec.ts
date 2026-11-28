@@ -4625,13 +4625,15 @@ test('flt_005_quick_rule_viewer_why_drawer_asks_no_device_list', async ({ browse
     await expect(vp.getByRole('button', { name: 'Why?' }).first()).toBeVisible({ timeout: 20_000 });
     const lists: string[] = [];
     vp.on('request', (r) => {
-      if (new URL(r.url()).pathname === '/api/v1/clients') lists.push(r.url());
+      // REQ: FLT-005, FLT-006 (issue #95) — nor for the address's identity, which only the form's MAC hint reads.
+      const path = new URL(r.url()).pathname;
+      if (path === '/api/v1/clients' || path.endsWith('/identity')) lists.push(r.url());
     });
     await vp.getByRole('button', { name: 'Why?' }).first().click();
     await expect(vp.getByText('Explains how this query would be handled now')).toBeVisible();
     await expect(vp.getByTestId('quick-rule-form')).toHaveCount(0); // a viewer makes no rules
     await vp.waitForTimeout(500); // a request the drawer would still make would have been made
-    expect(lists, 'a viewer is not asked for the list of devices').toEqual([]);
+    expect(lists, 'a viewer is not asked for the list of devices, nor for the identity').toEqual([]);
   } finally {
     await ctx.close();
   }

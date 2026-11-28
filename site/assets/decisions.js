@@ -1,12 +1,15 @@
 // REQ: DOC-006 — the decisions explorer. Without JavaScript every ADR is a <details> that
 // opens on its own and links work as anchors; with it: search, status and area filters,
 // order, expand all, and #adr-NNN opens (and scrolls to) that record. On the index
-// (decisions.html, ADR-136) the rows link to the part pages, and #adr-NNN goes to its page.
+// (decisions.html, ADR-136) the rows link to the part pages, and #adr-NNN goes to its page;
+// on a part page, #adr-NNN of a record held by another page goes there through the index.
 (function () {
   var list = document.getElementById("adr-list");
   var tools = document.querySelector(".adr-tools");
   if (!list || !tools) return;
-  var items = Array.prototype.slice.call(list.querySelectorAll(".adr"));
+  // The records only: the "Builds on" and "Referenced by" link chips inside a part page's
+  // records carry the `adr` class too, and are not decisions.
+  var items = Array.prototype.slice.call(list.querySelectorAll("article.adr, details.adr"));
   var isIndex = items.length > 0 && items[0].tagName !== "DETAILS";
   var q = document.getElementById("adr-q");
   var area = document.getElementById("adr-area");
@@ -74,7 +77,12 @@
     var m = /^#(adr-\d{3})$/.exec(location.hash);
     if (!m) return;
     var d = document.getElementById(m[1]);
-    if (!d) return;
+    if (!d) {
+      // A record this part page doesn't hold (an older link, from before the pages were split
+      // again): the index knows its page.
+      if (!isIndex) location.replace("decisions.html" + m[0]);
+      return;
+    }
     // An old link to the one-page record: on to the page that holds it now.
     if (isIndex) {
       var a = d.querySelector("a.adr-head");

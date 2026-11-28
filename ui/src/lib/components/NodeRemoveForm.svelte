@@ -5,6 +5,9 @@
   import { onMount } from 'svelte';
   import { api, ApiError, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
+  import { tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  const { t, tn } = tr('nodeRemoveForm');
 
   let {
     nodeId,
@@ -64,21 +67,26 @@
     }
   }
 
+  // REQ: API-012 — `votersAfter` is a count (u32 on the server): tn() gives the ternary's English.
   const voters = $derived.by(() => {
     if (!preview) return '';
     const n = preview.votersAfter;
-    const left = `${n} voter${n === 1 ? '' : 's'} left`;
-    if (preview.automaticFailoverAfter) return `${left}; automatic failover stays on.`;
-    return failoverActive ? `${left}; automatic failover turns into manual.` : `${left}; automatic failover stays off (it needs 3).`;
+    if (preview.automaticFailoverAfter) return tn('{n} voter left; automatic failover stays on.', '{n} voters left; automatic failover stays on.', n, { n });
+    return failoverActive
+      ? tn('{n} voter left; automatic failover turns into manual.', '{n} voters left; automatic failover turns into manual.', n, { n })
+      : tn('{n} voter left; automatic failover stays off (it needs 3).', '{n} voters left; automatic failover stays off (it needs 3).', n, { n });
   });
 </script>
 
-<div class="notice node-remove" role="dialog" aria-label={`Remove ${site} from the cluster`} data-testid="node-remove-form">
+<div class="notice node-remove" role="dialog" aria-label={t('Remove {site} from the cluster', { site })} data-testid="node-remove-form">
   <p>
-    <strong>Remove {site} from the cluster?</strong> It stops counting as a voter, disappears from this page, and the cluster
-    refuses it afterwards, even while its certificate is valid. Its own data isn't touched.
+    <T
+      ctx="nodeRemoveForm"
+      msg={"<strong>Remove {site} from the cluster?</strong> It stops counting as a voter, disappears from this page, and the cluster refuses it afterwards, even while its certificate is valid. Its own data isn't touched."}
+      params={{ site }}>{#snippet strong(text: string)}<strong>{text}</strong>{/snippet}</T
+    >
   </p>
-  <p class="small">Node ID <span class="mono id" data-testid="node-remove-id">{nodeId}</span></p>
+  <p class="small">{t('Node ID')} <span class="mono id" data-testid="node-remove-id" translate="no">{nodeId}</span></p>
   {#if preview}
     <div data-testid="node-remove-preview">
       <p class="small">{voters}</p>
@@ -91,16 +99,15 @@
   {/if}
   {#if isUp}
     <label class="check"
-      ><input type="checkbox" bind:checked={sure} data-testid="node-remove-force" /> It is up. Remove it anyway: its connection is closed
-      and the cluster refuses it afterwards.</label
+      ><input type="checkbox" bind:checked={sure} data-testid="node-remove-force" /> {t('It is up. Remove it anyway: its connection is closed and the cluster refuses it afterwards.')}</label
     >
   {/if}
   <ErrorNote {error} />
   <div class="row">
     <button class="danger" onclick={remove} disabled={busy || !preview || (isUp && !sure)} data-testid="node-remove-confirm"
-      >{busy ? 'Removing…' : 'Remove'}</button
+      >{busy ? t('Removing…') : t('Remove')}</button
     >
-    <button onclick={onclose}>Cancel</button>
+    <button onclick={onclose}>{t('Cancel')}</button>
   </div>
 </div>
 

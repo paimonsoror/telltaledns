@@ -31,7 +31,7 @@ PAGES = ["index.html", "start.html", "faq.html", "kubernetes.html","install.html
          "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html",
          # The Developers section (Reference menu): how to work on and extend TelltaleDNS.
          "developers.html", "dev-gates.html", "dev-budgets.html", "dev-api.html", "dev-cluster.html", "dev-icons.html",
-         "dev-ui-tests.html", "dev-svelte.html"]
+         "dev-ui-tests.html", "dev-svelte.html", "dev-languages.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -476,7 +476,9 @@ STATUS_TEXT = {
 }
 
 
-def md_inline(s, known):
+def md_inline(s, link=None):
+    """One line of Markdown. `link(adr_id)` is the address of an ADR the text names (`ADR-061`), or
+    None to leave the name plain; with no `link`, every name stays plain."""
     s = html.escape(s, quote=False)
     codes = []
 
@@ -488,20 +490,23 @@ def md_inline(s, known):
     s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
     s = re.sub(r"(?<![\w*])\*(?![\s*])(.+?)(?<![\s*])\*(?![\w*])", r"<i>\1</i>", s)
     s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', s)
-    s = re.sub(r"\bADR-(\d{3})\b",
-               lambda m: '<a href="#adr-{0}">ADR-{0}</a>'.format(m.group(1)) if "ADR-" + m.group(1) in known else m.group(0), s)
+    def adr(m):
+        href = link(m.group(0)) if link else None
+        return '<a href="{}">{}</a>'.format(href, m.group(0)) if href else m.group(0)
+
+    s = re.sub(r"\bADR-\d{3}\b", adr, s)
     return re.sub("\x00(\\d+)\x00", lambda m: "<code>{}</code>".format(codes[int(m.group(1))]), s)
 
 
 LIST_RE = re.compile(r"^(\s*)(?:- |(\d+)\. )(.*)$")
 
 
-def md_list(lines, known):
+def md_list(lines, link=None):
     out, stack = [], []
     for line in lines:
         m = LIST_RE.match(line)
         if not m:
-            out.append(" " + md_inline(line.strip(), known))
+            out.append(" " + md_inline(line.strip(), link))
             continue
         ind, tag = len(m.group(1)), "ol" if m.group(2) else "ul"
         while stack and ind < stack[-1][0]:
@@ -511,23 +516,23 @@ def md_list(lines, known):
             stack.append((ind, tag))
         else:
             out.append("</li>")
-        out.append("<li>" + md_inline(m.group(3), known))
+        out.append("<li>" + md_inline(m.group(3), link))
     while stack:
         out.append("</li></{}>".format(stack.pop()[1]))
     return "".join(out)
 
 
-def md_table(lines, known):
+def md_table(lines, link=None):
     rows = [[c.strip() for c in l.strip().strip("|").split("|")] for l in lines]
     rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r)]
     if not rows:
         return ""
-    head = "".join("<th>{}</th>".format(md_inline(c, known)) for c in rows[0])
-    body = "".join("<tr>{}</tr>".format("".join("<td>{}</td>".format(md_inline(c, known)) for c in r)) for r in rows[1:])
+    head = "".join("<th>{}</th>".format(md_inline(c, link)) for c in rows[0])
+    body = "".join("<tr>{}</tr>".format("".join("<td>{}</td>".format(md_inline(c, link)) for c in r)) for r in rows[1:])
     return '<div class="table-wrap"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table></div>'.format(head, body)
 
 
-def md_blocks(lines, known):
+def md_blocks(lines, link=None):
     out, i = [], 0
     while i < len(lines):
         line = lines[i]
@@ -537,19 +542,19 @@ def md_blocks(lines, known):
             j = i
             while j < len(lines) and lines[j].lstrip().startswith("|"):
                 j += 1
-            out.append(md_table(lines[i:j], known))
+            out.append(md_table(lines[i:j], link))
             i = j
         elif LIST_RE.match(line):
             j = i + 1
             while j < len(lines) and (LIST_RE.match(lines[j]) or (lines[j].startswith("  ") and lines[j].strip())):
                 j += 1
-            out.append(md_list(lines[i:j], known))
+            out.append(md_list(lines[i:j], link))
             i = j
         else:
             j = i
             while j < len(lines) and lines[j].strip() and not LIST_RE.match(lines[j]) and not lines[j].lstrip().startswith("|"):
                 j += 1
-            out.append("<p>{}</p>".format(md_inline(" ".join(l.strip() for l in lines[i:j]), known)))
+            out.append("<p>{}</p>".format(md_inline(" ".join(l.strip() for l in lines[i:j]), link)))
             i = j
     return "\n".join(out)
 
@@ -558,14 +563,22 @@ ADR_HEAD = re.compile(r"^## (ADR-(\d{3})) — (.*?)(?: \(([^()]*)\))?\s*$")
 SECTION = re.compile(r"^\*\*([A-Z][A-Za-z ]+):\*\*\s*(.*)$")
 
 
-# REQ: DOC-005, DOC-006 (ADR-136) — the records live on part pages of this many each, so no
-# page outgrows the page budget as decisions are added; decisions.html is their index.
+# REQ: DOC-005, DOC-006 (ADR-136) — the records live on part pages, so no page outgrows the page
+# budget as decisions are added; decisions.html is their index. ADR-001 to ADR-150 are on pages
+# of 50 (decisions-1 to 3). The records after them run three to six times longer, so from
+# ADR-151 a page holds 10: decisions-4 is ADR-151 to 160, decisions-5 ADR-161 to 170, and so on.
 ADRS_PER_PAGE = 50
+LATER_PAGES_FROM = 151
+ADRS_PER_LATER_PAGE = 10
 
 
 def adr_page(num):
     """The part page that holds ADR number `num`."""
-    return "decisions-{}.html".format((num - 1) // ADRS_PER_PAGE + 1)
+    if num < LATER_PAGES_FROM:
+        part = (num - 1) // ADRS_PER_PAGE + 1
+    else:
+        part = (LATER_PAGES_FROM - 1) // ADRS_PER_PAGE + 1 + (num - LATER_PAGES_FROM) // ADRS_PER_LATER_PAGE
+    return "decisions-{}.html".format(part)
 
 
 def adr_href(adr_id):
@@ -639,9 +652,15 @@ def render_decisions(page, reqs):
         for label, lines in sections:
             if label == "Context" and lines:
                 first = re.split(r"(?<=[.!?])\s", " ".join(l.strip() for l in lines if l.strip() and not LIST_RE.match(l)), 1)[0]
-                gist = re.sub(r"<[^>]+>", "", md_inline(first, set()))
+                gist = re.sub(r"<[^>]+>", "", md_inline(first))
                 break
-        body = "".join('<h3>{}</h3>{}'.format(html.escape(label), md_blocks(lines, known)) for label, lines in sections)
+
+        # REQ: DOC-005 (ADR-136) — a decision named in the text links to the page that holds it,
+        # as the chips do, so the link works without JavaScript and the link check sees it.
+        def mention(x, here=here):
+            return here(x) if x in known else None
+
+        body = "".join('<h3>{}</h3>{}'.format(html.escape(label), md_blocks(lines, mention)) for label, lines in sections)
         chips = []
         if a["reqs"]:
             chips.append('<p class="chips"><span class="muted small">Requirements</span> ' + " ".join(
@@ -661,7 +680,7 @@ def render_decisions(page, reqs):
             '<a class="adr-head" href="{href}"><span class="adr-id">{id}</span> <span class="adr-title">{title}</span></a>'
             '<span class="adr-meta"><span class="pill {st}">{status}</span>{areas}</span>{gist}</article>'.format(
                 lid=a["id"].lower(), num=a["num"], st=html.escape(a["status"].lower()), areas_attr=" ".join(a["areas"]),
-                href=adr_href(a["id"]), id=a["id"], title=md_inline(a["title"], set()), status=html.escape(a["status"]),
+                href=adr_href(a["id"]), id=a["id"], title=md_inline(a["title"]), status=html.escape(a["status"]),
                 areas=areas, gist=gist_html,
             )
         )
@@ -674,7 +693,7 @@ def render_decisions(page, reqs):
             '<p class="small adr-links"><a href="#{lid}">Link to this decision</a> · '
             '<a href="{gh}spec/11-decisions.md#{anchor}">In the specification</a></p></div></details>'.format(
                 lid=a["id"].lower(), num=a["num"], st=html.escape(a["status"].lower()), areas_attr=" ".join(a["areas"]),
-                id=a["id"], title=md_inline(a["title"], set()), status=html.escape(a["status"]), areas=areas,
+                id=a["id"], title=md_inline(a["title"]), status=html.escape(a["status"]), areas=areas,
                 gist=gist_html,
                 body=body, chips="".join(chips), gh=GH, anchor=gh_anchor(a["heading"]),
             )
@@ -1052,6 +1071,7 @@ def coverage_errors(data):
 
 def link_errors(out_dir, names):
     errors = []
+    records = {}
     for name in names:
         text = read(os.path.join(out_dir, name))
         for ref in re.findall(r'(?:href|src)="([^"#]+)"', text):
@@ -1059,6 +1079,16 @@ def link_errors(out_dir, names):
                 continue
             if not os.path.exists(os.path.join(out_dir, ref)):
                 errors.append("{}: broken link {}".format(name, ref))
+        # REQ: DOC-005 (ADR-136) — a link to a decision record, another page's or an anchor on this
+        # one, names the part page that holds it.
+        for part, anchor in re.findall(r'href="((?:decisions-\d+\.html)?)#(adr-\d{3})"', text):
+            target = part or name
+            if target not in records:
+                path = os.path.join(out_dir, target)
+                records[target] = set(re.findall(r'\bid="(adr-\d{3})"', read(path))) if os.path.exists(path) else set()
+            if anchor not in records[target]:
+                errors.append("{}: {}#{} is not on that page ({} holds it)".format(
+                    name, part, anchor, adr_page(int(anchor[4:]))))
     return errors
 
 

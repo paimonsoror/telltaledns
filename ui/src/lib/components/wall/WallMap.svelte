@@ -8,9 +8,13 @@
   import { short } from '../../format';
   import { squarify } from '../../treemap';
   import { ease, frameHub, lerpBoxes, type Box } from '../../wall';
+  import { occurrenceKeys } from '../../keys';
 
   let { motion }: { motion: boolean } = $props();
   let items = $state<S['TopItem'][]>([]);
+  // REQ: API-005 — a tile is its name with the name's occurrence (two names can read alike): its key, its place in the
+  // tween and its growth.
+  const keys = $derived(occurrenceKeys(items.map((it) => it.key)));
   let w = $state(0);
   let h = $state(0);
   let shown = $state(new Map<string, Box>());
@@ -55,13 +59,13 @@
       w,
       h,
     );
-    const next = new Map<string, Box>(items.map((it, i) => [it.key, rects[i]]));
+    const next = new Map<string, Box>(items.map((_, i) => [keys[i], rects[i]]));
     const g = new Set<string>();
-    for (const it of items) {
-      const p = prev.get(it.key);
-      if (p != null && it.count > p * 1.2 && it.count - p >= 10) g.add(it.key);
-    }
-    prev = new Map(items.map((it) => [it.key, it.count]));
+    items.forEach((it, i) => {
+      const p = prev.get(keys[i]);
+      if (p != null && it.count > p * 1.2 && it.count - p >= 10) g.add(keys[i]);
+    });
+    prev = new Map(items.map((it, i) => [keys[i], it.count]));
     grew = motion ? g : new Set();
     // Untracked: this effect writes `shown`, so reading it here would rerun it forever.
     from = untrack(() => shown);
@@ -76,12 +80,12 @@
 </script>
 
 <div class="map" bind:clientWidth={w} bind:clientHeight={h} data-testid="wall-map">
-  {#each items as it (it.key)}
-    {@const b = shown.get(it.key)}
+  {#each items as it, i (keys[i])}
+    {@const b = shown.get(keys[i])}
     {#if b && b.w > 1 && b.h > 1}
       <div
         class="tile"
-        class:pulse={grew.has(it.key)}
+        class:pulse={grew.has(keys[i])}
         style:left="{b.x}px"
         style:top="{b.y}px"
         style:width="{b.w}px"

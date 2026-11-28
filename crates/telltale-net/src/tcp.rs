@@ -22,6 +22,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::handler::{ClientId, QueryHandler, RequestMeta, Response, Transport};
+use crate::proxy::Source;
 use crate::tls::CertStore;
 
 /// Prepends the RFC 7766 two-byte length.
@@ -84,6 +85,8 @@ pub struct TcpStats {
     pub tls_failed: AtomicU64,
     /// Connections closed for a missing or malformed PROXY header.
     pub proxy_rejected: AtomicU64,
+    /// Connections whose PROXY header named no client address, by kind (DNS-020).
+    pub proxy_no_address: crate::proxy::NoAddressStats,
     /// Connections closed because the client stopped reading its answers (a write stalled
     /// for the idle timeout).
     pub stalled_closed: AtomicU64,
@@ -261,9 +264,11 @@ async fn open<H: QueryHandler + ?Sized>(
         stats,
     } = *ctx;
     if cfg.proxy_protocol {
-        match timeout(cfg.idle_timeout, crate::proxy::read_header(&mut stream)).await {
-            Ok(Ok(Some(src))) => peer = src,
-            Ok(Ok(None)) => {} // LOCAL: the balancer itself
+        match timeout(cfg.idle_timeout, crate::proxy::read_source(&mut stream)).await {
+            Ok(Ok(Source::Client(src))) => peer = src,
+            // REQ: DNS-020 (ADR-039) — LOCAL (the balancer itself), AF_UNSPEC and AF_UNIX keep
+            // the socket's address, as before; they are only counted (and logged for loopback).
+            Ok(Ok(Source::NoAddress(kind))) => stats.proxy_no_address.note(kind, peer, cfg.addr),
             _ => {
                 stats.proxy_rejected.fetch_add(1, Ordering::Relaxed);
                 return;

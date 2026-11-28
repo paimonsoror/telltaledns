@@ -5,6 +5,11 @@
   import { docsUrl, topic } from '../help';
   import Drawer from './Drawer.svelte';
   import FlowDiagram from './FlowDiagram.svelte';
+  import { tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  // REQ: API-012 — the topic's own text is English data in part A of ADR-189; the panel's words are
+  // messages (`tx`: `t` is the topic here).
+  const { t: tx } = tr('helpButton');
 
   let { id }: { id: string } = $props();
   const t = $derived(topic(id));
@@ -14,7 +19,7 @@
 <button
   type="button"
   class="help-btn"
-  aria-label={`Help: ${t.title}`}
+  aria-label={tx('Help: {title}', { title: t.title })}
   title={t.title}
   data-help={id}
   onclick={(e) => {
@@ -29,11 +34,13 @@
     <div class="help" data-testid="help-panel">
       <p class="lead">{t.summary}</p>
       {#if t.diagram}<FlowDiagram highlight={t.diagram} />{/if}
-      {#if t.when}<h3>When you'd use it</h3><p>{t.when}</p>{/if}
-      {#if t.example}<h3>Example</h3><p>{t.example}</p>{/if}
-      {#if t.caution}<h3>Careful</h3><p class="notice warn">{t.caution}</p>{/if}
-      {#if t.term}<p class="muted small">The DNS term for this is <b>{t.term}</b>.</p>{/if}
-      {#if docsUrl(t)}<p><a href={docsUrl(t)} target="_blank" rel="noreferrer">Full documentation</a></p>{/if}
+      {#if t.when}<h3>{tx('When you\'d use it')}</h3><p>{t.when}</p>{/if}
+      {#if t.example}<h3>{tx('Example')}</h3><p>{t.example}</p>{/if}
+      {#if t.caution}<h3>{tx('Careful')}</h3><p class="notice warn">{t.caution}</p>{/if}
+      {#if t.term}<p class="muted small">
+          <T ctx="helpButton" msg={'The DNS term for this is <b>{term}</b>.'} params={{ term: t.term }}>{#snippet b(x: string)}<b translate="no">{x}</b>{/snippet}</T>
+        </p>{/if}
+      {#if docsUrl(t)}<p><a href={docsUrl(t)} target="_blank" rel="noreferrer">{tx('Full documentation')}</a></p>{/if}
     </div>
   </Drawer>
 {/if}

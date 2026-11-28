@@ -1,6 +1,10 @@
 <script lang="ts">
   // T6.8 — a KPI tile: the number, its change against the previous period (colored by what's
   // good for this metric, not by direction), and an optional sparkline.
+  import { num } from '../format';
+  import { tr } from '../i18n';
+  const { t } = tr('kpi');
+
   let {
     label,
     value,
@@ -36,7 +40,7 @@
   const deltaText = $derived.by(() => {
     if (delta == null || !Number.isFinite(delta)) return '';
     const p = Math.abs(delta) * 100;
-    const shown = p >= 100 ? Math.round(p).toLocaleString() : p.toFixed(p < 10 ? 1 : 0);
+    const shown = p >= 100 ? num(Math.round(p)) : p.toFixed(p < 10 ? 1 : 0);
     return `${delta > 0 ? '▲' : delta < 0 ? '▼' : '•'} ${shown}%`;
   });
   // The sparkline as a 100×28 path.
@@ -64,7 +68,7 @@
   <div class="label">{label}</div>
   <div class="value {tone}">{value}</div>
   <div class="foot">
-    {#if deltaText}<span class="delta {deltaClass}" title="Against the previous period of the same length">{deltaText}</span>{/if}
+    {#if deltaText}<span class="delta {deltaClass}" title={t('Against the previous period of the same length')}>{deltaText}</span>{/if}
     {#if sub}<span class="sub muted small">{sub}</span>{/if}
   </div>
   {#if sparkPath}

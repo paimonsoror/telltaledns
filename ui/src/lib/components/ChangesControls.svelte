@@ -5,8 +5,10 @@
   import { api } from '../api';
   import { can } from '../session.svelte';
   import { changes, KINDS } from '../annotations.svelte';
+  import { tk, tr } from '../i18n';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  const { t } = tr('changesControls');
 
   let { part = 'head', advanced = false }: { part?: 'head' | 'body'; advanced?: boolean } = $props();
 
@@ -45,47 +47,47 @@
       onchange={(e) => changes.toggle(e.currentTarget.checked)}
       data-testid="changes-toggle"
     />
-    Changes
+    {t('Changes')}
   </label>
   <HelpButton id="change-markers" />
   {#if can('operator')}
-    <button type="button" class="note-btn" aria-expanded={changes.noting} onclick={() => (changes.noting = !changes.noting)} data-testid="note-open">Note…</button>
+    <button type="button" class="note-btn" aria-expanded={changes.noting} onclick={() => (changes.noting = !changes.noting)} data-testid="note-open">{t('Note…')}</button>
   {/if}
 </div>
 {:else}
 {#if changes.noting}
   <form class="card note-form" onsubmit={add} data-testid="note-form">
     <label class="field grow">
-      What happened
+      {t('What happened')}
       <input
         maxlength="200"
         required
         bind:value={text}
-        placeholder="moved the access point to the hallway"
+        placeholder={t('moved the access point to the hallway')}
         data-testid="note-text"
       />
     </label>
     <label class="field">
-      When <span class="muted small">(optional, up to 7 days back)</span>
+      {t('When')} <span class="muted small">{t('(optional, up to 7 days back)')}</span>
       <input type="datetime-local" bind:value={when} data-testid="note-time" />
     </label>
     <div class="actions">
-      <button class="primary" type="submit" disabled={saving || !text.trim()}>Add note</button>
-      <button type="button" onclick={() => (changes.noting = false)}>Cancel</button>
+      <button class="primary" type="submit" disabled={saving || !text.trim()}>{t('Add note')}</button>
+      <button type="button" onclick={() => (changes.noting = false)}>{t('Cancel')}</button>
     </div>
     <ErrorNote {error} />
-    <p class="muted small">Shows on every time chart of every node. Notes can't be edited or deleted; add a correcting one.</p>
+    <p class="muted small">{t('Shows on every time chart of every node. Notes can\'t be edited or deleted; add a correcting one.')}</p>
   </form>
 {/if}
 
 {#if advanced && changes.show}
-  <div class="kinds" role="group" aria-label="Kinds of changes shown">
+  <div class="kinds" role="group" aria-label={t('Kinds of changes shown')}>
     {#each KINDS as k (k.id)}
       <button
         type="button"
         class="chip"
         aria-pressed={!changes.hidden.includes(k.id)}
-        onclick={() => changes.setKind(k.id, changes.hidden.includes(k.id))}>{k.label}</button
+        onclick={() => changes.setKind(k.id, changes.hidden.includes(k.id))}>{tk(k.label)}</button
       >
     {/each}
   </div>

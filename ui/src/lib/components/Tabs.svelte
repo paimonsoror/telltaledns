@@ -23,6 +23,7 @@
 
 <script lang="ts">
   import { navigate } from '../router.svelte';
+  import { num } from '../format';
 
   let { tabs, active, label }: { tabs: TabItem[]; active: string; label: string } = $props();
   let list = $state<HTMLDivElement>();
@@ -60,7 +61,7 @@
       onclick={() => select(t.id)}
       {onkeydown}
     >
-      {t.label}{#if t.count != null}<span class="count" class:alert={t.alert}>{typeof t.count === 'number' ? t.count.toLocaleString() : t.count}</span>{/if}
+      {t.label}{#if t.count != null}<span class="count" class:alert={t.alert}>{typeof t.count === 'number' ? num(t.count) : t.count}</span>{/if}
     </button>
   {/each}
 </div>

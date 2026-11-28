@@ -7,6 +7,10 @@ This page records each target, the latest measurement, how it was taken, and the
 **Last run:** 2026-10-07, `python3 bench/gate.py` at 60a2c30 (0.2.0 development), results in
 `bench/results/20261007T140130Z-gate.json` (not committed; reproduce with the same command).
 
+**Refreshed 2026-11-27:** only the container image row, from the `image` workflow's size gate
+on `main` at 468846b. Every other row is still from the October 2026 runs (2026-10-03 to
+2026-10-18) and hasn't been measured again since.
+
 ## How it was measured
 
 - **Host:** the development laptop (AMD Ryzen 5 5500U, WSL2, 4 cores / 8 threads, 7.6 GiB).
@@ -30,7 +34,7 @@ This page records each target, the latest measurement, how it was taken, and the
 | Added latency, blocked answer (p99 at 50 % load) | ≤ 250 µs | same setup, 52.4k qps (half of 104.8k), 0 lost: **99.999 % within 250 µs** (p99 ≤ 50 µs); end to end p50 187 µs, p99 455 µs | ✅ pass |
 | Idle RSS, no lists | ≤ 20 MiB | 13.7 MiB 40 s after start, 16.1 MiB after 3 min (the shipped musl build, T10.2, `bench/memprobe.py`; 22.7 MiB before) | ✅ pass |
 | RSS, 1M blocked names + 100k cache entries + telemetry | ≤ 64 MiB | 60.0 MiB 40 s after the fill, 60.9 MiB after 3 min; peak 97.5 MiB during the compile (the shipped musl build; 71.4 MiB and a 170 MiB peak before T10.2's last step, 130.4 MiB at its start) | ✅ pass |
-| Compressed container image | ≤ 15 MiB per arch | amd64 11.1, arm64 10.6, arm/v7 11.0 MiB (`:latest` = 0.1.0) | ✅ pass |
+| Compressed container image | ≤ 15 MiB per arch | amd64 13.63, arm64 12.97, arm/v7 13.52 MiB (2026-11-27, `main` at 468846b: the `image` workflow's size gate, `deploy/image/size.py`; 11.1, 10.6 and 11.0 MiB at 0.1.0) | ✅ pass |
 | List recompile, 2M names, Pi 4 | ≤ 8 s, p99 regression ≤ 10 % during the compile | Pi 4 (2026-10-17, the gate's 2M names, `compile_bench`, bench build): **11.8 s on 1 thread** (the recompile default; 14.2 s before T10.3's parser fast path), 9.7 s on 2 threads; building the FST alone takes 8.1 s on one Pi core. p99 under a recompile on 4 cores (VM, `bench.py swap --server-cpus 0-3`): 44 → 49.5 µs on 1 thread, 40.5 → 54 µs on 2 . Since ADR-145 a recompile's rules answer before the FSTs are written: 1.98 s into a 4.55 s one-thread compile of 2.74M real names on the VM ; on the Pi 4 (2026-10-17, the gate's 2M names, one thread): **the new rules answer at 4.7 s** (4.77 and 4.71 s), the compile finishes at 12.8 s in the background | ✅ pass |
 | Cold start to serving, snapshot on disk | ≤ 500 ms | 52 ms until a blocked name is answered blocked over DNS, 1M names (median of 5, the shipped build, `bench/coldstart.py`); the lookup index follows at about 0.5 s, blocking through the FST walk until then. A cluster replica in CI: ≤ 500 ms | ✅ pass |
 | Query-log search, 30 days / 50M rows, Pi 4 | ≤ 2 s | every query in the suite under 2 s (T3.2, 2026-10-03) | ✅ pass (re-run before 1.0) |

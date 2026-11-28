@@ -13,7 +13,9 @@
 //! - **bogus** becomes SERVFAIL with EDE 6 (or is served, in permissive mode).
 //!
 //! An answer whose denial is about a CNAME's target, which the library checks for the name that
-//! was asked, is validated link by link (`Validator::validate_links`).
+//! was asked, is validated link by link (`Validator::validate_links`). A positive answer is secure
+//! only when it reaches the question (ADR-195): the asked type at the name, or at the end of its
+//! CNAME chain, or that name's own proof that it has none; otherwise it is indeterminate.
 //!
 //! Validation runs only on cache misses: the validated answer goes into the cache with its AD
 //! bit, so hits cost nothing extra.
@@ -154,6 +156,14 @@ impl DnsHandle for GroupHandle {
 /// A group's validating handle, and the last upstream that answered through it.
 type Checked = (DnssecDnsHandle<GroupHandle>, Arc<Mutex<(u16, u8)>>);
 
+/// REQ: DNS-011, NFR-001 (ADR-196) — the most record-set proofs the validation library keeps per
+/// upstream group. Its own default is 1,048,576, and an entry leaves only when the cache is full
+/// (an expired one is skipped, not removed), so without a bound the cache grows with every
+/// distinct record set validated; since hickory-net 0.26.4 an entry also holds a copy of its
+/// record set and signatures (about 1.6 KiB measured). 8,192 entries: about 13 MiB at most per
+/// group; the least recently used go first.
+const VALIDATION_CACHE_ENTRIES: usize = 8_192;
+
 /// Validates forwarded answers (one per pipeline state).
 pub struct Validator {
     anchors: Arc<TrustAnchors>,
@@ -175,6 +185,8 @@ pub struct Validator {
     /// REQ: DNS-011, NFR-004 (ADR-188) — bounds on link-by-link validation, apart from `proofs`
     /// (which the proofs its links need take from).
     links: ProofGate,
+    /// REQ: DNS-011, NFR-001 (ADR-196) — entries of each group's validation cache.
+    cache_entries: usize,
     pub stats: Arc<Stats>,
 }
 
@@ -202,6 +214,7 @@ impl Validator {
             insecure: Mutex::new(HashMap::new()),
             proofs: ProofGate::default(),
             links: ProofGate::with_slots(MAX_LINK_WALKS),
+            cache_entries: VALIDATION_CACHE_ENTRIES,
             stats,
         }
     }
@@ -259,6 +272,15 @@ impl Validator {
         self.links.hold(leave)
     }
 
+    /// Test support (`tests/`): each group's validation cache keeps at most `entries` record-set
+    /// proofs, in place of `VALIDATION_CACHE_ENTRIES` (ADR-196). Set before the first question.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_validation_cache_entries(mut self, entries: usize) -> Self {
+        self.cache_entries = entries;
+        self
+    }
+
     /// Whether `name` (presentation form) is validated: not under a negative trust anchor.
     pub fn covers(&self, name: &str) -> bool {
         let n = name.trim_end_matches('.').to_ascii_lowercase();
@@ -287,7 +309,9 @@ impl Validator {
                     last: Arc::clone(&last),
                 };
                 (
-                    DnssecDnsHandle::with_trust_anchor(inner, Arc::clone(&self.anchors)),
+                    // REQ: DNS-011, NFR-001 (ADR-196) — a bounded validation cache.
+                    DnssecDnsHandle::with_trust_anchor(inner, Arc::clone(&self.anchors))
+                        .validation_cache_size(self.cache_entries),
                     last,
                 )
             })
@@ -340,7 +364,7 @@ impl Validator {
             tokio::time::timeout(budget * LOOKUP_SHARE.0 / LOOKUP_SHARE.1, stream.next()).await;
         let (upstream_id, attempts) = *last.lock();
         let rtype = RecordType::from(q.qtype);
-        let response = match result.map(|r| r.map(|r| or_wildcard(r, &name, rtype))) {
+        let mut response = match result.map(|r| r.map(|r| or_wildcard(r, &name, rtype))) {
             Ok(Some(Ok(r))) => r,
             // An upstream failure is an upstream failure (stale or SERVFAIL as usual).
             Ok(Some(Err(e))) if is_transport(&e) => return Err(ResolveError::Empty),
@@ -382,7 +406,8 @@ impl Validator {
             }
             Ok(None) | Err(_) => return Err(ResolveError::Empty),
         };
-        let mut verdict = verdict(&response);
+        // REQ: DNS-011 (ADR-195) — an answer is secure only when it reaches the question.
+        let mut verdict = reached_verdict(verdict(&response), &mut response, &name, &q);
         if verdict == Verdict::Bogus
             && self
                 .all_unsigned(group, &handle, &response, &qkey, budget, deadline)
@@ -829,6 +854,11 @@ impl Validator {
                 // REQ: DNS-011 (ADR-188) — no answer in time: as above.
                 None => return Err(NoVerdict::Fails),
             };
+            // REQ: DNS-011 (ADR-195) — the last answer holds the asked type at its name, or is a
+            // denial of it there; one that is neither proves nothing.
+            if !reaches(&end, &at, qtype) {
+                return Err(NoVerdict::Fails);
+            }
             let v = self
                 .link_verdict(group, handle, &end, &at, budget, deadline)
                 .await?;
@@ -1069,7 +1099,11 @@ fn starts_with_cname(m: &Message, name: &Name) -> bool {
 /// it is served: one the rule proves is accepted, also when its NSEC proof was refused, and one it
 /// doesn't prove is bogus (its records' proofs say so, so it is handled as any bogus answer). An
 /// answer that wasn't refused and starts with a wildcard CNAME at `name` may instead meet the rule
-/// with the CNAME's record set ([`wildcard_cname_proven`]).
+/// with the CNAME's record set ([`wildcard_cname_proven`]). An answer with a record of another name
+/// made from a wildcard is bogus in the same way, whatever the zone's denial records (ADR-195):
+/// handled as any bogus answer, it is validated link by link, each name for its own question. So
+/// is one whose record set at `name` made from a wildcard, in a zone signed with NSEC3, comes
+/// without the cover of its own next closer name ([`nsec3_wildcard_covered`]).
 fn or_wildcard(
     r: Result<DnsResponse, NetError>,
     name: &Name,
@@ -1093,8 +1127,70 @@ fn or_wildcard(
             }
             Ok(response)
         }
+        // REQ: DNS-011 (ADR-188, ADR-195) — in a zone signed with NSEC3 too.
+        Ok(mut response) if another_name_from_a_wildcard(&response, name) => {
+            tracing::debug!(name = %zone_key(name), "DNSSEC: another name made from a wildcard: validated for its own name");
+            for record in &mut response.answers {
+                record.proof = Proof::Bogus;
+            }
+            Ok(response)
+        }
+        // REQ: DNS-011 (RFC 5155 §8.8; ADR-195) — a record set at the name made from a wildcard, in a
+        // zone signed with NSEC3, comes with the cover of its own next closer name.
+        Ok(mut response) if !nsec3_wildcard_covered(&response, name) => {
+            tracing::debug!(name = %zone_key(name), "DNSSEC: a wildcard's record set without the cover of its next closer name");
+            for record in &mut response.answers {
+                record.proof = Proof::Bogus;
+            }
+            Ok(response)
+        }
         r => r,
     }
+}
+
+/// REQ: DNS-011 (RFC 5155 §7.2.6, §8.8; ADR-195) — every record set at `name` made from a wildcard
+/// (a signature of it, [`expansion_signer`]) whose signer has a verified NSEC3 record in the
+/// authority section ([`has_nsec3_of`]) comes with a verified NSEC3 record of that zone whose range
+/// covers the hash of the next closer name for that signature's label count (`name` cut to one
+/// label more). A signer without such a record is left to the rule for zones signed with NSEC
+/// ([`nsec_wildcard_answer`]), and an NSEC3 record of that zone with more than
+/// [`MAX_NSEC3_ITERATIONS`] leaves the record set as it is: true for both.
+fn nsec3_wildcard_covered(m: &Message, name: &Name) -> bool {
+    m.answers.iter().filter(|r| r.name == *name).all(|r| {
+        let (RData::DNSSEC(DNSSECRData::RRSIG(s)), Some(zone)) = (&r.data, expansion_signer(r))
+        else {
+            return true;
+        };
+        if !has_nsec3_of(m, zone) {
+            return true;
+        }
+        let next_closer = name.trim_to(usize::from(s.input().num_labels) + 1);
+        let mut covered = false;
+        for a in &m.authorities {
+            let RData::DNSSEC(DNSSECRData::NSEC3(n)) = &a.data else {
+                continue;
+            };
+            if a.proof != Proof::Secure || a.name.base_name() != *zone {
+                continue;
+            }
+            if n.iterations() > MAX_NSEC3_ITERATIONS {
+                return true;
+            }
+            let owner = a.name.iter().next().and_then(base32hex_decode);
+            if let (Some(owner), Some(hash)) = (owner, nsec3_hash(n, &next_closer)) {
+                covered |= hash_range_covers(&owner, n.next_hashed_owner_name(), &hash);
+            }
+        }
+        covered
+    })
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.3.4, RFC 5155 §8.8; ADR-188, ADR-195) — `m`'s answer section has a
+/// record owned by another name than `name` made from a wildcard ([`expansion_signer`]).
+fn another_name_from_a_wildcard(m: &Message, name: &Name) -> bool {
+    m.answers
+        .iter()
+        .any(|r| r.name != *name && expansion_signer(r).is_some())
 }
 
 /// REQ: DNS-011 (RFC 4035 §5.3.4, RFC 5155 §8.8; ADR-188) — `m` answers from a wildcard (a secure
@@ -1210,10 +1306,7 @@ fn record_set_proven<'a>(
 /// in a record of the question's type ([`chain_ends_in`]).
 fn wildcard_cname_proven(m: &Message, name: &Name, rtype: RecordType) -> bool {
     rtype != RecordType::CNAME
-        && !m
-            .answers
-            .iter()
-            .any(|r| r.name != *name && expansion_signer(r).is_some())
+        && !another_name_from_a_wildcard(m, name)
         && record_set_proven(
             m,
             m.answers.iter().filter(|r| r.name == *name),
@@ -1227,6 +1320,17 @@ fn wildcard_cname_proven(m: &Message, name: &Name, rtype: RecordType) -> bool {
 /// record of `rtype`: not at a name without one, and not in a loop. At most one step per answer
 /// record.
 fn chain_ends_in(m: &Message, name: &Name, rtype: RecordType) -> bool {
+    chain_end(m, name).is_some_and(|owner| {
+        m.answers
+            .iter()
+            .any(|r| r.name == *owner && r.record_type() == rtype)
+    })
+}
+
+/// REQ: DNS-011 (ADR-188, ADR-195) — the last name of the CNAME chain in `m`'s answer section,
+/// followed from `name` (`name` itself when it has no CNAME there); `None` for a loop. At most one
+/// step per answer record.
+fn chain_end<'a>(m: &'a Message, name: &'a Name) -> Option<&'a Name> {
     let mut seen = vec![name];
     let mut owner = name;
     for _ in 0..m.answers.len() {
@@ -1237,14 +1341,108 @@ fn chain_ends_in(m: &Message, name: &Name, rtype: RecordType) -> bool {
             break;
         };
         if seen.contains(&target) {
-            return false;
+            return None;
         }
         seen.push(target);
         owner = target;
     }
+    Some(owner)
+}
+
+/// REQ: DNS-011 (ADR-195) — the longest TTL, in seconds, of the answer records of an answer made
+/// indeterminate because it doesn't reach its question: the cache keeps an answer for its shortest
+/// TTL, so it is kept no longer than this.
+const UNREACHED_TTL: u32 = 300;
+
+/// REQ: DNS-011 (ADR-195) — the verdict for `m`, an answer to `q` at `name`, whose records' weakest
+/// proof is `verdict`: a secure one is indeterminate when the answer doesn't reach the question
+/// ([`reaches_question`]), and then each record of its answer section keeps a TTL of
+/// [`UNREACHED_TTL`] at most (a shorter one, and the other sections, as they are). Any other verdict,
+/// and its answer, are left as they are.
+fn reached_verdict(verdict: Verdict, m: &mut Message, name: &Name, q: &Question) -> Verdict {
+    if verdict == Verdict::Secure && !reaches_question(m, name, q) {
+        tracing::debug!(name = %zone_key(name), "DNSSEC: the answer doesn't reach the question: indeterminate");
+        for r in &mut m.answers {
+            r.ttl = r.ttl.min(UNREACHED_TTL);
+        }
+        return Verdict::Indeterminate;
+    }
+    verdict
+}
+
+/// REQ: DNS-011 (ADR-195) — `m`, an answer to `q` at `name`, reaches the question ([`reaches`]);
+/// a question of another class than IN: true (nothing to check).
+fn reaches_question(m: &Message, name: &Name, q: &Question) -> bool {
+    q.qclass != 1 || reaches(m, name, RecordType::from(q.qtype))
+}
+
+/// REQ: DNS-011 (ADR-195) — `m`, an answer for `name` and `rtype` (class IN), holds what was asked,
+/// or is a denial:
+/// - an empty answer section is a denial, judged by its own proof: true;
+/// - a question for CNAME: a CNAME owned by `name`; for DS: a DS or a CNAME owned by `name`; for
+///   ANY: a record owned by `name` other than a signature;
+/// - NSEC or RRSIG, which don't follow a CNAME: a record of that type owned by `name`;
+/// - any other type: the CNAME chain from `name` ([`chain_end`]; `name` itself when it has none)
+///   ends, without a loop, at a name with a record of the type ([`chain_ends_in`]), or, in a NOERROR
+///   answer, at a name whose own NSEC or NSEC3 record proves it has none ([`nodata_proven`]).
+///
+/// Reads only the records already in the answer: no lookup.
+fn reaches(m: &Message, name: &Name, rtype: RecordType) -> bool {
+    use RecordType::{ANY, CNAME, DS, RRSIG};
+    if m.answers.is_empty() {
+        return true;
+    }
+    let at_name = |wanted: &dyn Fn(RecordType) -> bool| {
+        m.answers
+            .iter()
+            .any(|r| r.name == *name && wanted(r.record_type()))
+    };
+    match rtype {
+        CNAME => return at_name(&|t| t == CNAME),
+        DS => return at_name(&|t| matches!(t, DS | CNAME)),
+        ANY => return at_name(&|t| t != RRSIG),
+        RecordType::NSEC | RRSIG => return at_name(&|t| t == rtype),
+        _ => {}
+    }
+    let Some(last) = chain_end(m, name) else {
+        return false;
+    };
     m.answers
         .iter()
-        .any(|r| r.name == *owner && r.record_type() == rtype)
+        .any(|r| r.name == *last && r.record_type() == rtype)
+        || (m.metadata.response_code == ResponseCode::NoError && nodata_proven(m, last, rtype))
+}
+
+/// REQ: DNS-011 (RFC 4035 §5.4, RFC 5155 §8.5, RFC 6840 §4.1; ADR-195) — `m`'s authority section
+/// proves that `name` has no record of `rtype`: a verified NSEC owned by `name`, or a verified NSEC3
+/// of a zone `name` is in whose owner is `name`'s hash (with at most [`MAX_NSEC3_ITERATIONS`]),
+/// whose types include neither `rtype` nor CNAME, and which isn't a delegation's or a DNAME's (NS
+/// without SOA, or DNAME: such a record says nothing of the other types at its owner).
+fn nodata_proven(m: &Message, name: &Name, rtype: RecordType) -> bool {
+    let denies =
+        |types: &RecordTypeSet| !types.contains(rtype) && !types.contains(RecordType::CNAME);
+    m.authorities.iter().any(|r| {
+        r.proof == Proof::Secure
+            && match &r.data {
+                RData::DNSSEC(DNSSECRData::NSEC(n)) => {
+                    r.name == *name && denies(n.type_set()) && !n.is_ancestor_delegation()
+                }
+                RData::DNSSEC(DNSSECRData::NSEC3(n)) => {
+                    n.iterations() <= MAX_NSEC3_ITERATIONS
+                        && r.name.base_name().zone_of(name)
+                        && denies(n.type_set())
+                        && !n.is_ancestor_delegation()
+                        && r.name
+                            .iter()
+                            .next()
+                            .and_then(base32hex_decode)
+                            .is_some_and(|owner| {
+                                nsec3_hash(n, name).is_some_and(|hash| hash == owner)
+                            })
+                }
+                _ => false,
+            }
+    })
 }
 
 /// The NSEC owned by `owner` has a secure signature, in the authority section, by `zone`.
@@ -1432,7 +1630,8 @@ fn denies_ds_at_cut(authorities: &[Record], apex: &Name) -> bool {
 ///
 /// A closest encloser further up (an Opt-Out empty non-terminal between them) isn't accepted:
 /// not proven. Seen with names below parked domains (`www.smithsonianmag.org`), whose servers
-/// answer an SOA for every name, which the validation library judges bogus.
+/// answer an SOA for every name, which the validation library judged bogus up to hickory-net
+/// 0.26.3.
 fn denies_ds_by_opt_out(authorities: &[Record], apex: &Name) -> bool {
     if apex.is_root() {
         return false;
@@ -1974,14 +2173,15 @@ mod depth_tests {
             m.authorities[0] = nsec("k.z.test.", "l.z.test.");
         });
         refused("an NSEC3 beside it", &|m| {
-            let n3 = NSEC3::new(
+            let n3 = NSEC3::try_new(
                 Nsec3HashAlgorithm::SHA1,
                 false,
                 0,
                 Vec::new(),
                 vec![0; 20],
                 [A],
-            );
+            )
+            .unwrap();
             m.authorities
                 .push(secure("x.z.test.", RData::DNSSEC(DNSSECRData::NSEC3(n3))));
         });
@@ -2109,14 +2309,15 @@ mod depth_tests {
             owned("m.z.test.", data, proof)
         };
         let nsec3 = |owner: &str, proof: Proof| {
-            let data = NSEC3::new(
+            let data = NSEC3::try_new(
                 Nsec3HashAlgorithm::SHA1,
                 false,
                 0,
                 Vec::new(),
                 vec![0; 20],
                 [A],
-            );
+            )
+            .unwrap();
             owned(owner, RData::DNSSEC(DNSSECRData::NSEC3(data)), proof)
         };
         // `m.z.test. A` with the given signatures, and the authority section.
@@ -2393,14 +2594,15 @@ mod depth_tests {
         let hash = Nsec3HashAlgorithm::SHA1.hash(salt, &apex, 5).unwrap();
         let owner = Name::from_ascii(format!("{}.example.", base32hex(hash.as_ref()))).unwrap();
         let nsec3 = |owner: &Name, types: &[RecordType]| {
-            let n = NSEC3::new(
+            let n = NSEC3::try_new(
                 Nsec3HashAlgorithm::SHA1,
                 false,
                 5,
                 salt.to_vec(),
                 vec![0; 20],
                 types.iter().copied(),
-            );
+            )
+            .unwrap();
             let mut r =
                 Record::from_rdata(owner.clone(), 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
             r.proof = Proof::Secure;
@@ -2454,14 +2656,15 @@ mod depth_tests {
             v
         };
         let rec = |owner_hash: &[u8], next: Vec<u8>, opt_out: bool, types: &[RecordType], proof| {
-            let n = NSEC3::new(
+            let n = NSEC3::try_new(
                 Nsec3HashAlgorithm::SHA1,
                 opt_out,
                 0,
                 salt.to_vec(),
                 next,
                 types.iter().copied(),
-            );
+            )
+            .unwrap();
             let owner = Name::from_ascii(format!("{}.org.", base32hex(owner_hash))).unwrap();
             let mut r = Record::from_rdata(owner, 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
             r.proof = proof;
@@ -2561,6 +2764,470 @@ mod depth_tests {
     }
 }
 
+/// REQ: DNS-011 (ADR-195) — when an answer reaches its question ([`reaches`], [`nodata_proven`]),
+/// on records built by hand, each with the proof the validating handle would have given it.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod chain_tests {
+    use super::*;
+    use RecordType::{A, AAAA, ANY, CNAME as T_CNAME, DS as T_DS, NS, NSEC as T_NSEC, RRSIG};
+    use hickory_net::proto::dnssec::rdata::DS;
+    use hickory_net::proto::dnssec::{Algorithm, DigestType, Nsec3HashAlgorithm};
+    use hickory_net::proto::rr::rdata;
+
+    fn n(s: &str) -> Name {
+        Name::from_ascii(s).unwrap()
+    }
+
+    fn secure(owner: &str, data: RData) -> Record {
+        let mut r = Record::from_rdata(n(owner), 300, data);
+        r.proof = Proof::Secure;
+        r
+    }
+
+    fn alias(owner: &str, target: &str) -> Record {
+        secure(owner, RData::CNAME(rdata::CNAME(n(target))))
+    }
+
+    fn address(owner: &str) -> Record {
+        secure(owner, RData::A(rdata::A::new(192, 0, 2, 1)))
+    }
+
+    /// A DNAME as hickory reads one from the wire (it has no type of its own for it).
+    fn dname(owner: &str, target: &str) -> Record {
+        let mut wire = Vec::new();
+        for label in target.split('.').filter(|l| !l.is_empty()) {
+            wire.push(u8::try_from(label.len()).unwrap());
+            wire.extend_from_slice(label.as_bytes());
+        }
+        wire.push(0);
+        let data = RData::Unknown {
+            code: RecordType::DNAME,
+            rdata: rdata::NULL::with(wire),
+        };
+        secure(owner, data)
+    }
+
+    /// A verified NSEC owned by `owner` listing `types`.
+    fn nsec(owner: &str, types: &[RecordType]) -> Record {
+        let data = NSEC::new(n("zz.example.net."), types.iter().copied());
+        secure(owner, RData::DNSSEC(DNSSECRData::NSEC(data)))
+    }
+
+    /// A verified NSEC3 under `zone` owned by `hashed`'s hash (SHA-1, no salt, `iterations`),
+    /// listing `types`.
+    fn nsec3(zone: &str, hashed: &str, types: &[RecordType], iterations: u16) -> Record {
+        let hash = Nsec3HashAlgorithm::SHA1
+            .hash(&[], &n(hashed), iterations)
+            .unwrap()
+            .as_ref()
+            .to_vec();
+        let data = NSEC3::try_new(
+            Nsec3HashAlgorithm::SHA1,
+            false,
+            iterations,
+            Vec::new(),
+            vec![0xff; 20],
+            types.iter().copied(),
+        )
+        .unwrap();
+        let owner = format!("{}.{zone}", base32hex(&hash));
+        secure(&owner, RData::DNSSEC(DNSSECRData::NSEC3(data)))
+    }
+
+    fn question(name: &str, qtype: RecordType) -> Question {
+        Question {
+            name: NameBuf::from_presentation(name).unwrap(),
+            qtype: u16::from(qtype),
+            qclass: 1,
+            dnssec_ok: true,
+            checking_disabled: true,
+            client_subnet: 0,
+        }
+    }
+
+    /// `www.example.test.` to `cdn.example.test.` to `lb.example.net.`, which has an address. The
+    /// signatures aren't looked at (each record carries its proof), so there are none.
+    fn chain() -> Message {
+        let mut m = Message::response(0, OpCode::Query);
+        m.answers = vec![
+            alias("www.example.test.", "cdn.example.test."),
+            alias("cdn.example.test.", "lb.example.net."),
+            address("lb.example.net."),
+        ];
+        m
+    }
+
+    /// REQ: DNS-011 (ADR-195) — an answer reaches its question when the CNAME chain from the name
+    /// (the name itself without one) ends, without a loop, in a record of the asked type, or
+    /// (NOERROR) at a name whose own verified NSEC or NSEC3 record lists neither the type nor CNAME
+    /// and isn't a delegation's; a question for NSEC needs that type at the name, one for CNAME a
+    /// CNAME there, one for DS a DS or a CNAME there, and one for ANY a record there other than a
+    /// signature; an empty answer section (a denial) has nothing to check.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn dns_011_cname_answer_reaches_the_question() {
+        let www = n("www.example.test.");
+        let checked = |what: &'static str, qtype: RecordType, change: &dyn Fn(&mut Message)| {
+            let mut m = chain();
+            change(&mut m);
+            let q = question("www.example.test.", qtype);
+            (what, reaches_question(&m, &www, &q))
+        };
+        // The chain without the address at its end: it stops at `lb.example.net.`.
+        let ends_at_lb = |m: &mut Message| {
+            m.answers.truncate(2);
+        };
+        let got = [
+            checked("a chain to an address", A, &|_| {}),
+            checked("the first CNAME alone", A, &|m| m.answers.truncate(1)),
+            checked("without the second link", A, &|m| {
+                m.answers.remove(1);
+            }),
+            checked("without the last name's address", A, &ends_at_lb),
+            checked("another type at the last name", AAAA, &|_| {}),
+            checked("a loop", A, &|m| {
+                m.answers[2] = alias("lb.example.net.", "www.example.test.");
+            }),
+            checked("a loop with an address beside it", A, &|m| {
+                m.answers
+                    .push(alias("lb.example.net.", "www.example.test."));
+            }),
+            checked("a question for the CNAME", T_CNAME, &|m| {
+                m.answers.truncate(1);
+            }),
+            checked("a question for DS", T_DS, &|m| m.answers.truncate(1)),
+            checked("a question for ANY", ANY, &|m| m.answers.truncate(1)),
+            checked("no CNAME at the question name", A, &|m| {
+                m.answers = vec![alias("other.example.test.", "lb.example.net.")];
+            }),
+            checked("an address at the question name", A, &|m| {
+                m.answers = vec![address("www.example.test.")];
+            }),
+            checked(
+                "a DNAME and the CNAME made from it, to an address",
+                A,
+                &|m| {
+                    m.answers = vec![
+                        dname("example.test.", "example.org."),
+                        alias("www.example.test.", "www.example.org."),
+                        address("www.example.org."),
+                    ];
+                },
+            ),
+            checked("a DNAME and the CNAME made from it alone", A, &|m| {
+                m.answers = vec![
+                    dname("example.test.", "example.org."),
+                    alias("www.example.test.", "www.example.org."),
+                ];
+            }),
+            checked("the last name's NSEC without the type", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec("lb.example.net.", &[AAAA, RRSIG, T_NSEC])];
+            }),
+            checked("the last name's NSEC, not verified", A, &|m| {
+                ends_at_lb(m);
+                let mut r = nsec("lb.example.net.", &[AAAA, RRSIG, T_NSEC]);
+                r.proof = Proof::Indeterminate;
+                m.authorities = vec![r];
+            }),
+            checked("the last name's NSEC with the type", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec("lb.example.net.", &[A, RRSIG, T_NSEC])];
+            }),
+            checked("the last name's NSEC with a CNAME", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec("lb.example.net.", &[T_CNAME, RRSIG, T_NSEC])];
+            }),
+            checked("the last name's NSEC is a delegation's", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec("lb.example.net.", &[NS, RRSIG, T_NSEC])];
+            }),
+            checked("another name's NSEC", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec("cdn.example.test.", &[AAAA, RRSIG, T_NSEC])];
+            }),
+            checked("the last name's NSEC in an NXDOMAIN", A, &|m| {
+                ends_at_lb(m);
+                m.metadata.response_code = ResponseCode::NXDomain;
+                m.authorities = vec![nsec("lb.example.net.", &[AAAA, RRSIG, T_NSEC])];
+            }),
+            checked("the last name's NSEC3 without the type", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec3("example.net.", "lb.example.net.", &[AAAA, RRSIG], 0)];
+            }),
+            checked("another name's NSEC3", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec3("example.net.", "cdn.example.net.", &[AAAA, RRSIG], 0)];
+            }),
+            checked("the last name's hash under another zone", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec3("example.test.", "lb.example.net.", &[AAAA, RRSIG], 0)];
+            }),
+            checked("the last name's NSEC3 with the type", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec3("example.net.", "lb.example.net.", &[A, RRSIG], 0)];
+            }),
+            checked("the last name's NSEC3 with 101 iterations", A, &|m| {
+                ends_at_lb(m);
+                m.authorities = vec![nsec3(
+                    "example.net.",
+                    "lb.example.net.",
+                    &[AAAA, RRSIG],
+                    101,
+                )];
+            }),
+            checked("an unsigned SOA only", A, &|m| {
+                ends_at_lb(m);
+                let soa = rdata::SOA::new(
+                    n("ns.example.net."),
+                    n("admin.example.net."),
+                    1,
+                    1800,
+                    900,
+                    604_800,
+                    300,
+                );
+                let mut r = secure("example.net.", RData::SOA(soa));
+                r.proof = Proof::Insecure;
+                m.authorities = vec![r];
+            }),
+            checked("an empty answer section", A, &|m| m.answers.clear()),
+            checked("an empty answer section, an NXDOMAIN", A, &|m| {
+                m.answers.clear();
+                m.metadata.response_code = ResponseCode::NXDomain;
+            }),
+            checked("the zone's SOA alone in the answer section", A, &|m| {
+                let soa = rdata::SOA::new(
+                    n("ns.example.test."),
+                    n("admin.example.test."),
+                    1,
+                    1800,
+                    900,
+                    604_800,
+                    300,
+                );
+                m.answers = vec![secure("example.test.", RData::SOA(soa))];
+                m.authorities = vec![nsec3("example.test.", "a.example.test.", &[A, RRSIG], 0)];
+            }),
+            checked("a DNAME alone", A, &|m| {
+                m.answers = vec![dname("example.test.", "example.org.")];
+            }),
+            checked(
+                "the name's NSEC without the type, another name beside it",
+                A,
+                &|m| {
+                    m.answers = vec![address("other.example.test.")];
+                    m.authorities = vec![nsec("www.example.test.", &[AAAA, RRSIG, T_NSEC])];
+                },
+            ),
+            checked("a question for NSEC with the name's NSEC", T_NSEC, &|m| {
+                m.answers = vec![nsec("www.example.test.", &[T_CNAME, RRSIG, T_NSEC])];
+            }),
+            checked("a question for NSEC with the CNAME alone", T_NSEC, &|m| {
+                m.answers.truncate(1);
+            }),
+            checked(
+                "a question for the CNAME, another name's address alone",
+                T_CNAME,
+                &|m| {
+                    m.answers = vec![address("lb.example.net.")];
+                },
+            ),
+            checked("a question for DS with its DS", T_DS, &|m| {
+                let ds = DS::new(1, Algorithm::ED25519, DigestType::SHA256, vec![0; 32]);
+                m.answers = vec![secure(
+                    "www.example.test.",
+                    RData::DNSSEC(DNSSECRData::DS(ds)),
+                )];
+            }),
+            checked(
+                "a question for DS, another name's address alone",
+                T_DS,
+                &|m| {
+                    m.answers = vec![address("lb.example.net.")];
+                },
+            ),
+            checked(
+                "a question for ANY with an address at the name",
+                ANY,
+                &|m| {
+                    m.answers = vec![address("www.example.test.")];
+                },
+            ),
+            checked(
+                "a question for ANY, signatures alone at the name",
+                ANY,
+                &|m| {
+                    let sig = RData::Unknown {
+                        code: RRSIG,
+                        rdata: rdata::NULL::with(vec![0; 4]),
+                    };
+                    m.answers = vec![secure("www.example.test.", sig)];
+                },
+            ),
+            checked(
+                "a question for ANY, another name's address alone",
+                ANY,
+                &|m| {
+                    m.answers = vec![address("lb.example.net.")];
+                },
+            ),
+            checked("the address before the CNAMEs", A, &|m| m.answers.reverse()),
+            checked("names in another case", A, &|m| {
+                m.answers = vec![
+                    alias("WWW.Example.Test.", "CDN.example.test."),
+                    alias("cdn.EXAMPLE.test.", "lb.example.net."),
+                    address("LB.Example.Net."),
+                ];
+            }),
+        ];
+        let want = [
+            ("a chain to an address", true),
+            ("the first CNAME alone", false),
+            ("without the second link", false),
+            ("without the last name's address", false),
+            ("another type at the last name", false),
+            ("a loop", false),
+            ("a loop with an address beside it", false),
+            ("a question for the CNAME", true),
+            ("a question for DS", true),
+            ("a question for ANY", true),
+            ("no CNAME at the question name", false),
+            ("an address at the question name", true),
+            ("a DNAME and the CNAME made from it, to an address", true),
+            ("a DNAME and the CNAME made from it alone", false),
+            ("the last name's NSEC without the type", true),
+            ("the last name's NSEC, not verified", false),
+            ("the last name's NSEC with the type", false),
+            ("the last name's NSEC with a CNAME", false),
+            ("the last name's NSEC is a delegation's", false),
+            ("another name's NSEC", false),
+            ("the last name's NSEC in an NXDOMAIN", false),
+            ("the last name's NSEC3 without the type", true),
+            ("another name's NSEC3", false),
+            ("the last name's hash under another zone", false),
+            ("the last name's NSEC3 with the type", false),
+            ("the last name's NSEC3 with 101 iterations", false),
+            ("an unsigned SOA only", false),
+            ("an empty answer section", true),
+            ("an empty answer section, an NXDOMAIN", true),
+            ("the zone's SOA alone in the answer section", false),
+            ("a DNAME alone", false),
+            (
+                "the name's NSEC without the type, another name beside it",
+                true,
+            ),
+            ("a question for NSEC with the name's NSEC", true),
+            ("a question for NSEC with the CNAME alone", false),
+            (
+                "a question for the CNAME, another name's address alone",
+                false,
+            ),
+            ("a question for DS with its DS", true),
+            ("a question for DS, another name's address alone", false),
+            ("a question for ANY with an address at the name", true),
+            ("a question for ANY, signatures alone at the name", false),
+            ("a question for ANY, another name's address alone", false),
+            ("the address before the CNAMEs", true),
+            ("names in another case", true),
+        ];
+        assert_eq!(got, want);
+    }
+
+    /// REQ: DNS-011 (ADR-195) — only a secure verdict changes: an answer whose chain doesn't reach
+    /// the question is indeterminate when its records are all secure; an insecure, bogus or
+    /// indeterminate verdict stays as it is, and so does any verdict of an answer whose chain
+    /// reaches the question.
+    #[test]
+    fn dns_011_only_a_secure_verdict_of_a_chain_that_stops_short_changes() {
+        use Verdict::{Bogus, Indeterminate, Insecure, Secure};
+        let www = n("www.example.test.");
+        let q = question("www.example.test.", A);
+        let mut short = chain();
+        short.answers.truncate(1);
+        let got: Vec<_> = [Secure, Insecure, Bogus, Indeterminate]
+            .into_iter()
+            .map(|v| {
+                (
+                    v,
+                    reached_verdict(v, &mut short.clone(), &www, &q),
+                    reached_verdict(v, &mut chain(), &www, &q),
+                )
+            })
+            .collect();
+        let want = vec![
+            (Secure, Indeterminate, Secure),
+            (Insecure, Insecure, Insecure),
+            (Bogus, Bogus, Bogus),
+            (Indeterminate, Indeterminate, Indeterminate),
+        ];
+        assert_eq!(got, want);
+    }
+
+    /// REQ: DNS-011 (ADR-195) — an answer made indeterminate here keeps each record of its answer
+    /// section at 300 s at most: longer TTLs are lowered to 300 s, a shorter one and the authority
+    /// section are left as they are. Every other verdict, and an answer that reaches its question,
+    /// leave the message as it was, byte for byte.
+    #[test]
+    fn dns_011_an_answer_that_does_not_reach_its_question_is_kept_300_s_at_most() {
+        use Verdict::{Bogus, Indeterminate, Insecure, Secure};
+        let www = n("www.example.test.");
+        let q = question("www.example.test.", A);
+        // `m`, each answer record with TTL `answer`, and an SOA in the authority section with 3600.
+        let with_ttls = |mut m: Message, answer: u32| {
+            for r in &mut m.answers {
+                r.ttl = answer;
+            }
+            let soa = rdata::SOA::new(
+                n("ns.example.net."),
+                n("admin.example.net."),
+                1,
+                1800,
+                900,
+                604_800,
+                300,
+            );
+            let mut r = Record::from_rdata(n("example.net."), 3600, RData::SOA(soa));
+            r.proof = Proof::Insecure;
+            m.authorities = vec![r];
+            m
+        };
+        let short = |answer: u32| {
+            let mut m = chain();
+            m.answers.truncate(1);
+            with_ttls(m, answer)
+        };
+        let ttls = |records: &[Record]| records.iter().map(|r| r.ttl).collect::<Vec<_>>();
+        let capped = |mut m: Message| {
+            let v = reached_verdict(Secure, &mut m, &www, &q);
+            (v, ttls(&m.answers), ttls(&m.authorities))
+        };
+        assert_eq!(
+            capped(short(3600)),
+            (Indeterminate, vec![300], vec![3600]),
+            "a longer TTL is lowered"
+        );
+        assert_eq!(
+            capped(short(120)),
+            (Indeterminate, vec![120], vec![3600]),
+            "a shorter one is left as it is"
+        );
+        // Byte for byte unchanged: any other verdict, and a secure answer that reaches its question.
+        let cases = [
+            (Insecure, short(3600)),
+            (Bogus, short(3600)),
+            (Indeterminate, short(3600)),
+            (Secure, with_ttls(chain(), 3600)),
+        ];
+        for (v, before) in cases {
+            let mut m = before.clone();
+            assert_eq!(reached_verdict(v, &mut m, &www, &q), v);
+            assert_eq!(m.to_vec().unwrap(), before.to_vec().unwrap(), "{v:?}");
+        }
+    }
+}
+
 /// REQ: DNS-011 (ADR-098, ADR-184) — what a DS answer proves ([`ds_denial_verdict`]), on
 /// records built by hand. NSEC3 records use SHA-1 with no salt and no extra iterations (as
 /// `.com` and `.org` do) unless a test says otherwise; each carries the proof the validating
@@ -2620,14 +3287,15 @@ mod ds_proof_tests {
         types: &[RecordType],
         (salt, iterations): (&[u8], u16),
     ) -> Record {
-        let n = NSEC3::new(
+        let n = NSEC3::try_new(
             Nsec3HashAlgorithm::SHA1,
             opt_out,
             iterations,
             salt.to_vec(),
             next,
             types.iter().copied(),
-        );
+        )
+        .unwrap();
         let owner = name(&format!("{}.{zone}", base32hex(hash)));
         let mut r = Record::from_rdata(owner, 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
         r.proof = Proof::Secure;
@@ -3681,7 +4349,7 @@ mod order_tests {
     fn dns_011_order_several_types_at_the_end_of_a_chain() {
         let txt = record(
             "x.example.",
-            RData::TXT(rdata::TXT::new(vec!["v=1".to_owned()])),
+            RData::TXT(rdata::TXT::try_new(["v=1"].iter().map(|t| t.as_bytes())).unwrap()),
         );
         let v = vec![
             sig("x.example.", RecordType::AAAA),

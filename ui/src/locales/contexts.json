@@ -1,0 +1,4 @@
+{
+  "lib/heatmap.ts": "libHeatmap",
+  "lib/wall.ts": "libWall"
+}

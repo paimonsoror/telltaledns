@@ -6,6 +6,10 @@
   import { health } from '../health.svelte';
   import { dateTime } from '../format';
   import Icon from './Icon.svelte';
+  import { own, tr } from '../i18n';
+  import T from '../i18n/T.svelte';
+  // REQ: API-012 — the counts are lengths (never negative): tn() gives the ternaries' English.
+  const { t, tn } = tr('healthIcon');
 
   let open = $state(false);
   let wrap = $state<HTMLElement | undefined>();
@@ -34,16 +38,19 @@
   const h = $derived(health.value);
   const level = $derived(h?.level ?? 'healthy');
   const words: Record<string, string> = {
-    healthy: 'Healthy',
-    degraded: 'Degraded',
-    severe: 'Severe',
+    healthy: t('Healthy'),
+    degraded: t('Degraded'),
+    severe: t('Severe'),
   };
+  /** The level comes from the server: read with `Object.hasOwn` (one the UI doesn't know shows as it is). */
+  const word = (l: string) => own(words, l);
+  // The button's label lowercases the level's word, as it always did (one message for every level).
   const label = $derived(
     h === null
-      ? 'Health: checking…'
+      ? t('Health: checking…')
       : level === 'healthy'
-        ? 'Health: everything is working'
-        : `Health: ${words[level]?.toLowerCase() ?? level} (${h.reasons.length} reason${h.reasons.length === 1 ? '' : 's'})`,
+        ? t('Health: everything is working')
+        : tn('Health: {level} ({n} reason)', 'Health: {level} ({n} reasons)', h.reasons.length, { level: word(level)?.toLowerCase() ?? level, n: h.reasons.length }),
   );
 
   function outside(e: MouseEvent) {
@@ -67,18 +74,18 @@
     onclick={toggle}><Icon name={`health-${level}`} size={18} /></button
   >
   {#if open}
-    <div class="panel" role="dialog" aria-label="Health" data-testid="health-panel" bind:this={panel} use:portal style:left={`${pos.left}px`} style:bottom={`${pos.bottom}px`}>
-      <p class="head"><span class="badge {level === 'healthy' ? 'ok' : level === 'severe' ? 'bad' : 'warn'}">{words[level] ?? level}</span></p>
+    <div class="panel" role="dialog" aria-label={t('Health')} data-testid="health-panel" bind:this={panel} use:portal style:left={`${pos.left}px`} style:bottom={`${pos.bottom}px`}>
+      <p class="head"><span class="badge {level === 'healthy' ? 'ok' : level === 'severe' ? 'bad' : 'warn'}">{word(level) ?? level}</span></p>
       {#if h === null}
-        <p class="small muted">Checking…</p>
+        <p class="small muted">{t('Checking…')}</p>
       {:else if h.reasons.length === 0}
-        <p class="small">Every upstream answers, every node serves and is in sync, and nothing is rate-limited.</p>
+        <p class="small">{t('Every upstream answers, every node serves and is in sync, and nothing is rate-limited.')}</p>
       {:else}
         <ul>
           {#each h.reasons as r, i (i)}
             <li class={r.level}>
               <span class="small">{#if r.node}<strong>{r.node}</strong>: {/if}{r.summary}</span>
-              {#if r.link}<a class="small" href={r.link} onclick={() => (open = false)}>Look</a>{/if}
+              {#if r.link}<a class="small" href={r.link} onclick={() => (open = false)}>{t('Look')}</a>{/if}
             </li>
           {/each}
         </ul>
@@ -86,14 +93,16 @@
       {#if h?.maintenance?.length}
         <!-- REQ: OPS-010 — nodes in maintenance are left out of the level; say so. -->
         <p class="small" data-testid="health-maintenance">
-          {h.maintenance.length} node{h.maintenance.length === 1 ? '' : 's'} in maintenance:
-          {#each h.maintenance as m, i (i)}{i ? '; ' : ''}<strong>{m.node}</strong> until {dateTime(Date.parse(m.until) / 1000)} ({m.reason}){/each}
+          {tn('{n} node in maintenance:', '{n} nodes in maintenance:', h.maintenance.length, { n: h.maintenance.length })}
+          {#each h.maintenance as m, i (i)}{i ? '; ' : ''}<T ctx="healthIcon" msg={'<strong>{node}</strong> until {until} ({reason})'} params={{ node: m.node, until: dateTime(Date.parse(m.until) / 1000), reason: m.reason }}
+              >{#snippet strong(x: string)}<strong>{x}</strong>{/snippet}</T
+            >{/each}
         </p>
       {/if}
       {#if h && h.missingNodes && h.missingNodes.length > 0}
-        <p class="small muted">Didn't answer: {h.missingNodes.join(', ')}</p>
+        <p class="small muted">{t("Didn't answer: {nodes}", { nodes: h.missingNodes.join(', ') })}</p>
       {/if}
-      {#if h?.checkedAt}<p class="small muted">Checked {dateTime(Date.parse(h.checkedAt) / 1000)}</p>{/if}
+      {#if h?.checkedAt}<p class="small muted">{t('Checked {when}', { when: dateTime(Date.parse(h.checkedAt) / 1000) })}</p>{/if}
     </div>
   {/if}
 </span>

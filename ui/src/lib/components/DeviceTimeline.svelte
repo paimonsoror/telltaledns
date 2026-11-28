@@ -4,18 +4,20 @@
   // contacts, anomalies, blocked bursts) and the change markers. Lane labels open the query log.
   import { api, type S } from '../api';
   import { href } from '../router.svelte';
-  import { num } from '../format';
+  import { clock as hm, num, weekdayDate as day } from '../format';
   import ErrorNote from './ErrorNote.svelte';
   import { LABEL_W, LANE_H, LAT_H, draw, geometry, hit, spans, xOf, type Timeline } from '../timeline';
+  import { tr } from '../i18n';
+  const { t } = tr('deviceTimeline');
 
   let { client }: { client: string } = $props();
 
   const windows = [
-    { id: '1h', label: '1 h', from: '-1h' },
-    { id: '6h', label: '6 h', from: '-6h' },
-    { id: '24h', label: '24 h', from: '-24h' },
-    { id: '3d', label: '3 d', from: '-3d' },
-    { id: '7d', label: '7 d', from: '-7d' },
+    { id: '1h', label: t('1 h'), from: '-1h' },
+    { id: '6h', label: t('6 h'), from: '-6h' },
+    { id: '24h', label: t('24 h'), from: '-24h' },
+    { id: '3d', label: t('3 d'), from: '-3d' },
+    { id: '7d', label: t('7 d'), from: '-7d' },
   ];
   let win = $state('24h');
   let data = $state<Timeline | null>(null);
@@ -79,8 +81,8 @@
     draw(ctx, data, g, { ink: v('--hm-ink', '#3b6fb6'), bad: v('--bad', '#c2413a'), warn: v('--warn', '#c98a00'), muted: v('--muted', '#888'), grid: v('--border', '#ddd') }, coverage);
   });
 
-  const hm = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const day = (unix: number) => new Date(unix * 1000).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  // REQ: API-012 — times and days through lib/format.ts (`clock`, `weekdayDate`: the same output as
+  // before, in the browser's default locale); each tooltip is one message per variant.
   const span = (bin: number) => (data ? `${hm(data.bins[bin])}–${hm(data.bins[bin] + data.binSeconds)}` : '');
   function move(e: MouseEvent) {
     if (!data || !g) return;
@@ -91,9 +93,14 @@
       return;
     }
     const l = data.lanes[h.lane];
-    const text = l
-      ? `${span(h.bin)} · ${l.domain ?? 'a domain'} · ${num(l.counts[h.bin])} queries, ${num(l.blocked[h.bin])} blocked${l.slow[h.bin] ? `, ${num(l.slow[h.bin])} slow` : ''}`
-      : `${span(h.bin)} · ${num(data.queries[h.bin])} queries · p99 ${data.p99Ms[h.bin] == null ? '–' : `${data.p99Ms[h.bin]} ms`}`;
+    let text: string;
+    if (l) {
+      const p = { span: span(h.bin), domain: l.domain ?? t('a domain'), n: num(l.counts[h.bin]), blocked: num(l.blocked[h.bin]), slow: num(l.slow[h.bin]) };
+      text = l.slow[h.bin] ? t('{span} · {domain} · {n} queries, {blocked} blocked, {slow} slow', p) : t('{span} · {domain} · {n} queries, {blocked} blocked', p);
+    } else {
+      const p = { span: span(h.bin), n: num(data.queries[h.bin]), p99: data.p99Ms[h.bin] };
+      text = p.p99 == null ? t('{span} · {n} queries · p99 –', p) : t('{span} · {n} queries · p99 {p99} ms', p);
+    }
     tip = { x: e.clientX - r.left, y: e.clientY - r.top, text };
   }
   const window_ = $derived(data ? { from: data.from, to: data.to } : {});
@@ -107,41 +114,41 @@
 
 <div class="tl" data-testid="timeline" bind:clientWidth={width}>
   <div class="controls">
-    <div class="seg" role="group" aria-label="Window">
+    <div class="seg" role="group" aria-label={t('Window')}>
       {#each windows as w (w.id)}
         <button type="button" aria-pressed={win === w.id} onclick={() => (win = w.id)}>{w.label}</button>
       {/each}
     </div>
-    <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="timeline-table-toggle" />Table</label></span>
-    {#if loading}<span class="muted small">Reading the query log…</span>{/if}
+    <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="timeline-table-toggle" />{t('Table')}</label></span>
+    {#if loading}<span class="muted small">{t('Reading the query log…')}</span>{/if}
   </div>
   <ErrorNote {error} />
   {#if data}
     {#if data.truncated}
-      <p class="notice warn small" data-testid="timeline-truncated">The query log read stopped early ({data.truncatedReason}): the lanes cover what it read.</p>
+      <p class="notice warn small" data-testid="timeline-truncated">{t('The query log read stopped early ({reason}): the lanes cover what it read.', { reason: data.truncatedReason })}</p>
     {/if}
     {#if data.coverageFrom}
-      <p class="muted small" data-testid="timeline-coverage">The query log starts {day(Date.parse(data.coverageFrom) / 1000)} {hm(Date.parse(data.coverageFrom) / 1000)}: the grey part has no rows.</p>
+      <p class="muted small" data-testid="timeline-coverage">{t('The query log starts {day} {time}: the grey part has no rows.', { day: day(Date.parse(data.coverageFrom) / 1000), time: hm(Date.parse(data.coverageFrom) / 1000) })}</p>
     {/if}
     {#if data.lanes.length === 0}
-      <p class="empty">No queries from this device in this window.</p>
+      <p class="empty">{t('No queries from this device in this window.')}</p>
     {:else if table}
       <div class="scroll">
         <table data-testid="timeline-table">
           <thead>
-            <tr><th>Domain</th><th class="num">Total</th><th class="num">Blocked</th>{#each cols as c (c.from)}<th class="num">{hm(c.start)}</th>{/each}</tr>
+            <tr><th>{t('Domain')}</th><th class="num">{t('Total')}</th><th class="num">{t('Blocked')}</th>{#each cols as c (c.from)}<th class="num">{hm(c.start)}</th>{/each}</tr>
           </thead>
           <tbody>
             {#each data.lanes as l, i (i)}
               <tr>
-                <td class="mono">{l.domain ?? '(hidden)'}</td>
+                <td class="mono">{l.domain ?? t('(hidden)')}</td>
                 <td class="num">{num(l.total)}</td>
                 <td class="num">{num(l.blockedTotal)}</td>
                 {#each cols as c (c.from)}<td class="num">{sum(l.counts, c.from, c.to) || ''}</td>{/each}
               </tr>
             {/each}
             <tr class="muted">
-              <td>p99 (ms)</td><td></td><td></td>
+              <td>{t('p99 (ms)')}</td><td></td><td></td>
               {#each cols as c (c.from)}
                 {@const v = data.p99Ms.slice(c.from, c.to).filter((x) => x != null) as number[]}
                 <td class="num">{v.length ? Math.max(...v) : ''}</td>
@@ -155,7 +162,7 @@
         <div class="inner" style:grid-template-columns="{LABEL_W}px {g.width}px">
           <div class="label sticky small muted">{day(data.bins[0])}</div>
           <div class="rail" data-testid="timeline-rail">
-            {#each data.markers as m (m.tUnixMs + m.kind + (m.node ?? ''))}
+            {#each data.markers as m, i (i)}
               <span class="marker" style:left="{xOf(data, g, m.tUnixMs / 1000)}px" title="{hm(m.tUnixMs / 1000)} · {m.summary}" data-testid="timeline-marker"></span>
             {/each}
             {#each data.events as e, i (i)}
@@ -173,10 +180,10 @@
           <div class="labels sticky">
             {#each data.lanes as l, i (i)}
               <a class="lane-label mono small" class:other={l.other} style:height="{LANE_H}px" href={laneHref(l)} data-testid="timeline-lane" title={l.domain ?? ''}
-                >{l.domain ?? `domain ${i + 1}`}</a
+                >{l.domain ?? t('domain {n}', { n: i + 1 })}</a
               >
             {/each}
-            <span class="lane-label small muted" style:height="{LAT_H}px">p99</span>
+            <span class="lane-label small muted" style:height="{LAT_H}px">{t('p99')}</span>
           </div>
           <div class="canvas-wrap" style:height="{g.height}px">
             <canvas
@@ -192,7 +199,7 @@
             {#each data.lanes as l, i (i)}
               {@const at = newAt(l)}
               {#if at != null && at >= data.bins[0]}
-                <span class="new" style:left="{xOf(data, g, at)}px" style:top="{i * LANE_H}px" data-testid="timeline-new">new</span>
+                <span class="new" style:left="{xOf(data, g, at)}px" style:top="{i * LANE_H}px" data-testid="timeline-new">{t('new')}</span>
               {/if}
             {/each}
             {#if tip}
@@ -201,7 +208,7 @@
           </div>
         </div>
       </div>
-      <p class="muted small">Darker is more queries; red underline: blocked; amber tick: slower than the latency objective. Dots above: <span class="key hollow"></span> first contact, <span class="key warn"></span> anomaly, <span class="key bad"></span> blocked burst, <span class="key diamond"></span> the device's identity changed; grey ticks are changes.</p>
+      <p class="muted small">{t('Darker is more queries; red underline: blocked; amber tick: slower than the latency objective. Dots above:')} <span class="key hollow"></span> {t('first contact,')} <span class="key warn"></span> {t('anomaly,')} <span class="key bad"></span> {t('blocked burst,')} <span class="key diamond"></span> {t('the device\'s identity changed; grey ticks are changes.')}</p>
     {/if}
   {/if}
 </div>

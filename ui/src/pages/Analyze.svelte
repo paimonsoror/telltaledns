@@ -9,21 +9,24 @@
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
   import BudgetAttribution from '../lib/components/BudgetAttribution.svelte';
+  import { tr } from '../lib/i18n';
+  const { t } = tr('analyze');
 
   // REQ: OBS-027 — the Analyze page answers "why": the query language, and who spent the
   // error budget.
   const tabs: TabItem[] = [
-    { id: 'query', label: 'Query' },
-    { id: 'budget', label: 'Error budget' },
+    { id: 'query', label: t('Query') },
+    { id: 'budget', label: t('Error budget') },
   ];
   const tab = $derived(activeTab(tabs));
 
+  // The queries are code (the chip's text is the label beside it).
   const examples: { label: string; q: string }[] = [
-    { label: 'Top blocked names today', q: 'from -24h | where status = blocked | top 10 name' },
-    { label: 'Busiest devices', q: 'from -24h | by client | stats count, distinct(domain) | limit 20' },
-    { label: 'Queries per hour, with latency', q: 'from -24h | bucket 1h | stats count, p50(latency), p95(latency)' },
-    { label: 'Slow answers by upstream', q: 'from -24h | where latency > 100 | by upstream | stats count, p95(latency)' },
-    { label: 'Failed lookups', q: 'from -24h | where rcode in (NXDOMAIN, SERVFAIL) | top 20 domain' },
+    { label: t('Top blocked names today'), q: 'from -24h | where status = blocked | top 10 name' },
+    { label: t('Busiest devices'), q: 'from -24h | by client | stats count, distinct(domain) | limit 20' },
+    { label: t('Queries per hour, with latency'), q: 'from -24h | bucket 1h | stats count, p50(latency), p95(latency)' },
+    { label: t('Slow answers by upstream'), q: 'from -24h | where latency > 100 | by upstream | stats count, p95(latency)' },
+    { label: t('Failed lookups'), q: 'from -24h | where rcode in (NXDOMAIN, SERVFAIL) | top 20 domain' },
   ];
 
   let text = $state(route.params.get('q') ?? examples[0].q);
@@ -85,8 +88,8 @@
 </script>
 
 <div class="page">
-  <h1>Analyze<HelpButton id="vqlog" /></h1>
-  <Tabs {tabs} active={tab} label="Analyze" />
+  <h1>{t('Analyze')}<HelpButton id="vqlog" /></h1>
+  <Tabs {tabs} active={tab} label={t('Analyze')} />
   <TabPanel active={tab}>
   {#if tab === 'budget'}
     <BudgetAttribution />
@@ -99,14 +102,14 @@
     }}
   >
     <label class="field">
-      <span class="small muted">Query (vqlog) · Ctrl+Enter runs it</span>
-      <textarea name="q" rows="2" spellcheck="false" bind:value={text} onkeydown={keydown} aria-label="vqlog query"></textarea>
+      <span class="small muted">{t('Query (vqlog) · Ctrl+Enter runs it')}</span>
+      <textarea name="q" rows="2" spellcheck="false" bind:value={text} onkeydown={keydown} aria-label={t('vqlog query')}></textarea>
     </label>
     <div class="row actions">
-      <button class="primary" type="submit" disabled={busy}>Run</button>
-      <button type="button" disabled={busy} onclick={() => go(true)} title="Only estimate how much it would read">Estimate cost</button>
+      <button class="primary" type="submit" disabled={busy}>{t('Run')}</button>
+      <button type="button" disabled={busy} onclick={() => go(true)} title={t('Only estimate how much it would read')}>{t('Estimate cost')}</button>
       <span class="spacer"></span>
-      <span class="small muted">Stages: from · where · bucket · by · stats · top · sort · limit</span>
+      <span class="small muted">{t('Stages: from · where · bucket · by · stats · top · sort · limit')}</span>
     </div>
     <div class="examples small">
       {#each examples as ex (ex.q)}
@@ -119,24 +122,29 @@
 
   {#if result}
     <section class="card" data-testid="vqlog-result">
-      <p class="small muted understood">As understood: <code>{result.query}</code></p>
+      <p class="small muted understood">{t('As understood:')} <code translate="no">{result.query}</code></p>
       <p class="small muted" data-testid="vqlog-cost">
         {#if result.cost.rowsScanned === 0 && result.rows.length === 0}
-          Estimate: up to {num(result.cost.estimatedRows)} logged queries in {num(result.cost.blocks)} blocks would be read.
+          {t('Estimate: up to {rows} logged queries in {blocks} blocks would be read.', { rows: num(result.cost.estimatedRows), blocks: num(result.cost.blocks) })}
         {:else}
-          Matched {num(result.cost.rowsMatched)} of {num(result.cost.rowsScanned)} queries read (estimated at most
-          {num(result.cost.estimatedRows)}) in {num(result.cost.elapsedMs)} ms · {num(result.groups)} groups
+          {t('Matched {matched} of {scanned} queries read (estimated at most {estimated}) in {elapsed} ms · {groups} groups', {
+            matched: num(result.cost.rowsMatched),
+            scanned: num(result.cost.rowsScanned),
+            estimated: num(result.cost.estimatedRows),
+            elapsed: num(result.cost.elapsedMs),
+            groups: num(result.groups),
+          })}
         {/if}
       </p>
       {#if result.truncated}
-        <div class="notice warn" role="status">Partial: {result.truncatedReason}</div>
+        <div class="notice warn" role="status">{t('Partial: {reason}', { reason: result.truncatedReason })}</div>
       {/if}
       {#if result.missingNodes.length}
-        <div class="notice warn" role="status">Not included: {result.missingNodes.join(', ')}</div>
+        <div class="notice warn" role="status">{t('Not included: {nodes}', { nodes: result.missingNodes.join(', ') })}</div>
       {/if}
       <!-- REQ: AGT-012 (T9.12) — answered from the rollups, or past what the log keeps. -->
       {#if result.source === 'rollups'}
-        <p class="small muted" data-testid="vqlog-source">From the rollups (counts kept for long windows), not the query log.</p>
+        <p class="small muted" data-testid="vqlog-source">{t('From the rollups (counts kept for long windows), not the query log.')}</p>
       {/if}
       {#if result.note}
         <div class="notice" role="status" data-testid="vqlog-note">{result.note}</div>
@@ -145,7 +153,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr>{#each result.columns as c (c)}<th class:num={statCols.has(c)}>{c}</th>{/each}</tr>
+              <tr>{#each result.columns as c, j (j)}<th class:num={statCols.has(c)} translate="no">{c}</th>{/each}</tr>
             </thead>
             <tbody>
               {#each result.rows as row, i (i)}
@@ -153,7 +161,7 @@
                   {#each row as v, j (j)}
                     {@const c = result.columns[j]}
                     {@const to = link(c, v)}
-                    <td class:num={statCols.has(c)} class:mono={c === 'name' || c === 'domain' || c === 'client'}>
+                    <td class:num={statCols.has(c)} class:mono={c === 'name' || c === 'domain' || c === 'client'} translate="no">
                       {#if to}<a href={to}>{cell(c, v)}</a>{:else}{cell(c, v)}{/if}
                     </td>
                   {/each}
@@ -163,7 +171,7 @@
           </table>
         </div>
       {:else if result.cost.rowsScanned > 0}
-        <p class="empty">Nothing matched.</p>
+        <p class="empty">{t('Nothing matched.')}</p>
       {/if}
     </section>
   {/if}

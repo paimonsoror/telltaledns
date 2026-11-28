@@ -2,6 +2,10 @@
 // REQ: API-005 — the UI uses only the public API, the same one scripts and agents use.
 
 import type { components } from './api-types';
+import { tr } from './i18n';
+
+// REQ: API-012 — what the client says itself (the server's problem text stays the server's).
+const { t } = tr('api');
 
 export type S = components['schemas'];
 export type Problem = S['Problem'];
@@ -61,7 +65,7 @@ async function call<T>(
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch {
-    throw new ApiError({ status: 0, code: 'unavailable', detail: 'cannot reach the server' });
+    throw new ApiError({ status: 0, code: 'unavailable', detail: t('cannot reach the server') });
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -106,7 +110,7 @@ async function manifestOf(archive: Blob): Promise<SupportManifest> {
   const tar = await new Response(archive.stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
   const head = new Uint8Array(tar, 0, 512);
   const field = (from: number, to: number) => new TextDecoder().decode(head.subarray(from, to)).replace(/\x00.*$/s, '').trim();
-  if (field(0, 100) !== 'MANIFEST.json') throw new ApiError({ status: 0, code: 'internal', detail: 'the package has no manifest' });
+  if (field(0, 100) !== 'MANIFEST.json') throw new ApiError({ status: 0, code: 'internal', detail: t('the package has no manifest') });
   const size = parseInt(field(124, 136), 8);
   return JSON.parse(new TextDecoder().decode(new Uint8Array(tar, 512, size))) as SupportManifest;
 }
@@ -124,7 +128,7 @@ async function callFile(method: string, path: string, body: unknown): Promise<Re
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError({ status: 0, code: 'unavailable', detail: 'cannot reach the server' });
+    throw new ApiError({ status: 0, code: 'unavailable', detail: t('cannot reach the server') });
   }
   if (!res.ok) {
     const text = await res.text();
